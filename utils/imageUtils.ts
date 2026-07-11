@@ -151,7 +151,7 @@ export function simpleInpaint(
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
-      if (mask[i + 3] < 128) continue; // not masked
+      if (mask[i] < 128) continue; // not masked (mask is black bg + white strokes, check red channel)
 
       let rSum = 0, gSum = 0, bSum = 0, count = 0;
       for (let dy = -radius; dy <= radius; dy++) {
@@ -159,7 +159,7 @@ export function simpleInpaint(
           const nx = x + dx, ny = y + dy;
           if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
           const ni = (ny * width + nx) * 4;
-          if (mask[ni + 3] >= 128) continue; // skip other masked pixels
+          if (mask[ni] >= 128) continue; // skip other masked pixels
           rSum += img[ni]; gSum += img[ni + 1]; bSum += img[ni + 2];
           count++;
         }

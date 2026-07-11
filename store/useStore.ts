@@ -112,6 +112,7 @@ export interface AppState {
   setViewport: (vp: Partial<ViewportState>) => void;
   undo: () => void;
   redo: () => void;
+  pushHistory: () => void;
   toggleLayerVisibility: (layer: keyof LayerVisibility) => void;
   setShowExportModal: (show: boolean) => void;
   applyCleanupCommit: (dataURL: string) => void;
@@ -285,6 +286,14 @@ export const useStore = create<AppState>((set, get) => ({
   updateExportSettings: (u) => set(s => ({ exportSettings: { ...s.exportSettings, ...u } })),
 
   setViewport: (vp) => set(s => ({ viewport: { ...s.viewport, ...vp } })),
+
+  pushHistory: () =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      docs[state.activeDocIndex] = withHistory(docs[state.activeDocIndex]);
+      return { documents: docs };
+    }),
 
   undo: () =>
     set(state => {

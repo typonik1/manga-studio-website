@@ -119,9 +119,31 @@ export function TextPanel() {
       <div className="divider" />
 
       {selectedText && (
-        <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: -4 }}>
-          Редактирование выбранного
-        </div>
+        <>
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: -4 }}>
+            Редактирование выбранного
+          </div>
+          <div>
+            <PanelLabel>Содержимое</PanelLabel>
+            <textarea
+              value={selectedText.text}
+              onChange={e => updateText(selectedText.id, { text: e.target.value })}
+              rows={3}
+              style={{
+                width: '100%',
+                resize: 'vertical',
+                background: 'var(--bg-panel-raised)',
+                border: '1px solid var(--border-default)',
+                borderRadius: 6,
+                color: 'var(--text-primary)',
+                fontSize: 12,
+                padding: '6px 8px',
+                fontFamily: 'inherit',
+                lineHeight: 1.4,
+              }}
+            />
+          </div>
+        </>
       )}
 
       {/* Font */}

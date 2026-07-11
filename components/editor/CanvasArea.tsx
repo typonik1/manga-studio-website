@@ -36,6 +36,7 @@ function WatermarkNode({
   isSelected,
   onSelect,
   onChange,
+  onBeforeChange,
 }: {
   wm: WatermarkObject;
   docWidth: number;
@@ -44,6 +45,7 @@ function WatermarkNode({
   isSelected: boolean;
   onSelect: () => void;
   onChange: (updates: Partial<WatermarkObject>) => void;
+  onBeforeChange: () => void;
 }) {
   const nodeRef = useRef<Konva.Text | Konva.Image | null>(null);
   const trRef = useRef<Konva.Transformer>(null);
@@ -90,11 +92,20 @@ function WatermarkNode({
     draggable: true,
     onClick: onSelect,
     onTap: onSelect,
+    onDragStart: onBeforeChange,
+    onTransformStart: onBeforeChange,
     onDragEnd: handleDragEnd,
     onTransformEnd: handleTransformEnd,
     offsetX: 0,
     offsetY: 0,
   };
+
+  // Keep the logo's natural aspect ratio — width is a fraction of doc width,
+  // height is derived from the image itself so it never stretches.
+  const logoW = (wm.imageWidth ?? 0.25) * pW;
+  const logoH = logoImg && logoImg.naturalWidth > 0
+    ? logoW * (logoImg.naturalHeight / logoImg.naturalWidth)
+    : (wm.imageHeight ?? 0.12) * pH;
 
   return (
     <>
@@ -112,8 +123,8 @@ function WatermarkNode({
           {...commonProps}
           ref={nodeRef as React.RefObject<Konva.Image>}
           image={logoImg}
-          width={(wm.imageWidth ?? 0.25) * pW}
-          height={(wm.imageHeight ?? 0.12) * pH}
+          width={logoW}
+          height={logoH}
         />
       ) : null}
       {isSelected && (
@@ -124,7 +135,8 @@ function WatermarkNode({
             return newBox;
           }}
           rotateEnabled
-          enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-right', 'middle-left']}
+          keepRatio
+          enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']}
         />
       )}
     </>
@@ -139,6 +151,8 @@ function TextNode({
   isSelected,
   onSelect,
   onChange,
+  onBeforeChange,
+  onEditRequest,
 }: {
   txt: TextObject;
   docWidth: number;
@@ -147,6 +161,8 @@ function TextNode({
   isSelected: boolean;
   onSelect: () => void;
   onChange: (updates: Partial<TextObject>) => void;
+  onBeforeChange: () => void;
+  onEditRequest: () => void;
 }) {
   const nodeRef = useRef<Konva.Text>(null);
   const trRef = useRef<Konva.Transformer>(null);
@@ -202,6 +218,10 @@ function TextNode({
         draggable
         onClick={onSelect}
         onTap={onSelect}
+        onDblClick={onEditRequest}
+        onDblTap={onEditRequest}
+        onDragStart={onBeforeChange}
+        onTransformStart={onBeforeChange}
         onDragEnd={handleDragEnd}
         onTransformEnd={handleTransformEnd}
       />
@@ -213,6 +233,8 @@ function TextNode({
             return newBox;
           }}
           rotateEnabled
+          keepRatio
+          enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']}
         />
       )}
     </>
@@ -228,6 +250,7 @@ export function CanvasArea() {
     layerVisibility,
     viewport, setViewport,
     addDocuments,
+    pushHistory, setLeftTab,
   } = useStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -379,7 +402,10 @@ export function CanvasArea() {
   };
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (e.target === stageRef.current) {
+    // Deselect when clicking the empty stage OR the base image itself
+    // (the image covers the whole canvas, so it counts as "empty space")
+    const target = e.target as Konva.Node;
+    if (target === (stageRef.current as unknown as Konva.Node) || target.name() === 'base-image') {
       setSelectedObject(null);
     }
   };
@@ -561,12 +587,12 @@ export function CanvasArea() {
           >
             {/* Image background */}
             {layerVisibility.base && baseImg && (
-              <KonvaImage image={baseImg} width={imgW} height={imgH} />
+              <KonvaImage name="base-image" image={baseImg} width={imgW} height={imgH} />
             )}
 
             {/* Cleanup committed layer */}
             {layerVisibility.cleanup && cleanupImg && (
-              <KonvaImage image={cleanupImg} width={imgW} height={imgH} />
+              <KonvaImage name="base-image" image={cleanupImg} width={imgW} height={imgH} />
             )}
 
             {/* Live brush strokes */}
@@ -600,6 +626,7 @@ export function CanvasArea() {
                 isSelected={selectedObject?.id === wm.id}
                 onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
                 onChange={updates => updateWatermark(wm.id, updates)}
+                onBeforeChange={pushHistory}
               />
             ))}
 
@@ -614,6 +641,11 @@ export function CanvasArea() {
                 isSelected={selectedObject?.id === txt.id}
                 onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
                 onChange={updates => updateText(txt.id, updates)}
+                onBeforeChange={pushHistory}
+                onEditRequest={() => {
+                  setSelectedObject({ id: txt.id, type: 'text' });
+                  setLeftTab('text');
+                }}
               />
             ))}
           </Layer>

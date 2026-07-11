@@ -67,6 +67,7 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
       const fontSize = (wm.fontSize ?? 0.06) * doc.height;
       ctx.font = `${fontSize}px "${wm.fontFamily ?? 'Arial'}"`;
       ctx.fillStyle = wm.fill ?? '#ffffff';
+      ctx.textBaseline = 'top';
       ctx.fillText(wm.text, 0, 0);
     } else if (wm.type === 'image' && wm.imageSrc) {
       const wmImg = new window.Image();
@@ -76,8 +77,11 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
         wmImg.onerror = () => res();
         wmImg.src = wm.imageSrc!;
       });
+      // Preserve the logo's natural aspect ratio (same as the canvas preview)
       const w = (wm.imageWidth ?? 0.25) * doc.width;
-      const h = (wm.imageHeight ?? 0.12) * doc.height;
+      const h = wmImg.naturalWidth > 0
+        ? w * (wmImg.naturalHeight / wmImg.naturalWidth)
+        : (wm.imageHeight ?? 0.12) * doc.height;
       ctx.drawImage(wmImg, 0, 0, w, h);
     }
     ctx.restore();

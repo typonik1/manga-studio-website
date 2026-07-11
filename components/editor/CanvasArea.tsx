@@ -258,7 +258,11 @@ export function CanvasArea() {
   const isPainting = useRef(false);
   const currentStroke = useRef<number[]>([]);
   const strokeId = useRef<string>('');
-  const [brushPreview, setBrushPreview] = useState<{ x: number; y: number; r: number } | null>(null);
+  // Live stroke rendered imperatively (no React re-renders while drawing)
+  const liveLineRef = useRef<Konva.Line>(null);
+  const livePoints = useRef<number[]>([]);
+  // Brush cursor updated imperatively via DOM
+  const cursorRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
@@ -348,6 +352,16 @@ export function CanvasArea() {
       isPainting.current = true;
       strokeId.current = uid();
       currentStroke.current = [nx, ny];
+      // Start the live preview line
+      livePoints.current = [imgX, imgY];
+      const line = liveLineRef.current;
+      if (line) {
+        line.points(livePoints.current);
+        line.stroke(cleanupSettings.brushColor);
+        line.strokeWidth(cleanupSettings.brushSize * activeDoc.height * previewScale);
+        line.visible(true);
+        line.getLayer()?.batchDraw();
+      }
     }
   };
 
@@ -366,19 +380,32 @@ export function CanvasArea() {
     if (activeTool === 'brush' && pos) {
       const imgX = (pos.x - viewport.x) / viewport.scale;
       const imgY = (pos.y - viewport.y) / viewport.scale;
-      setBrushPreview({
-        x: pos.x,
-        y: pos.y,
-        r: (cleanupSettings.brushSize * (activeDoc?.height ?? 1000) * previewScale * viewport.scale) / 2,
-      });
+
+      // Update the cursor circle directly via DOM (no React re-render)
+      const cursor = cursorRef.current;
+      if (cursor) {
+        const rad = (cleanupSettings.brushSize * (activeDoc?.height ?? 1000) * previewScale * viewport.scale) / 2;
+        cursor.style.display = 'block';
+        cursor.style.left = `${pos.x - rad}px`;
+        cursor.style.top = `${pos.y - rad}px`;
+        cursor.style.width = `${rad * 2}px`;
+        cursor.style.height = `${rad * 2}px`;
+      }
 
       if (isPainting.current) {
         const nx = imgX / imgW;
         const ny = imgY / imgH;
         currentStroke.current.push(nx, ny);
+        // Update the live line imperatively for instant feedback
+        livePoints.current.push(imgX, imgY);
+        const line = liveLineRef.current;
+        if (line) {
+          line.points(livePoints.current);
+          line.getLayer()?.batchDraw();
+        }
       }
-    } else {
-      setBrushPreview(null);
+    } else if (cursorRef.current) {
+      cursorRef.current.style.display = 'none';
     }
   };
 
@@ -398,6 +425,14 @@ export function CanvasArea() {
       }
       isPainting.current = false;
       currentStroke.current = [];
+      // Hide the live preview line (the committed stroke takes over)
+      livePoints.current = [];
+      const line = liveLineRef.current;
+      if (line) {
+        line.points([]);
+        line.visible(false);
+        line.getLayer()?.batchDraw();
+      }
     }
   };
 
@@ -419,10 +454,6 @@ export function CanvasArea() {
     setLoadErrors(errors);
     setLoadingFiles(false);
   }
-
-  const brushRadius = activeDoc
-    ? (cleanupSettings.brushSize * activeDoc.height * previewScale * viewport.scale) / 2
-    : 10;
 
   // Keyboard brush size [ ]
   useEffect(() => {
@@ -615,6 +646,19 @@ export function CanvasArea() {
               );
             })}
 
+            {/* Live stroke while drawing (updated imperatively) */}
+            <Line
+              ref={liveLineRef}
+              points={livePoints.current}
+              stroke={cleanupSettings.brushColor}
+              strokeWidth={activeDoc ? cleanupSettings.brushSize * activeDoc.height * previewScale : 10}
+              lineCap="round"
+              lineJoin="round"
+              tension={0.3}
+              listening={false}
+              visible={false}
+            />
+
             {/* Watermarks */}
             {layerVisibility.watermarks && activeDoc.watermarks.map(wm => (
               <WatermarkNode
@@ -652,15 +696,13 @@ export function CanvasArea() {
         </Stage>
       )}
 
-      {/* Brush cursor */}
-      {activeTool === 'brush' && brushPreview && (
+      {/* Brush cursor (positioned imperatively, no re-renders) */}
+      {activeTool === 'brush' && (
         <div
+          ref={cursorRef}
           style={{
             position: 'absolute',
-            left: brushPreview.x - brushPreview.r,
-            top: brushPreview.y - brushPreview.r,
-            width: brushPreview.r * 2,
-            height: brushPreview.r * 2,
+            display: 'none',
             borderRadius: '50%',
             border: '1px solid rgba(255,255,255,0.7)',
             pointerEvents: 'none',

@@ -138,40 +138,148 @@ export function floodFill(
   }
 }
 
-/** Simple inpaint: fill masked region with neighbouring average color */
+/**
+ * Diffusion inpaint: fills the masked region by propagating colors inward
+ * from the mask boundary (BFS waves), then smooths the fill with several
+ * relaxation passes, and finally composites with a feathered mask edge
+ * so there are no hard seams.
+ *
+ * Mask convention: black background, white strokes (checked via red channel).
+ */
 export function simpleInpaint(
   imageData: ImageData,
   maskData: ImageData,
   radius = 8
 ): ImageData {
-  const { data: img, width, height } = imageData;
+  const { width, height } = imageData;
+  const img = imageData.data;
   const mask = maskData.data;
-  const result = new Uint8ClampedArray(img);
+  const N = width * height;
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4;
-      if (mask[i] < 128) continue; // not masked (mask is black bg + white strokes, check red channel)
+  const r = new Float32Array(N);
+  const g = new Float32Array(N);
+  const b = new Float32Array(N);
+  const unknown = new Uint8Array(N); // 1 = masked (to be filled)
+  const filled = new Uint8Array(N);  // 1 = has a valid color
 
-      let rSum = 0, gSum = 0, bSum = 0, count = 0;
-      for (let dy = -radius; dy <= radius; dy++) {
-        for (let dx = -radius; dx <= radius; dx++) {
-          const nx = x + dx, ny = y + dy;
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          const ni = (ny * width + nx) * 4;
-          if (mask[ni] >= 128) continue; // skip other masked pixels
-          rSum += img[ni]; gSum += img[ni + 1]; bSum += img[ni + 2];
-          count++;
+  const maskedIdx: number[] = [];
+  for (let p = 0; p < N; p++) {
+    const i = p * 4;
+    r[p] = img[i]; g[p] = img[i + 1]; b[p] = img[i + 2];
+    if (mask[i] >= 128) {
+      unknown[p] = 1;
+      maskedIdx.push(p);
+    } else {
+      filled[p] = 1;
+    }
+  }
+  if (maskedIdx.length === 0) return new ImageData(new Uint8ClampedArray(img), width, height);
+
+  // --- 1. BFS wave fill: every masked pixel gets a color propagated from the boundary ---
+  const queued = new Uint8Array(N);
+  let frontier: number[] = [];
+  for (const p of maskedIdx) {
+    const x = p % width, y = (p / width) | 0;
+    if (
+      (x > 0 && filled[p - 1]) || (x < width - 1 && filled[p + 1]) ||
+      (y > 0 && filled[p - width]) || (y < height - 1 && filled[p + width])
+    ) {
+      frontier.push(p);
+      queued[p] = 1;
+    }
+  }
+
+  while (frontier.length > 0) {
+    // Fill the whole wave from already-filled neighbors (8-neighborhood)
+    for (const p of frontier) {
+      const x = p % width, y = (p / width) | 0;
+      let rs = 0, gs = 0, bs = 0, c = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          const np = ny * width + nx;
+          if (!filled[np]) continue;
+          rs += r[np]; gs += g[np]; bs += b[np]; c++;
         }
       }
-      if (count > 0) {
-        result[i] = Math.round(rSum / count);
-        result[i + 1] = Math.round(gSum / count);
-        result[i + 2] = Math.round(bSum / count);
-        result[i + 3] = 255;
+      if (c > 0) { r[p] = rs / c; g[p] = gs / c; b[p] = bs / c; }
+    }
+    for (const p of frontier) filled[p] = 1;
+
+    // Collect next wave
+    const next: number[] = [];
+    for (const p of frontier) {
+      const x = p % width, y = (p / width) | 0;
+      if (x > 0 && !filled[p - 1] && !queued[p - 1]) { next.push(p - 1); queued[p - 1] = 1; }
+      if (x < width - 1 && !filled[p + 1] && !queued[p + 1]) { next.push(p + 1); queued[p + 1] = 1; }
+      if (y > 0 && !filled[p - width] && !queued[p - width]) { next.push(p - width); queued[p - width] = 1; }
+      if (y < height - 1 && !filled[p + width] && !queued[p + width]) { next.push(p + width); queued[p + width] = 1; }
+    }
+    frontier = next;
+  }
+
+  // --- 2. Smoothing (relaxation) passes inside the mask only ---
+  const iterations = Math.max(6, Math.min(40, Math.round(radius * 1.5)));
+  for (let it = 0; it < iterations; it++) {
+    for (const p of maskedIdx) {
+      const x = p % width, y = (p / width) | 0;
+      let rs = r[p], gs = g[p], bs = b[p], c = 1;
+      if (x > 0) { rs += r[p - 1]; gs += g[p - 1]; bs += b[p - 1]; c++; }
+      if (x < width - 1) { rs += r[p + 1]; gs += g[p + 1]; bs += b[p + 1]; c++; }
+      if (y > 0) { rs += r[p - width]; gs += g[p - width]; bs += b[p - width]; c++; }
+      if (y < height - 1) { rs += r[p + width]; gs += g[p + width]; bs += b[p + width]; c++; }
+      r[p] = rs / c; g[p] = gs / c; b[p] = bs / c;
+    }
+  }
+
+  // --- 3. Feathered composite: soft weight near the mask boundary, no hard seams ---
+  const weight = new Float32Array(N);
+  for (const p of maskedIdx) weight[p] = 1;
+  // Two small box-blur passes on the weight map (separable, radius 2)
+  const fr = 2;
+  const tmp = new Float32Array(N);
+  for (let pass = 0; pass < 2; pass++) {
+    // horizontal
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        let s = 0, c = 0;
+        for (let dx = -fr; dx <= fr; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          s += weight[row + nx]; c++;
+        }
+        tmp[row + x] = s / c;
+      }
+    }
+    // vertical
+    for (let x = 0; x < width; x++) {
+      for (let y = 0; y < height; y++) {
+        let s = 0, c = 0;
+        for (let dy = -fr; dy <= fr; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= height) continue;
+          s += tmp[ny * width + x]; c++;
+        }
+        weight[y * width + x] = s / c;
       }
     }
   }
 
-  return new ImageData(result, width, height);
+  const out = new Uint8ClampedArray(img);
+  for (let p = 0; p < N; p++) {
+    const w = weight[p];
+    if (w <= 0.001) continue;
+    const i = p * 4;
+    out[i] = Math.round(img[i] * (1 - w) + r[p] * w);
+    out[i + 1] = Math.round(img[i + 1] * (1 - w) + g[p] * w);
+    out[i + 2] = Math.round(img[i + 2] * (1 - w) + b[p] * w);
+    out[i + 3] = 255;
+  }
+
+  return new ImageData(out, width, height);
 }

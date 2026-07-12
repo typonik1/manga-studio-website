@@ -11,9 +11,9 @@ export function RightPanel() {
 
   return (
     <aside
+      className="editor-sidebar-right"
+      aria-label="Страницы и слои"
       style={{
-        width: 220,
-        minWidth: 220,
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--bg-panel)',
@@ -23,26 +23,10 @@ export function RightPanel() {
       }}
     >
       {/* Tab bar */}
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border-default)' }}>
+      <div role="tablist" aria-label="Правая панель" style={{ display: 'flex', gap: 4, padding: 6, borderBottom: '1px solid var(--border-default)' }}>
         {(['gallery', 'layers'] as const).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              flex: 1,
-              padding: '8px 4px',
-              fontSize: 12,
-              fontWeight: tab === t ? 600 : 400,
-              color: tab === t ? 'var(--accent)' : 'var(--text-secondary)',
-              background: 'transparent',
-              border: 'none',
-              borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-              cursor: 'pointer',
-              transition: 'color 0.12s',
-              marginBottom: -1,
-            }}
-          >
-            {t === 'gallery' ? 'Галерея' : 'Слои'}
+          <button key={t} role="tab" className="ui-tab" aria-selected={tab === t} onClick={() => setTab(t)} style={{ flex: 1 }}>
+            {t === 'gallery' ? 'Страницы' : 'Слои'}
           </button>
         ))}
       </div>
@@ -59,18 +43,15 @@ function GalleryPanel() {
 
   if (documents.length === 0) {
     return (
-      <div style={{
-        flex: 1, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', gap: 8,
-        padding: 16, textAlign: 'center',
-      }}>
-        <svg width="32" height="32" viewBox="0 0 32 32" fill="none" opacity="0.3">
+      <div className="editor-empty" style={{ flex: 1 }}>
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none" opacity="0.45" aria-hidden="true">
           <rect x="4" y="4" width="10" height="12" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
           <rect x="18" y="4" width="10" height="8" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
           <rect x="18" y="16" width="10" height="12" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
           <rect x="4" y="20" width="10" height="8" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
         </svg>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Нет изображений</span>
+        <strong>Страниц пока нет</strong>
+        <span style={{ fontSize: 11, lineHeight: 1.5 }}>Загруженные изображения появятся здесь для быстрого переключения.</span>
       </div>
     );
   }

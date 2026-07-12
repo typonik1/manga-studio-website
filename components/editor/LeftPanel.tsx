@@ -46,13 +46,14 @@ const TOOLS: { key: ActiveTool; label: string; hotkey: string; icon: React.React
 ];
 
 export function LeftPanel() {
-  const { leftTab, setLeftTab, activeTool, setActiveTool } = useStore();
+  const { leftTab, setLeftTab, activeTool, setActiveTool, documents } = useStore();
+  const hasDocuments = documents.length > 0;
 
   return (
     <aside
+      className="editor-sidebar"
+      aria-label="Инструменты редактора"
       style={{
-        width: 240,
-        minWidth: 240,
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--bg-panel)',
@@ -74,33 +75,11 @@ export function LeftPanel() {
         {TOOLS.map(t => (
           <button
             key={t.key}
+            className="ui-icon-button"
             title={`${t.label} (${t.hotkey})`}
+            aria-label={`${t.label}, клавиша ${t.hotkey}`}
+            aria-pressed={activeTool === t.key}
             onClick={() => setActiveTool(t.key)}
-            style={{
-              width: 30,
-              height: 30,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 6,
-              border: 'none',
-              cursor: 'pointer',
-              background: activeTool === t.key ? 'var(--accent-dim)' : 'transparent',
-              color: activeTool === t.key ? 'var(--accent)' : 'var(--text-secondary)',
-              transition: 'background 0.12s, color 0.12s',
-            }}
-            onMouseEnter={e => {
-              if (activeTool !== t.key) {
-                e.currentTarget.style.background = 'var(--bg-hover)';
-                e.currentTarget.style.color = 'var(--text-primary)';
-              }
-            }}
-            onMouseLeave={e => {
-              if (activeTool !== t.key) {
-                e.currentTarget.style.background = 'transparent';
-                e.currentTarget.style.color = 'var(--text-secondary)';
-              }
-            }}
           >
             {t.icon}
           </button>
@@ -110,30 +89,16 @@ export function LeftPanel() {
       </div>
 
       {/* Tab bar */}
-      <div
-        style={{
-          display: 'flex',
-          borderBottom: '1px solid var(--border-default)',
-        }}
-      >
+      <div role="tablist" aria-label="Панели редактирования" style={{ display: 'flex', gap: 2, padding: 6, overflowX: 'auto', borderBottom: '1px solid var(--border-default)' }}>
         {TABS.map(tab => (
           <button
             key={tab.key}
+            role="tab"
+            className="ui-tab"
+            aria-selected={leftTab === tab.key}
+            aria-controls={`panel-${tab.key}`}
             onClick={() => setLeftTab(tab.key)}
             title={`${tab.label} (${tab.hotkey})`}
-            style={{
-              flex: 1,
-              padding: '8px 2px',
-              fontSize: 11,
-              fontWeight: leftTab === tab.key ? 600 : 400,
-              color: leftTab === tab.key ? 'var(--accent)' : 'var(--text-secondary)',
-              background: 'transparent',
-              border: 'none',
-              borderBottom: leftTab === tab.key ? '2px solid var(--accent)' : '2px solid transparent',
-              cursor: 'pointer',
-              transition: 'color 0.12s',
-              marginBottom: -1,
-            }}
           >
             {tab.label}
           </button>
@@ -141,12 +106,24 @@ export function LeftPanel() {
       </div>
 
       {/* Panel content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 10px' }}>
-        {leftTab === 'watermark' && <WatermarkPanel />}
-        {leftTab === 'cleanup' && <CleanupPanel />}
-        {leftTab === 'text' && <TextPanel />}
-        {leftTab === 'insert' && <InsertPanel />}
-        {leftTab === 'transform' && <TransformPanel />}
+      <div id={`panel-${leftTab}`} role="tabpanel" className="editor-scroll" style={{ flex: 1, overflowY: 'auto', padding: '14px 12px' }}>
+        {!hasDocuments ? (
+          <div className="editor-empty">
+            <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><rect x="5" y="7" width="26" height="22" rx="4" stroke="currentColor" strokeWidth="1.5"/><path d="M10 23l5-5 4 4 3-3 5 5M23 13h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <strong>Начните с изображения</strong>
+            <span style={{ fontSize: 11, lineHeight: 1.5 }}>Перетащите файл на холст или выберите его с компьютера. PNG, JPG и WebP.</span>
+            <button className="ui-button ui-button-primary" onClick={() => (document.querySelector('input[type="file"]') as HTMLInputElement | null)?.click()}>Выбрать изображение</button>
+            <span style={{ fontSize: 10 }}>Файлы обрабатываются только в браузере</span>
+          </div>
+        ) : (
+          <>
+            {leftTab === 'watermark' && <WatermarkPanel />}
+            {leftTab === 'cleanup' && <CleanupPanel />}
+            {leftTab === 'text' && <TextPanel />}
+            {leftTab === 'insert' && <InsertPanel />}
+            {leftTab === 'transform' && <TransformPanel />}
+          </>
+        )}
       </div>
     </aside>
   );

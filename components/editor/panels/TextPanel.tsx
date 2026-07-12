@@ -21,6 +21,8 @@ export function TextPanel() {
   const [langFrom, setLangFrom] = useState<TranslateLang>('en');
   const [langTo, setLangTo] = useState<TranslateLang>('ru');
   const [pageStatus, setPageStatus] = useState<string | null>(null);
+  const [pageProgress, setPageProgress] = useState(0);
+  const [translatedBlocks, setTranslatedBlocks] = useState<number | null>(null);
   const [isPageTranslating, setIsPageTranslating] = useState(false);
 
   const hasDoc = activeDocIndex >= 0;
@@ -102,17 +104,22 @@ export function TextPanel() {
   async function handlePageTranslate() {
     if (!activeDoc || isPageTranslating) return;
     setIsPageTranslating(true);
-    setPageStatus('Загружаем распознавание…');
+    setTranslatedBlocks(null);
+    setPageProgress(8);
+    setPageStatus('Подготавливаем изображение…');
     try {
       const { recognizeParagraphs } = await import('@/utils/ocr');
       const src = activeDoc.cleanup.committed ?? activeDoc.originalSrc;
 
       const paragraphs = await recognizeParagraphs(src, langFrom, pct => {
-        setPageStatus(`Распознаём текст… ${pct}%`);
+        setPageProgress(12 + Math.round(pct * 0.48));
+        setPageStatus(`Распознаём текст · ${pct}%`);
       });
 
       if (paragraphs.length === 0) {
-        setPageStatus('Текст на картинке не найден');
+        setPageProgress(0);
+        setTranslatedBlocks(0);
+        setPageStatus('Текст не найден. Проверьте исходный язык или попробуйте более чёткое изображение.');
         return;
       }
 
@@ -121,7 +128,8 @@ export function TextPanel() {
 
       for (let i = 0; i < paragraphs.length; i++) {
         const p = paragraphs[i];
-        setPageStatus(`Переводим блок ${i + 1} из ${paragraphs.length}…`);
+        setPageProgress(60 + Math.round(((i + 1) / paragraphs.length) * 35));
+        setPageStatus(`Переводим и размещаем · ${i + 1}/${paragraphs.length}`);
 
         let translated: string;
         try {
@@ -179,10 +187,13 @@ export function TextPanel() {
         });
       }
 
-      setPageStatus(`Готово: переведено блоков — ${paragraphs.length}`);
-    } catch (err) {
-      console.log('[v0] Page translate error:', err);
-      setPageStatus('Ошибка распознавания. Попробуйте ещё раз.');
+      setPageProgress(100);
+      setTranslatedBlocks(paragraphs.length);
+      setPageStatus(`Готово · переведено блоков: ${paragraphs.length}`);
+    } catch {
+      setPageProgress(0);
+      setTranslatedBlocks(null);
+      setPageStatus('Не удалось обработать страницу. Проверьте соединение и повторите попытку.');
     } finally {
       setIsPageTranslating(false);
     }
@@ -216,9 +227,15 @@ export function TextPanel() {
       <div className="section-label">Текст</div>
 
       {/* Page auto-translate (OCR + translate + overlay) */}
-      <PanelSection title="Автоперевод страницы">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+      <div className="editor-card editor-card-accent" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Автоперевод страницы</div>
+          <div style={{ marginTop: 3, fontSize: 10, lineHeight: 1.5, color: 'var(--text-secondary)' }}>Распознает реплики, скроет оригинал и добавит редактируемый перевод.</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <label className="sr-only" htmlFor="translate-from">Исходный язык</label>
           <select
+            id="translate-from"
             value={langFrom}
             onChange={e => setLangFrom(e.target.value as TranslateLang)}
             style={{ flex: 1, fontSize: 11 }}
@@ -230,7 +247,9 @@ export function TextPanel() {
             <option value="zh">ZH</option>
           </select>
           <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>→</span>
+          <label className="sr-only" htmlFor="translate-to">Язык перевода</label>
           <select
+            id="translate-to"
             value={langTo}
             onChange={e => setLangTo(e.target.value as TranslateLang)}
             style={{ flex: 1, fontSize: 11 }}
@@ -242,28 +261,17 @@ export function TextPanel() {
             <option value="zh">ZH</option>
           </select>
         </div>
-        <button
-          onClick={handlePageTranslate}
-          disabled={!hasDoc || isPageTranslating}
-          style={{
-            width: '100%', padding: '7px 8px', fontSize: 12,
-            borderRadius: 6, border: 'none', fontWeight: 600,
-            background: hasDoc && !isPageTranslating ? 'var(--accent)' : 'var(--bg-active)',
-            color: hasDoc && !isPageTranslating ? '#fff' : 'var(--text-muted)',
-            cursor: hasDoc && !isPageTranslating ? 'pointer' : 'not-allowed',
-          }}
-        >
-          {isPageTranslating ? 'Обрабатываем…' : 'Распознать и перевести'}
+        <button className="ui-button ui-button-primary" onClick={handlePageTranslate} disabled={!hasDoc || isPageTranslating} style={{ width: '100%' }}>
+          {isPageTranslating ? 'Обрабатываем страницу…' : translatedBlocks !== null ? 'Повторить автоперевод' : 'Распознать и перевести'}
         </button>
+        {isPageTranslating && <div className="editor-progress" role="progressbar" aria-label="Прогресс автоперевода" aria-valuenow={pageProgress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${pageProgress}%` }} /></div>}
         {pageStatus && (
-          <div style={{ marginTop: 4, fontSize: 11, color: isPageTranslating ? 'var(--text-muted)' : 'var(--accent)' }}>
-            {pageStatus}
+          <div className="editor-status" role={isPageTranslating ? 'status' : translatedBlocks === null ? 'alert' : 'status'} data-tone={translatedBlocks && translatedBlocks > 0 ? 'success' : undefined}>
+            <span aria-hidden="true">{translatedBlocks && translatedBlocks > 0 ? '✓' : isPageTranslating ? '○' : 'i'}</span>
+            <span>{pageStatus}</span>
           </div>
         )}
-        <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-          Найдёт текст на картинке, закрасит его и поставит перевод сверху. Каждый блок можно двигать и редактировать.
-        </div>
-      </PanelSection>
+      </div>
 
       <div className="divider" />
 

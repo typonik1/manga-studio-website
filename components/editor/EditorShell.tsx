@@ -102,7 +102,7 @@ export function EditorShell() {
       {/* Top bar */}
       <TopBar />
       {/* Main area */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div className="editor-main">
         <LeftPanel />
         <CanvasArea />
         <RightPanel />
@@ -113,67 +113,42 @@ export function EditorShell() {
 }
 
 function TopBar() {
-  const { documents, setShowExportModal } = useStore();
-  const hasDocuments = documents.length > 0;
+  const { documents, activeDocIndex, setShowExportModal, undo, redo } = useStore();
+  const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 
   return (
-    <header
-      style={{
-        height: 44,
-        background: 'var(--bg-panel)',
-        borderBottom: '1px solid var(--border-default)',
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 16px',
-        gap: 12,
-        flexShrink: 0,
-        zIndex: 50,
-      }}
-    >
-      {/* Logo */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-          <rect width="22" height="22" rx="5" fill="var(--accent)" opacity="0.18" />
+    <header style={{ height: 52, background: 'var(--bg-panel)', borderBottom: '1px solid var(--border-default)', display: 'flex', alignItems: 'center', padding: '0 12px', gap: 10, flexShrink: 0, zIndex: 50 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 190 }}>
+        <svg width="24" height="24" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+          <rect width="22" height="22" rx="5" fill="var(--accent-dim)" />
           <rect x="3" y="3" width="7" height="10" rx="1.5" fill="var(--accent)" />
           <rect x="12" y="3" width="7" height="6" rx="1.5" fill="var(--accent)" opacity="0.7" />
           <rect x="12" y="11" width="7" height="8" rx="1.5" fill="var(--accent)" opacity="0.5" />
           <rect x="3" y="15" width="7" height="4" rx="1.5" fill="var(--accent)" opacity="0.5" />
         </svg>
-        <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)', letterSpacing: '0.01em' }}>
-          Манга-студия
-        </span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-primary)' }}>Манга-студия</div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>
+            {activeDoc ? `${activeDoc.name} · ${activeDocIndex + 1}/${documents.length}` : 'Новый проект'}
+          </div>
+        </div>
       </div>
 
+      <div style={{ display: 'flex', gap: 4, paddingLeft: 8, borderLeft: '1px solid var(--border-subtle)' }}>
+        <button className="ui-icon-button" onClick={undo} disabled={!activeDoc} aria-label="Отменить действие" title="Отменить (Ctrl+Z)">↶</button>
+        <button className="ui-icon-button" onClick={redo} disabled={!activeDoc} aria-label="Повторить действие" title="Повторить (Ctrl+Shift+Z)">↷</button>
+      </div>
+
+      {activeDoc?.hasChanges && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}><span style={{ color: 'var(--accent)' }}>●</span> Есть изменения</span>}
       <div style={{ flex: 1 }} />
-
-      {/* Privacy note */}
-      <span style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-          <path d="M6 1L2 3v3c0 2.21 1.79 4 4 4s4-1.79 4-4V3L6 1z" fill="currentColor" opacity="0.6" />
-        </svg>
-        Фото не загружаются на сервер
+      <span className="topbar-privacy" style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
+        <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1L2 3v3c0 2.21 1.79 4 4 4s4-1.79 4-4V3L6 1z" fill="currentColor" opacity="0.7" /></svg>
+        Обработка локально
       </span>
-
-      {hasDocuments && (
-        <button
-          onClick={() => setShowExportModal(true)}
-          style={{
-            background: 'var(--accent)',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 6,
-            padding: '5px 14px',
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: 'pointer',
-            transition: 'background 0.15s',
-          }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'var(--accent-hover)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'var(--accent)')}
-        >
-          Экспорт
-        </button>
-      )}
+      <button className="ui-button ui-button-primary" onClick={() => setShowExportModal(true)} disabled={!activeDoc} aria-label="Открыть экспорт">
+        Экспортировать
+        <span aria-hidden="true">→</span>
+      </button>
     </header>
   );
 }

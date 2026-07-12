@@ -4,6 +4,7 @@ import { useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useStore } from '@/store/useStore';
 import { LeftPanel } from './LeftPanel';
+import { ToolRail } from './ToolRail';
 import { RightPanel } from './RightPanel';
 import { ExportModal } from './ExportModal';
 
@@ -67,11 +68,15 @@ export function EditorShell() {
     if ((e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && e.shiftKey) || (e.code === 'KeyY' && (e.ctrlKey || e.metaKey))) {
       e.preventDefault(); redo(); return;
     }
-    if (e.key === 'v' || e.key === 'м') { setActiveTool('select'); return; }
-    if (e.key === 'b' || e.key === 'и') { setActiveTool('brush'); return; }
-    if (e.key === ' ') { e.preventDefault(); setActiveTool('pan'); return; }
-    if (e.key === 't' || e.key === 'е') { setLeftTab('text'); return; }
-    if (e.key === 'w' || e.key === 'ц') { setLeftTab('watermark'); return; }
+    if (e.code === 'KeyV') { setActiveTool('select'); return; }
+    if (e.code === 'KeyH') { setActiveTool('pan'); return; }
+    if (e.code === 'KeyB') { setActiveTool('brush'); setLeftTab('cleanup'); return; }
+    if (e.code === 'KeyE') { setActiveTool('eraser'); setLeftTab('cleanup'); return; }
+    if (e.code === 'KeyL') { setActiveTool('lasso'); setLeftTab('cleanup'); return; }
+    if (e.code === 'Space') { e.preventDefault(); setActiveTool('pan'); return; }
+    if (e.code === 'KeyT') { setActiveTool('text'); setLeftTab('text'); return; }
+    if (e.code === 'KeyW') { setActiveTool('watermark'); setLeftTab('watermark'); return; }
+    if (e.code === 'KeyM') { setActiveTool('wand'); setLeftTab('cleanup'); return; }
     if (e.key === '1') { setLeftTab('watermark'); return; }
     if (e.key === '2') { setLeftTab('cleanup'); return; }
     if (e.key === '3') { setLeftTab('text'); return; }
@@ -104,6 +109,7 @@ export function EditorShell() {
       {/* Main area */}
       <div className="editor-main">
         <LeftPanel />
+        <ToolRail />
         <CanvasArea />
         <RightPanel />
       </div>
@@ -135,8 +141,8 @@ function TopBar() {
       </div>
 
       <div style={{ display: 'flex', gap: 4, paddingLeft: 8, borderLeft: '1px solid var(--border-subtle)' }}>
-        <button className="ui-icon-button" onClick={undo} disabled={!activeDoc} aria-label="Отменить действие" title="Отменить (Ctrl+Z)">↶</button>
-        <button className="ui-icon-button" onClick={redo} disabled={!activeDoc} aria-label="Повторить действие" title="Повторить (Ctrl+Shift+Z)">↷</button>
+        <button className="ui-icon-button" onClick={undo} disabled={!activeDoc?.past.length} aria-label="Отменить действие" title="Отменить (Ctrl+Z)">↶</button>
+        <button className="ui-icon-button" onClick={redo} disabled={!activeDoc?.future.length} aria-label="Повторить действие" title="Повторить (Ctrl+Shift+Z)">↷</button>
       </div>
 
       {activeDoc?.hasChanges && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}><span style={{ color: 'var(--accent)' }}>●</span> Есть изменения</span>}

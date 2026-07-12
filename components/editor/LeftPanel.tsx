@@ -1,7 +1,7 @@
 'use client';
 
 import { useStore } from '@/store/useStore';
-import type { LeftTab, ActiveTool } from '@/types';
+import type { LeftTab } from '@/types';
 import { WatermarkPanel } from './panels/WatermarkPanel';
 import { CleanupPanel } from './panels/CleanupPanel';
 import { TextPanel } from './panels/TextPanel';
@@ -16,37 +16,8 @@ const TABS: { key: LeftTab; label: string; hotkey: string }[] = [
   { key: 'transform', label: 'Размер', hotkey: '5' },
 ];
 
-const TOOLS: { key: ActiveTool; label: string; hotkey: string; icon: React.ReactNode }[] = [
-  {
-    key: 'select', hotkey: 'V', label: 'Выделение',
-    icon: (
-      <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-        <path d="M3 2L3 11L5.5 8.5L7 12L8.5 11.5L7 7.5H10L3 2Z" fill="currentColor" />
-      </svg>
-    ),
-  },
-  {
-    key: 'brush', hotkey: 'B', label: 'Кисть',
-    icon: (
-      <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-        <path d="M2 13c1-1 3-3 5-5l2-5 3 3-5 2c-2 2-4 4-5 5z" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinejoin="round" />
-        <circle cx="9.5" cy="5.5" r="1" fill="currentColor" />
-      </svg>
-    ),
-  },
-  {
-    key: 'pan', hotkey: 'Space', label: 'Панорама',
-    icon: (
-      <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-        <path d="M7.5 2v2M7.5 11v2M2 7.5h2M11 7.5h2M4.22 4.22l1.41 1.41M9.37 9.37l1.41 1.41M4.22 10.78l1.41-1.41M9.37 5.63l1.41-1.41" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <circle cx="7.5" cy="7.5" r="2.5" stroke="currentColor" strokeWidth="1.3" fill="none" />
-      </svg>
-    ),
-  },
-];
-
 export function LeftPanel() {
-  const { leftTab, setLeftTab, activeTool, setActiveTool, documents } = useStore();
+  const { leftTab, setLeftTab, documents } = useStore();
   const hasDocuments = documents.length > 0;
 
   return (
@@ -62,32 +33,6 @@ export function LeftPanel() {
         flexShrink: 0,
       }}
     >
-      {/* Tool strip */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 2,
-          padding: '6px 8px',
-          borderBottom: '1px solid var(--border-subtle)',
-        }}
-      >
-        {TOOLS.map(t => (
-          <button
-            key={t.key}
-            className="ui-icon-button"
-            title={`${t.label} (${t.hotkey})`}
-            aria-label={`${t.label}, клавиша ${t.hotkey}`}
-            aria-pressed={activeTool === t.key}
-            onClick={() => setActiveTool(t.key)}
-          >
-            {t.icon}
-          </button>
-        ))}
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{activeTool === 'brush' ? '[  ]' : ''}</span>
-      </div>
-
       {/* Tab bar */}
       <div role="tablist" aria-label="Панели редактирования" style={{ display: 'flex', gap: 2, padding: 6, overflowX: 'auto', borderBottom: '1px solid var(--border-default)' }}>
         {TABS.map(tab => (

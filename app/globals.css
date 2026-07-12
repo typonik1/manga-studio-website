@@ -218,5 +218,64 @@
 .divider {
   height: 1px;
   background: var(--border-subtle);
-  margin: 8px 0;
+  margin: 12px 0;
+}
+
+/* Editor interaction system */
+.editor-main { display: flex; flex: 1; min-width: 0; overflow: hidden; }
+.editor-sidebar { width: clamp(232px, 18vw, 276px); min-width: 232px; }
+.editor-sidebar-right { width: clamp(208px, 16vw, 248px); min-width: 208px; }
+.editor-scroll { scrollbar-gutter: stable; }
+
+.ui-button,
+.ui-icon-button,
+.ui-tab {
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.ui-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; font-size: 12px; font-weight: 650; }
+.ui-button:hover:not(:disabled), .ui-icon-button:hover:not(:disabled), .ui-tab:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.ui-button:focus-visible, .ui-icon-button:focus-visible, .ui-tab:focus-visible,
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ui-button:disabled, .ui-icon-button:disabled, .ui-tab:disabled { opacity: .42; cursor: not-allowed; }
+.ui-button-primary { color: var(--primary-foreground); background: var(--accent); border-color: var(--accent); }
+.ui-button-primary:hover:not(:disabled) { color: var(--primary-foreground); background: var(--accent-hover); border-color: var(--accent-hover); }
+.ui-button-secondary { background: var(--bg-panel-raised); border-color: var(--border-default); }
+.ui-icon-button { width: 36px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.ui-icon-button[aria-pressed="true"], .ui-tab[aria-selected="true"] { background: var(--accent-dim); color: var(--accent); border-color: rgba(94,159,232,.32); }
+.ui-tab { padding: 0 10px; white-space: nowrap; font-size: 11px; font-weight: 600; }
+
+.editor-card { padding: 12px; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-panel-raised); }
+.editor-card-accent { border-color: rgba(94,159,232,.32); background: rgba(94,159,232,.08); }
+.editor-status { display: flex; gap: 9px; align-items: flex-start; padding: 10px; border-radius: 8px; background: var(--bg-panel-raised); color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.editor-status[data-tone="success"] { color: var(--success); }
+.editor-status[data-tone="danger"] { color: var(--danger); }
+.editor-progress { height: 5px; overflow: hidden; border-radius: 999px; background: var(--bg-active); }
+.editor-progress > span { display: block; height: 100%; background: var(--accent); transition: width 180ms ease; }
+.editor-kbd { padding: 2px 5px; border: 1px solid var(--border-default); border-bottom-color: rgba(255,255,255,.25); border-radius: 4px; background: var(--bg-panel-raised); color: var(--text-muted); font-size: 10px; font-family: var(--font-mono); }
+.editor-empty { display: flex; min-height: 180px; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; text-align: center; color: var(--text-muted); }
+.editor-empty strong { color: var(--text-primary); font-size: 13px; }
+
+select, input[type="text"], input[type="number"], textarea { min-height: 36px; }
+.section-label { color: var(--text-secondary); }
+
+@media (max-width: 1250px) {
+  .editor-sidebar { width: 232px; min-width: 232px; }
+  .editor-sidebar-right { width: 208px; min-width: 208px; }
+  .topbar-privacy { display: none !important; }
+  .editor-sidebar .ui-tab { flex: 1; min-width: 0; padding-inline: 2px; font-size: 9px; }
+  .editor-sidebar-right .ui-tab { padding-inline: 7px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }

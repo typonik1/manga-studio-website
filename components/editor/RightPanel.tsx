@@ -146,15 +146,16 @@ function GalleryPanel() {
 }
 
 function LayersPanel() {
-  const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, deleteWatermark, deleteText } = useStore();
-  const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
+const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, deleteWatermark, deleteText, deleteShape } = useStore();
+const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 
-  const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
-    { key: 'base', label: 'Оригинал', icon: '□' },
-    { key: 'cleanup', label: 'Очистка', icon: '✦' },
-    { key: 'watermarks', label: 'Вотерки', icon: 'W' },
-    { key: 'texts', label: 'Тексты', icon: 'T' },
-  ];
+const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
+{ key: 'base', label: 'Оригинал', icon: '□' },
+{ key: 'cleanup', label: 'Очистка', icon: '✦' },
+{ key: 'watermarks', label: 'Вотерки', icon: 'W' },
+{ key: 'texts', label: 'Тексты', icon: 'T' },
+{ key: 'shapes', label: 'Фигуры', icon: 'S' },
+];
 
   if (!activeDoc) {
     return (
@@ -206,7 +207,7 @@ function LayersPanel() {
       ))}
 
       {/* Objects */}
-      {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0) && (
+      {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0 || (activeDoc.shapes ?? []).length > 0) && (
         <>
           <div className="section-label" style={{ padding: '12px 2px 6px' }}>Объекты</div>
 
@@ -232,6 +233,23 @@ function LayersPanel() {
               visible={txt.visible}
               onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
               onDelete={() => deleteText(txt.id)}
+            />
+          ))}
+
+          {(activeDoc.shapes ?? []).map(shape => (
+            <ObjectRow
+              key={shape.id}
+              label={
+                shape.kind === 'rect' ? 'Прямоугольник' :
+                shape.kind === 'ellipse' ? 'Эллипс' :
+                shape.kind === 'line' ? 'Линия' :
+                shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
+              }
+              prefix="S"
+              isSelected={selectedObject?.id === shape.id}
+              visible={shape.visible}
+              onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+              onDelete={() => deleteShape(shape.id)}
             />
           ))}
         </>

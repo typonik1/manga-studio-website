@@ -927,6 +927,31 @@ export function CanvasArea() {
                 }}
               />
             ))}
+
+            {/* Shapes */}
+            {layerVisibility.shapes && (activeDoc.shapes ?? []).map(shape => (
+              <ShapeNode
+                key={shape.id}
+                shape={shape}
+                docWidth={activeDoc.width}
+                docHeight={activeDoc.height}
+                previewScale={previewScale}
+                isSelected={selectedObject?.id === shape.id}
+                onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+                onChange={updates => updateShape(shape.id, updates)}
+                onBeforeChange={pushHistory}
+              />
+            ))}
+
+            {/* Crop overlay */}
+            {activeTool === 'crop' && cropRect && (
+              <CropOverlay
+                cropRect={cropRect}
+                imgW={imgW}
+                imgH={imgH}
+                onChange={setCropRect}
+              />
+            )}
           </Layer>
         </Stage>
       )}

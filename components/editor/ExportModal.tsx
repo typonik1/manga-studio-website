@@ -5,6 +5,8 @@ import { useStore } from '@/store/useStore';
 import type { ImageDocument } from '@/types';
 
 async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
+  // Make sure web fonts are loaded before drawing text to canvas
+  try { await document.fonts.ready; } catch { /* ignore */ }
   const canvas = document.createElement('canvas');
   canvas.width = doc.width;
   canvas.height = doc.height;
@@ -114,6 +116,68 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
         ctx.strokeText(lines[li], 0, lineY);
       }
       ctx.fillText(lines[li], 0, lineY);
+    }
+    ctx.restore();
+  }
+
+  // Shapes
+  for (const shape of doc.shapes ?? []) {
+    if (!shape.visible) continue;
+    ctx.save();
+    ctx.globalAlpha = shape.opacity;
+    const cx = shape.x * doc.width;
+    const cy = shape.y * doc.height;
+    const w = shape.width * doc.width;
+    const h = shape.height * doc.height;
+    ctx.translate(cx, cy);
+    ctx.rotate((shape.rotation * Math.PI) / 180);
+    ctx.scale(shape.scaleX, shape.scaleY);
+    ctx.lineWidth = shape.strokeWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (shape.kind === 'rect') {
+      ctx.beginPath();
+      const r = Math.min(shape.cornerRadius, w / 2, h / 2);
+      ctx.roundRect(-w / 2, -h / 2, w, h, r);
+      if (shape.fill) { ctx.fillStyle = shape.fill; ctx.fill(); }
+      if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.stroke(); }
+    } else if (shape.kind === 'ellipse') {
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
+      if (shape.fill) { ctx.fillStyle = shape.fill; ctx.fill(); }
+      if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.stroke(); }
+    } else if (shape.kind === 'line' || shape.kind === 'arrow') {
+      ctx.beginPath();
+      ctx.moveTo(-w / 2, 0);
+      ctx.lineTo(w / 2, 0);
+      ctx.strokeStyle = shape.stroke || '#000';
+      ctx.stroke();
+      if (shape.kind === 'arrow') {
+        const head = Math.max(8, shape.strokeWidth * 3);
+        ctx.beginPath();
+        ctx.moveTo(w / 2, 0);
+        ctx.lineTo(w / 2 - head, -head / 2);
+        ctx.lineTo(w / 2 - head, head / 2);
+        ctx.closePath();
+        ctx.fillStyle = shape.stroke || '#000';
+        ctx.fill();
+      }
+    } else if (shape.kind === 'star') {
+      const outer = Math.min(w, h) / 2;
+      const inner = outer / 2;
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const r = i % 2 === 0 ? outer : inner;
+        const a = (Math.PI / 5) * i - Math.PI / 2;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      if (shape.fill) { ctx.fillStyle = shape.fill; ctx.fill(); }
+      if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.stroke(); }
     }
     ctx.restore();
   }

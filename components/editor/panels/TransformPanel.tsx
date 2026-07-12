@@ -144,7 +144,11 @@ export function TransformPanel() {
               cursor: 'pointer', flexShrink: 0,
             }}
           >
-            {lockAspect ? '🔗' : '⛓'}
+            {lockAspect ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M5 8h6M6.5 5H5a3 3 0 000 6h1.5M9.5 5H11a3 3 0 010 6H9.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M6.5 5H5a3 3 0 000 6h1.5M9.5 5H11a3 3 0 010 6H9.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+            )}
           </button>
           <div style={{ flex: 1 }}>
             <PanelLabel>Высота</PanelLabel>

@@ -222,7 +222,9 @@
 }
 
 /* Editor interaction system */
-.editor-main { display: flex; flex: 1; min-width: 0; overflow: hidden; }
+.editor-main { position: relative; isolation: isolate; display: flex; flex: 1; min-width: 0; overflow: hidden; }
+.editor-main > * { min-width: 0; }
+.editor-sidebar, .editor-sidebar-right, .tool-rail { position: relative; z-index: 2; }
 .editor-sidebar { width: clamp(232px, 18vw, 276px); min-width: 232px; }
 .editor-sidebar-right { width: clamp(208px, 16vw, 248px); min-width: 208px; }
 .editor-scroll { scrollbar-gutter: stable; }

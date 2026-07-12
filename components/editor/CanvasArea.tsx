@@ -8,6 +8,7 @@ import { uid } from '@/utils/imageUtils';
 import type { StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
 import { DropZone } from './DropZone';
 import { ToolOptionsBar } from './ToolOptionsBar';
+import { screenToImage } from '@/utils/coordinates';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
 
 const MAX_PREVIEW_SIDE = 1800;
@@ -578,14 +579,13 @@ export function CanvasArea() {
       if (!stage) return;
       const pos = stage.getPointerPosition();
       if (!pos) return;
-      // convert to image coords normalized
-      const imgX = (pos.x - viewport.x) / viewport.scale;
-      const imgY = (pos.y - viewport.y) / viewport.scale;
-      const nx = imgX / imgW;
-      const ny = imgY / imgH;
+      const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (!imagePoint?.inside) return;
+      const imgX = imagePoint.x * imgW;
+      const imgY = imagePoint.y * imgH;
       isPainting.current = true;
       strokeId.current = uid();
-      currentStroke.current = [nx, ny];
+      currentStroke.current = [imagePoint.x, imagePoint.y];
       // Start the live preview line
       livePoints.current = [imgX, imgY];
       const line = liveLineRef.current;
@@ -613,8 +613,13 @@ export function CanvasArea() {
     }
 
     if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && pos) {
-      const imgX = (pos.x - viewport.x) / viewport.scale;
-      const imgY = (pos.y - viewport.y) / viewport.scale;
+      const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      const imgX = (imagePoint?.x ?? 0) * imgW;
+      const imgY = (imagePoint?.y ?? 0) * imgH;
+      if (!imagePoint?.inside) {
+        if (cursorRef.current) cursorRef.current.style.display = 'none';
+        return;
+      }
 
       // Update the cursor circle directly via DOM (no React re-render)
       const cursor = cursorRef.current;
@@ -628,9 +633,7 @@ export function CanvasArea() {
       }
 
       if (isPainting.current) {
-        const nx = imgX / imgW;
-        const ny = imgY / imgH;
-        currentStroke.current.push(nx, ny);
+        currentStroke.current.push(imagePoint.x, imagePoint.y);
         // Update the live line imperatively for instant feedback
         livePoints.current.push(imgX, imgY);
         const line = liveLineRef.current;
@@ -726,7 +729,10 @@ export function CanvasArea() {
         flex: 1,
         position: 'relative',
         overflow: 'hidden',
-        background: '#141414',
+        minWidth: 0,
+        isolation: 'isolate',
+        zIndex: 0,
+        background: 'var(--bg-base)',
         cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : activeTool === 'lasso' || activeTool === 'wand' ? 'crosshair' : 'default',
       }}
     >
@@ -868,6 +874,7 @@ export function CanvasArea() {
               <KonvaImage name="base-image" image={baseImg} width={imgW} height={imgH} />
             )}
 
+            <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
             {/* Cleanup committed layer */}
             {layerVisibility.cleanup && cleanupImg && (
               <KonvaImage name="base-image" image={cleanupImg} width={imgW} height={imgH} />
@@ -964,6 +971,7 @@ export function CanvasArea() {
                 onChange={setCropRect}
               />
             )}
+            </Group>
           </Layer>
         </Stage>
       )}
@@ -978,7 +986,7 @@ export function CanvasArea() {
             borderRadius: '50%',
             border: '1px solid rgba(255,255,255,0.7)',
             pointerEvents: 'none',
-            zIndex: 100,
+            zIndex: 10,
           }}
         />
       )}

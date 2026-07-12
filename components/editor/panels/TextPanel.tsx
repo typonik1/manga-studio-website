@@ -8,6 +8,8 @@ import { translateText, type TranslateLang } from '@/utils/translate';
 import type { TextObject } from '@/types';
 import { MANGA_FONTS, TEXT_PRESETS } from '@/types';
 import { PanelRow, PanelSlider, PanelLabel, PanelSection } from './PanelComponents';
+import { clampOcrBox } from '@/utils/coordinates';
+import { TEXT_PRESET_LABELS } from '@/lib/strings.ru';
 
 export function TextPanel() {
   const {
@@ -134,11 +136,19 @@ export function TextPanel() {
       const W = activeDoc.width;
       const H = activeDoc.height;
       const translationBatchId = uid();
+      const validParagraphs = paragraphs.flatMap(paragraph => {
+        const box = clampOcrBox(paragraph);
+        if (!box || !paragraph.text.trim()) return [];
+        return [{ ...paragraph, ...box, lines: paragraph.lines.flatMap(line => {
+          const lineBox = clampOcrBox(line);
+          return lineBox ? [{ ...line, ...lineBox }] : [];
+        }) }];
+      });
 
-      for (let i = 0; i < paragraphs.length; i++) {
-        const p = paragraphs[i];
-        setPageProgress(60 + Math.round(((i + 1) / paragraphs.length) * 35));
-        setPageStatus(`Переводим и размещаем · ${i + 1}/${paragraphs.length}`);
+      for (let i = 0; i < validParagraphs.length; i++) {
+        const p = validParagraphs[i];
+        setPageProgress(60 + Math.round(((i + 1) / validParagraphs.length) * 35));
+        setPageStatus(`Переводим и размещаем · ${i + 1}/${validParagraphs.length}`);
 
         let translated: string;
         try {
@@ -174,6 +184,13 @@ export function TextPanel() {
           ? p.lines.reduce((s, l) => s + l.height, 0) / p.lines.length
           : p.height / p.lineCount;
         const fontSize = Math.max(0.012, avgLineH * 0.72);
+        const paddedTextBox = clampOcrBox({
+          x: p.x - p.width * 0.075,
+          y: p.y,
+          width: p.width * 1.15,
+          height: p.height,
+        });
+        if (!paddedTextBox) continue;
         addText({
           id: uid(),
           text: translated,
@@ -186,9 +203,9 @@ export function TextPanel() {
           shadowBlur: 0,
           lineHeight: 1.1,
           align: 'center',
-          width: p.width * 1.15,
-          x: p.x - p.width * 0.075,
-          y: p.y,
+          width: paddedTextBox.width,
+          x: paddedTextBox.x,
+          y: paddedTextBox.y,
           scaleX: 1,
           scaleY: 1,
           rotation: 0,
@@ -200,8 +217,8 @@ export function TextPanel() {
       }
 
       setPageProgress(100);
-      setTranslatedBlocks(paragraphs.length);
-      setPageStatus(`Готово · переведено блоков: ${paragraphs.length}`);
+      setTranslatedBlocks(validParagraphs.length);
+      setPageStatus(`Готово · переведено блоков: ${validParagraphs.length}`);
     } catch {
       setPageProgress(0);
       setTranslatedBlocks(null);
@@ -293,7 +310,7 @@ export function TextPanel() {
       <div className="divider" />
 
       {/* Presets */}
-      <PanelSection title="Пр��сеты">
+      <PanelSection title="Пресеты">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
           {Object.keys(TEXT_PRESETS).map(key => (
             <button
@@ -310,7 +327,7 @@ export function TextPanel() {
                 textAlign: 'center',
               }}
             >
-              {key}
+              {TEXT_PRESET_LABELS[key] ?? key}
             </button>
           ))}
         </div>

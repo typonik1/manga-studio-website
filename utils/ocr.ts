@@ -36,9 +36,9 @@ const OCR_LANGS: Record<TranslateLang, string> = {
 };
 
 /**
- * Preprocess the image for OCR: grayscale + contrast boost.
+ * Preprocess the image for OCR: upscale + grayscale + Otsu binarization.
  * Manga pages are full of screentones and art that confuse Tesseract;
- * boosting contrast makes dark text on light bubbles stand out.
+ * binarization turns dark text on light bubbles into clean black-on-white.
  * Returns a dataURL and the scale factor applied (bbox coords must be
  * divided by it to map back to the original image).
  */
@@ -53,10 +53,11 @@ async function preprocessForOcr(imageSrc: string): Promise<{ dataUrl: string; sc
   const W = img.naturalWidth;
   const H = img.naturalHeight;
 
-  // Upscale small images — Tesseract likes ~2000px on the long side
-  const target = 2000;
+  // Upscale small images — bubble text is often tiny; Tesseract wants
+  // characters to be at least ~20px tall.
+  const target = 2800;
   const longSide = Math.max(W, H);
-  const scale = longSide < target ? Math.min(3, target / longSide) : 1;
+  const scale = longSide < target ? Math.min(4, target / longSide) : 1;
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(W * scale);
@@ -67,13 +68,38 @@ async function preprocessForOcr(imageSrc: string): Promise<{ dataUrl: string; sc
 
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const d = imgData.data;
-  for (let i = 0; i < d.length; i += 4) {
-    // Grayscale
-    const gray = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-    // Contrast stretch around midpoint: dark -> darker, light -> lighter
-    const v = Math.max(0, Math.min(255, (gray - 128) * 1.6 + 148));
-    d[i] = d[i + 1] = d[i + 2] = v;
-    d[i + 3] = 255;
+  const n = d.length / 4;
+
+  // Grayscale + histogram for Otsu threshold
+  const gray = new Uint8Array(n);
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) {
+    const g = Math.round(d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114);
+    gray[i] = g;
+    hist[g]++;
+  }
+
+  // Otsu: find the threshold that best separates dark text from light bubbles
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, maxVar = 0, threshold = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = n - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > maxVar) { maxVar = between; threshold = t; }
+  }
+
+  // Binarize: pure black text on pure white background
+  for (let i = 0; i < n; i++) {
+    const v = gray[i] > threshold ? 255 : 0;
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v;
+    d[i * 4 + 3] = 255;
   }
   ctx.putImageData(imgData, 0, 0);
 

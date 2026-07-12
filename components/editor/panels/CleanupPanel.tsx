@@ -59,6 +59,7 @@ export function CleanupPanel() {
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
 
       for (const stroke of activeDoc.cleanup.strokes) {
+        if (stroke.mode === 'erase') continue;
         maskCtx.beginPath();
         maskCtx.strokeStyle = 'white';
         maskCtx.lineWidth = stroke.size * activeDoc.height;
@@ -210,7 +211,7 @@ export function CleanupPanel() {
                   color: 'var(--text-secondary)', cursor: 'pointer',
                 }}
               >
-                Отмена
+                ��тмена
               </button>
             </div>
           ) : (

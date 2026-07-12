@@ -4,6 +4,8 @@ export interface StrokeData {
   size: number;     // fraction of image height
   color: string;
   opacity: number;
+  /** Paint is the default for documents created before eraser support. */
+  mode?: 'paint' | 'erase';
 }
 
 export interface WatermarkObject {
@@ -102,7 +104,7 @@ export interface ImageDocument {
   hasChanges: boolean;
 }
 
-export type ActiveTool = 'select' | 'brush' | 'pan' | 'crop';
+export type ActiveTool = 'select' | 'brush' | 'eraser' | 'pan' | 'lasso' | 'text' | 'watermark' | 'wand' | 'crop';
 export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform';
 
 export interface SelectedObject {

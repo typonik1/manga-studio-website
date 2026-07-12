@@ -7,6 +7,7 @@ import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import type { StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
 import { DropZone } from './DropZone';
+import { ToolOptionsBar } from './ToolOptionsBar';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
 
 const MAX_PREVIEW_SIDE = 1800;
@@ -483,7 +484,7 @@ export function CanvasArea() {
     viewport, setViewport,
     addDocuments,
     pushHistory, setLeftTab,
-    fontsVersion, cropRect, setCropRect,
+    fontsVersion, cropRect, setCropRect, updateDocumentThumbnail,
   } = useStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -572,7 +573,7 @@ export function CanvasArea() {
       panVpStart.current = { x: viewport.x, y: viewport.y };
       return;
     }
-    if (activeTool === 'brush' && activeDoc) {
+    if ((activeTool === 'brush' || activeTool === 'eraser') && activeDoc) {
       const stage = stageRef.current;
       if (!stage) return;
       const pos = stage.getPointerPosition();
@@ -590,7 +591,8 @@ export function CanvasArea() {
       const line = liveLineRef.current;
       if (line) {
         line.points(livePoints.current);
-        line.stroke(cleanupSettings.brushColor);
+        line.stroke(activeTool === 'eraser' ? '#000000' : cleanupSettings.brushColor);
+        line.globalCompositeOperation(activeTool === 'eraser' ? 'destination-out' : 'source-over');
         line.strokeWidth(cleanupSettings.brushSize * activeDoc.height * previewScale);
         line.visible(true);
         line.getLayer()?.batchDraw();
@@ -610,7 +612,7 @@ export function CanvasArea() {
       return;
     }
 
-    if (activeTool === 'brush' && pos) {
+    if ((activeTool === 'brush' || activeTool === 'eraser') && pos) {
       const imgX = (pos.x - viewport.x) / viewport.scale;
       const imgY = (pos.y - viewport.y) / viewport.scale;
 
@@ -653,8 +655,15 @@ export function CanvasArea() {
           size: cleanupSettings.brushSize,
           color: cleanupSettings.brushColor,
           opacity: 1,
+          mode: activeTool === 'eraser' ? 'erase' : 'paint',
         };
         addStroke(stroke);
+        window.requestAnimationFrame(() => {
+          const stage = stageRef.current;
+          if (!stage) return;
+          const scale = Math.min(1, 160 / Math.max(stage.width(), stage.height()));
+          updateDocumentThumbnail(activeDoc.id, stage.toDataURL({ pixelRatio: scale }));
+        });
       }
       isPainting.current = false;
       currentStroke.current = [];
@@ -717,9 +726,11 @@ export function CanvasArea() {
         position: 'relative',
         overflow: 'hidden',
         background: '#141414',
-        cursor: activeTool === 'pan' ? 'grab' : activeTool === 'brush' ? 'none' : 'default',
+        cursor: activeTool === 'pan' ? 'grab' : activeTool === 'brush' || activeTool === 'eraser' ? 'none' : activeTool === 'lasso' || activeTool === 'wand' ? 'crosshair' : 'default',
       }}
     >
+      <ToolOptionsBar />
+
       {/* Navigation arrows */}
       {documents.length > 1 && (
         <>
@@ -876,7 +887,7 @@ export function CanvasArea() {
                   lineJoin="round"
                   opacity={stroke.opacity}
                   tension={0.3}
-                  globalCompositeOperation="source-over"
+                  globalCompositeOperation={stroke.mode === 'erase' ? 'destination-out' : 'source-over'}
                 />
               );
             })}
@@ -957,7 +968,7 @@ export function CanvasArea() {
       )}
 
       {/* Brush cursor (positioned imperatively, no re-renders) */}
-      {activeTool === 'brush' && (
+      {(activeTool === 'brush' || activeTool === 'eraser') && (
         <div
           ref={cursorRef}
           style={{

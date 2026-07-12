@@ -113,6 +113,10 @@ export interface AppState {
   setActiveTool: (tool: ActiveTool) => void;
   setLeftTab: (tab: LeftTab) => void;
   setSelectedObject: (obj: SelectedObject | null) => void;
+  duplicateSelectedObject: () => void;
+  deleteSelectedObject: () => void;
+  moveSelectedObject: (direction: 'forward' | 'backward') => void;
+  updateDocumentThumbnail: (id: string, dataUrl: string) => void;
   addStroke: (stroke: StrokeData) => void;
   addWatermark: (wm: WatermarkObject) => void;
   updateWatermark: (id: string, updates: Partial<WatermarkObject>) => void;
@@ -186,6 +190,58 @@ export const useStore = create<AppState>((set, get) => ({
   setActiveTool: (tool) => set({ activeTool: tool }),
   setLeftTab: (tab) => set({ leftTab: tab }),
   setSelectedObject: (obj) => set({ selectedObject: obj }),
+
+  duplicateSelectedObject: () => set(state => {
+    const selected = state.selectedObject;
+    if (!selected || state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    const id = `${selected.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    if (selected.type === 'text') {
+      const source = doc.texts.find(item => item.id === selected.id);
+      if (!source) return {};
+      doc.texts = [...doc.texts, { ...source, id, x: Math.min(.95, source.x + .025), y: Math.min(.95, source.y + .025) }];
+    } else if (selected.type === 'watermark') {
+      const source = doc.watermarks.find(item => item.id === selected.id);
+      if (!source) return {};
+      doc.watermarks = [...doc.watermarks, { ...source, id, x: Math.min(.95, source.x + .025), y: Math.min(.95, source.y + .025), isBatch: false }];
+    } else {
+      const source = doc.shapes.find(item => item.id === selected.id);
+      if (!source) return {};
+      doc.shapes = [...doc.shapes, { ...source, id, x: Math.min(.95, source.x + .025), y: Math.min(.95, source.y + .025) }];
+    }
+    docs[state.activeDocIndex] = doc;
+    return { documents: docs, selectedObject: { ...selected, id } };
+  }),
+
+  deleteSelectedObject: () => {
+    const state = get();
+    const selected = state.selectedObject;
+    if (!selected) return;
+    if (selected.type === 'text') state.deleteText(selected.id);
+    else if (selected.type === 'watermark') state.deleteWatermark(selected.id);
+    else state.deleteShape(selected.id);
+  },
+
+  moveSelectedObject: (direction) => set(state => {
+    const selected = state.selectedObject;
+    if (!selected || state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    const key = selected.type === 'text' ? 'texts' : selected.type === 'watermark' ? 'watermarks' : 'shapes';
+    const items = [...doc[key]] as Array<{ id: string }>;
+    const index = items.findIndex(item => item.id === selected.id);
+    const target = direction === 'forward' ? index + 1 : index - 1;
+    if (index < 0 || target < 0 || target >= items.length) return {};
+    [items[index], items[target]] = [items[target], items[index]];
+    (doc as unknown as Record<string, unknown>)[key] = items;
+    docs[state.activeDocIndex] = doc;
+    return { documents: docs };
+  }),
+
+  updateDocumentThumbnail: (id, dataUrl) => set(state => ({
+    documents: state.documents.map(doc => doc.id === id ? { ...doc, thumbnail: dataUrl } : doc),
+  })),
 
   addStroke: (stroke) =>
     set(state => {

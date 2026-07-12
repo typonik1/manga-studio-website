@@ -1,40 +1,45 @@
 /**
- * Free translation using the MyMemory API (no API key required).
- * https://mymemory.translated.net/doc/spec.php
- * Fallback: Lingva (a free Google Translate front-end).
+ * Translation with quality priority:
+ * 1. AI translation via our API route (Gemini through Vercel AI Gateway) —
+ *    understands context, fixes OCR artifacts, natural colloquial phrasing.
+ * 2. Google Translate free endpoint (unofficial, no key) as fallback.
  */
 
 export type TranslateLang = 'en' | 'ru' | 'ja' | 'ko' | 'zh';
 
-interface MyMemoryResponse {
-  responseStatus: number;
-  responseData?: { translatedText?: string };
-}
-
-async function viaMyMemory(text: string, from: TranslateLang, to: TranslateLang): Promise<string> {
-  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${from}|${to}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`MyMemory HTTP ${res.status}`);
-  const json = (await res.json()) as MyMemoryResponse;
-  const out = json.responseData?.translatedText;
-  if (json.responseStatus !== 200 || !out) throw new Error('MyMemory: пустой ответ');
-  return out;
-}
-
-interface LingvaResponse {
-  translation?: string;
-}
-
-async function viaLingva(text: string, from: TranslateLang, to: TranslateLang): Promise<string> {
-  const url = `https://lingva.ml/api/v1/${from}/${to}/${encodeURIComponent(text)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Lingva HTTP ${res.status}`);
-  const json = (await res.json()) as LingvaResponse;
-  if (!json.translation) throw new Error('Lingva: пустой ответ');
+async function viaAI(text: string, from: TranslateLang, to: TranslateLang): Promise<string> {
+  const res = await fetch('/api/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, from, to }),
+  });
+  if (!res.ok) throw new Error(`AI translate HTTP ${res.status}`);
+  const json = (await res.json()) as { translation?: string };
+  if (!json.translation) throw new Error('AI: пустой ответ');
   return json.translation;
 }
 
-/** Translate text; tries MyMemory first, falls back to Lingva. */
+/** Unofficial free Google Translate endpoint (same one Lingva proxies). */
+async function viaGoogle(text: string, from: TranslateLang, to: TranslateLang): Promise<string> {
+  const url =
+    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${from}&tl=${to}` +
+    `&dt=t&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Google HTTP ${res.status}`);
+  const json = (await res.json()) as [Array<[string, string, ...unknown[]]>, ...unknown[]];
+  const out = (json?.[0] ?? [])
+    .map(seg => seg?.[0] ?? '')
+    .join('')
+    .trim();
+  if (!out) throw new Error('Google: пустой ответ');
+  return out;
+}
+
+// If the AI route fails once (e.g. gateway not configured), skip it
+// for the rest of the session instead of adding latency to every block.
+let aiUnavailable = false;
+
+/** Translate text: AI first (best quality), Google free endpoint as fallback. */
 export async function translateText(
   text: string,
   from: TranslateLang = 'en',
@@ -42,18 +47,12 @@ export async function translateText(
 ): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed) return text;
-  // MyMemory limit is 500 bytes per request — split long text by lines
-  if (trimmed.length > 450) {
-    const lines = trimmed.split('\n');
-    const out: string[] = [];
-    for (const line of lines) {
-      out.push(line.trim() ? await translateText(line, from, to) : line);
+  if (!aiUnavailable) {
+    try {
+      return await viaAI(trimmed, from, to);
+    } catch {
+      aiUnavailable = true;
     }
-    return out.join('\n');
   }
-  try {
-    return await viaMyMemory(trimmed, from, to);
-  } catch {
-    return await viaLingva(trimmed, from, to);
-  }
+  return await viaGoogle(trimmed, from, to);
 }

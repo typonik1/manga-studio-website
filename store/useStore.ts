@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { sanitizeImageDocument, sanitizeShape, sanitizeText, sanitizeWatermark } from '@/utils/coordinates';
 import type {
   ImageDocument,
   WatermarkObject,
@@ -43,6 +44,7 @@ const defaultCleanupSettings: CleanupSettings = {
   brushColor: '#ffffff',
   inpaintRadius: 4,
   mode: 'brush',
+  cleanupMethod: 'auto',
   magicThreshold: 30,
 };
 
@@ -118,6 +120,8 @@ export interface AppState {
   moveSelectedObject: (direction: 'forward' | 'backward') => void;
   updateDocumentThumbnail: (id: string, dataUrl: string) => void;
   addStroke: (stroke: StrokeData) => void;
+  clearMaskStrokes: () => void;
+  applyTranslationBatch: (cleanupDataUrl: string, texts: TextObject[]) => void;
   addWatermark: (wm: WatermarkObject) => void;
   updateWatermark: (id: string, updates: Partial<WatermarkObject>) => void;
   deleteWatermark: (id: string) => void;
@@ -172,7 +176,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   addDocuments: (newDocs) =>
     set(state => {
-      const all = [...state.documents, ...newDocs];
+      const all = [...state.documents, ...newDocs.map(sanitizeImageDocument)];
       const idx = state.documents.length === 0 ? 0 : state.activeDocIndex;
       return { documents: all, activeDocIndex: Math.max(0, idx) };
     }),
@@ -256,6 +260,31 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs };
     }),
 
+  clearMaskStrokes: () => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const current = state.documents[state.activeDocIndex];
+    if (!current.cleanup.strokes.some(stroke => stroke.purpose === 'mask')) return {};
+    const docs = [...state.documents];
+    const withH = withHistory(current);
+    docs[state.activeDocIndex] = {
+      ...withH,
+      cleanup: { ...withH.cleanup, strokes: withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask') },
+    };
+    return { documents: docs };
+  }),
+
+  applyTranslationBatch: (cleanupDataUrl, texts) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const withH = withHistory(docs[state.activeDocIndex]);
+    docs[state.activeDocIndex] = {
+      ...withH,
+      cleanup: { committed: cleanupDataUrl, strokes: withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask') },
+      texts: [...withH.texts, ...texts],
+    };
+    return { documents: docs };
+  }),
+
   addWatermark: (wm) =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
@@ -270,7 +299,11 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const doc = { ...docs[state.activeDocIndex] };
-      doc.watermarks = doc.watermarks.map(w => w.id === id ? { ...w, ...updates } : w);
+      doc.watermarks = doc.watermarks.flatMap(w => {
+        if (w.id !== id) return [w];
+        const sanitized = sanitizeWatermark({ ...w, ...updates });
+        return sanitized ? [sanitized] : [];
+      });
       doc.hasChanges = true;
       docs[state.activeDocIndex] = doc;
       return { documents: docs };
@@ -351,7 +384,11 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const doc = { ...docs[state.activeDocIndex] };
-      doc.texts = doc.texts.map(t => t.id === id ? { ...t, ...updates } : t);
+      doc.texts = doc.texts.flatMap(t => {
+        if (t.id !== id) return [t];
+        const sanitized = sanitizeText({ ...t, ...updates });
+        return sanitized ? [sanitized] : [];
+      });
       doc.hasChanges = true;
       docs[state.activeDocIndex] = doc;
       return { documents: docs };
@@ -394,7 +431,11 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const doc = { ...docs[state.activeDocIndex] };
-      doc.shapes = (doc.shapes ?? []).map(s => s.id === id ? { ...s, ...updates } : s);
+      doc.shapes = (doc.shapes ?? []).flatMap(s => {
+        if (s.id !== id) return [s];
+        const sanitized = sanitizeShape({ ...s, ...updates });
+        return sanitized ? [sanitized] : [];
+      });
       doc.hasChanges = true;
       docs[state.activeDocIndex] = doc;
       return { documents: docs };

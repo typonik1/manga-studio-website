@@ -3,6 +3,8 @@ import type {
   ImageDocument,
   WatermarkObject,
   TextObject,
+  ShapeObject,
+  ShapeSettings,
   StrokeData,
   SelectedObject,
   HistorySnapshot,
@@ -14,6 +16,7 @@ import type {
   LayerVisibility,
   ActiveTool,
   LeftTab,
+  CropRect,
 } from '../types';
 
 const MAX_HISTORY = 40;
@@ -61,11 +64,20 @@ const defaultExportSettings: ExportSettings = {
   quality: 0.92,
 };
 
+const defaultShapeSettings: ShapeSettings = {
+  fill: '#ffffff',
+  stroke: '#000000',
+  strokeWidth: 4,
+  opacity: 1,
+  cornerRadius: 0,
+};
+
 function snap(doc: ImageDocument): HistorySnapshot {
   return {
     cleanup: { committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
     watermarks: doc.watermarks.map(w => ({ ...w })),
     texts: doc.texts.map(t => ({ ...t })),
+    shapes: (doc.shapes ?? []).map(s => ({ ...s })),
   };
 }
 
@@ -90,6 +102,10 @@ export interface AppState {
   showExportModal: boolean;
   isInpaintRunning: boolean;
   inpaintProgress: number;
+  shapeSettings: ShapeSettings;
+  customFonts: string[];
+  fontsVersion: number;
+  cropRect: CropRect | null;
 
   addDocuments: (docs: ImageDocument[]) => void;
   removeDocument: (id: string) => void;
@@ -105,6 +121,15 @@ export interface AppState {
   addText: (text: TextObject) => void;
   updateText: (id: string, updates: Partial<TextObject>) => void;
   deleteText: (id: string) => void;
+  addShape: (shape: ShapeObject) => void;
+  updateShape: (id: string, updates: Partial<ShapeObject>) => void;
+  deleteShape: (id: string) => void;
+  updateShapeSettings: (updates: Partial<ShapeSettings>) => void;
+  addCustomFont: (name: string) => void;
+  setCustomFonts: (names: string[]) => void;
+  bumpFontsVersion: () => void;
+  setCropRect: (rect: CropRect | null) => void;
+  applyDocumentTransform: (updates: Partial<ImageDocument>) => void;
   updateWmSettings: (updates: Partial<WatermarkSettings>) => void;
   updateCleanupSettings: (updates: Partial<CleanupSettings>) => void;
   updateTextSettings: (updates: Partial<TextSettings>) => void;
@@ -131,10 +156,14 @@ export const useStore = create<AppState>((set, get) => ({
   textSettings: defaultTextSettings,
   exportSettings: defaultExportSettings,
   viewport: { x: 0, y: 0, scale: 1 },
-  layerVisibility: { base: true, cleanup: true, watermarks: true, texts: true },
+  layerVisibility: { base: true, cleanup: true, watermarks: true, texts: true, shapes: true },
   showExportModal: false,
   isInpaintRunning: false,
   inpaintProgress: 0,
+  shapeSettings: defaultShapeSettings,
+  customFonts: [],
+  fontsVersion: 0,
+  cropRect: null,
 
   addDocuments: (newDocs) =>
     set(state => {
@@ -280,6 +309,49 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs, selectedObject: null };
     }),
 
+  addShape: (shape) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const withH = withHistory(docs[state.activeDocIndex]);
+      docs[state.activeDocIndex] = { ...withH, shapes: [...(withH.shapes ?? []), shape] };
+      return { documents: docs, selectedObject: { id: shape.id, type: 'shape' } };
+    }),
+
+  updateShape: (id, updates) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const doc = { ...docs[state.activeDocIndex] };
+      doc.shapes = (doc.shapes ?? []).map(s => s.id === id ? { ...s, ...updates } : s);
+      doc.hasChanges = true;
+      docs[state.activeDocIndex] = doc;
+      return { documents: docs };
+    }),
+
+  deleteShape: (id) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const withH = withHistory(docs[state.activeDocIndex]);
+      docs[state.activeDocIndex] = { ...withH, shapes: (withH.shapes ?? []).filter(s => s.id !== id) };
+      return { documents: docs, selectedObject: null };
+    }),
+
+  updateShapeSettings: (u) => set(s => ({ shapeSettings: { ...s.shapeSettings, ...u } })),
+  addCustomFont: (name) => set(s => ({ customFonts: s.customFonts.includes(name) ? s.customFonts : [...s.customFonts, name] })),
+  setCustomFonts: (names) => set({ customFonts: names }),
+  bumpFontsVersion: () => set(s => ({ fontsVersion: s.fontsVersion + 1 })),
+  setCropRect: (rect) => set({ cropRect: rect }),
+
+  applyDocumentTransform: (updates) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      docs[state.activeDocIndex] = { ...docs[state.activeDocIndex], ...updates };
+      return { documents: docs, selectedObject: null, cropRect: null };
+    }),
+
   updateWmSettings: (u) => set(s => ({ wmSettings: { ...s.wmSettings, ...u } })),
   updateCleanupSettings: (u) => set(s => ({ cleanupSettings: { ...s.cleanupSettings, ...u } })),
   updateTextSettings: (u) => set(s => ({ textSettings: { ...s.textSettings, ...u } })),
@@ -303,7 +375,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (doc.past.length === 0) return {};
       const past = [...doc.past];
       const snapshot = past.pop()!;
-      const current: HistorySnapshot = { cleanup: doc.cleanup, watermarks: [...doc.watermarks], texts: [...doc.texts] };
+      const current: HistorySnapshot = { cleanup: doc.cleanup, watermarks: [...doc.watermarks], texts: [...doc.texts], shapes: [...(doc.shapes ?? [])] };
       const future = [current, ...doc.future].slice(0, MAX_HISTORY);
       docs[state.activeDocIndex] = { ...doc, ...snapshot, past, future };
       return { documents: docs, selectedObject: null };
@@ -317,7 +389,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (doc.future.length === 0) return {};
       const future = [...doc.future];
       const snapshot = future.shift()!;
-      const current: HistorySnapshot = { cleanup: doc.cleanup, watermarks: [...doc.watermarks], texts: [...doc.texts] };
+      const current: HistorySnapshot = { cleanup: doc.cleanup, watermarks: [...doc.watermarks], texts: [...doc.texts], shapes: [...(doc.shapes ?? [])] };
       const past = [...doc.past, current].slice(-MAX_HISTORY);
       docs[state.activeDocIndex] = { ...doc, ...snapshot, past, future };
       return { documents: docs, selectedObject: null };
@@ -348,6 +420,7 @@ export const useStore = create<AppState>((set, get) => ({
         cleanup: { committed: null, strokes: [] },
         watermarks: [],
         texts: [],
+        shapes: [],
         hasChanges: false,
       };
       return { documents: docs, selectedObject: null };

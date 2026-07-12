@@ -1,11 +1,11 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Ellipse, Arrow, Star } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import type { StrokeData, WatermarkObject, TextObject } from '@/types';
+import type { StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
 import { DropZone } from './DropZone';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
 
@@ -36,6 +36,7 @@ function WatermarkNode({
   isSelected,
   onSelect,
   onChange,
+  onBeforeChange,
 }: {
   wm: WatermarkObject;
   docWidth: number;
@@ -44,6 +45,7 @@ function WatermarkNode({
   isSelected: boolean;
   onSelect: () => void;
   onChange: (updates: Partial<WatermarkObject>) => void;
+  onBeforeChange: () => void;
 }) {
   const nodeRef = useRef<Konva.Text | Konva.Image | null>(null);
   const trRef = useRef<Konva.Transformer>(null);
@@ -90,11 +92,20 @@ function WatermarkNode({
     draggable: true,
     onClick: onSelect,
     onTap: onSelect,
+    onDragStart: onBeforeChange,
+    onTransformStart: onBeforeChange,
     onDragEnd: handleDragEnd,
     onTransformEnd: handleTransformEnd,
     offsetX: 0,
     offsetY: 0,
   };
+
+  // Keep the logo's natural aspect ratio — width is a fraction of doc width,
+  // height is derived from the image itself so it never stretches.
+  const logoW = (wm.imageWidth ?? 0.25) * pW;
+  const logoH = logoImg && logoImg.naturalWidth > 0
+    ? logoW * (logoImg.naturalHeight / logoImg.naturalWidth)
+    : (wm.imageHeight ?? 0.12) * pH;
 
   return (
     <>
@@ -112,8 +123,8 @@ function WatermarkNode({
           {...commonProps}
           ref={nodeRef as React.RefObject<Konva.Image>}
           image={logoImg}
-          width={(wm.imageWidth ?? 0.25) * pW}
-          height={(wm.imageHeight ?? 0.12) * pH}
+          width={logoW}
+          height={logoH}
         />
       ) : null}
       {isSelected && (
@@ -124,7 +135,8 @@ function WatermarkNode({
             return newBox;
           }}
           rotateEnabled
-          enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-right', 'middle-left']}
+          keepRatio
+          enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']}
         />
       )}
     </>
@@ -139,6 +151,8 @@ function TextNode({
   isSelected,
   onSelect,
   onChange,
+  onBeforeChange,
+  onEditRequest,
 }: {
   txt: TextObject;
   docWidth: number;
@@ -147,6 +161,8 @@ function TextNode({
   isSelected: boolean;
   onSelect: () => void;
   onChange: (updates: Partial<TextObject>) => void;
+  onBeforeChange: () => void;
+  onEditRequest: () => void;
 }) {
   const nodeRef = useRef<Konva.Text>(null);
   const trRef = useRef<Konva.Transformer>(null);
@@ -202,9 +218,163 @@ function TextNode({
         draggable
         onClick={onSelect}
         onTap={onSelect}
+        onDblClick={onEditRequest}
+        onDblTap={onEditRequest}
+        onDragStart={onBeforeChange}
+        onTransformStart={onBeforeChange}
         onDragEnd={handleDragEnd}
         onTransformEnd={handleTransformEnd}
       />
+      {isSelected && (
+        <Transformer
+          ref={trRef}
+          boundBoxFunc={(oldBox, newBox) => {
+            if (newBox.width < 5 || newBox.height < 5) return oldBox;
+            return newBox;
+          }}
+          rotateEnabled
+          keepRatio
+          enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']}
+        />
+      )}
+    </>
+  );
+}
+
+function ShapeNode({
+  shape,
+  docWidth,
+  docHeight,
+  previewScale,
+  isSelected,
+  onSelect,
+  onChange,
+  onBeforeChange,
+}: {
+  shape: ShapeObject;
+  docWidth: number;
+  docHeight: number;
+  previewScale: number;
+  isSelected: boolean;
+  onSelect: () => void;
+  onChange: (updates: Partial<ShapeObject>) => void;
+  onBeforeChange: () => void;
+}) {
+  const nodeRef = useRef<Konva.Node>(null);
+  const trRef = useRef<Konva.Transformer>(null);
+
+  useEffect(() => {
+    if (isSelected && trRef.current && nodeRef.current) {
+      trRef.current.nodes([nodeRef.current]);
+      trRef.current.getLayer()?.batchDraw();
+    }
+  }, [isSelected]);
+
+  const pW = docWidth * previewScale;
+  const pH = docHeight * previewScale;
+  const w = shape.width * pW;
+  const h = shape.height * pH;
+  const cx = shape.x * pW;
+  const cy = shape.y * pH;
+  const strokeW = shape.strokeWidth * previewScale;
+
+  if (!shape.visible) return null;
+
+  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+    onChange({ x: e.target.x() / pW, y: e.target.y() / pH });
+  };
+
+  const handleTransformEnd = () => {
+    const node = nodeRef.current;
+    if (!node) return;
+    onChange({
+      x: node.x() / pW,
+      y: node.y() / pH,
+      scaleX: node.scaleX(),
+      scaleY: node.scaleY(),
+      rotation: node.rotation(),
+    });
+  };
+
+  const common = {
+    x: cx,
+    y: cy,
+    rotation: shape.rotation,
+    scaleX: shape.scaleX,
+    scaleY: shape.scaleY,
+    opacity: shape.opacity,
+    fill: shape.fill || undefined,
+    stroke: shape.stroke || undefined,
+    strokeWidth: strokeW,
+    draggable: true,
+    onClick: onSelect,
+    onTap: onSelect,
+    onDragStart: onBeforeChange,
+    onTransformStart: onBeforeChange,
+    onDragEnd: handleDragEnd,
+    onTransformEnd: handleTransformEnd,
+  };
+
+  let node: React.ReactNode = null;
+  if (shape.kind === 'rect') {
+    node = (
+      <Rect
+        {...common}
+        ref={nodeRef as React.RefObject<Konva.Rect>}
+        offsetX={w / 2}
+        offsetY={h / 2}
+        width={w}
+        height={h}
+        cornerRadius={shape.cornerRadius * previewScale}
+      />
+    );
+  } else if (shape.kind === 'ellipse') {
+    node = (
+      <Ellipse
+        {...common}
+        ref={nodeRef as React.RefObject<Konva.Ellipse>}
+        radiusX={w / 2}
+        radiusY={h / 2}
+      />
+    );
+  } else if (shape.kind === 'line') {
+    node = (
+      <Line
+        {...common}
+        ref={nodeRef as React.RefObject<Konva.Line>}
+        points={[-w / 2, 0, w / 2, 0]}
+        lineCap="round"
+        hitStrokeWidth={Math.max(16, strokeW)}
+      />
+    );
+  } else if (shape.kind === 'arrow') {
+    node = (
+      <Arrow
+        {...common}
+        ref={nodeRef as React.RefObject<Konva.Arrow>}
+        points={[-w / 2, 0, w / 2, 0]}
+        pointerLength={Math.max(8, strokeW * 3)}
+        pointerWidth={Math.max(8, strokeW * 3)}
+        fill={shape.stroke || '#000'}
+        lineCap="round"
+        hitStrokeWidth={Math.max(16, strokeW)}
+      />
+    );
+  } else if (shape.kind === 'star') {
+    node = (
+      <Star
+        {...common}
+        ref={nodeRef as React.RefObject<Konva.Star>}
+        numPoints={5}
+        innerRadius={Math.min(w, h) / 4}
+        outerRadius={Math.min(w, h) / 2}
+      />
+    );
+  }
+
+  return (
+    <>
+      {node}
       {isSelected && (
         <Transformer
           ref={trRef}
@@ -219,15 +389,101 @@ function TextNode({
   );
 }
 
+/** Crop overlay: darkens everything outside the crop rect; rect is draggable/resizable */
+function CropOverlay({
+  cropRect,
+  imgW,
+  imgH,
+  onChange,
+}: {
+  cropRect: CropRect;
+  imgW: number;
+  imgH: number;
+  onChange: (rect: CropRect) => void;
+}) {
+  const rectRef = useRef<Konva.Rect>(null);
+  const trRef = useRef<Konva.Transformer>(null);
+
+  useEffect(() => {
+    if (trRef.current && rectRef.current) {
+      trRef.current.nodes([rectRef.current]);
+      trRef.current.getLayer()?.batchDraw();
+    }
+  }, []);
+
+  const rx = cropRect.x * imgW;
+  const ry = cropRect.y * imgH;
+  const rw = cropRect.width * imgW;
+  const rh = cropRect.height * imgH;
+
+  const clamp = (x: number, y: number, w: number, h: number): CropRect => {
+    const cw = Math.max(0.02, Math.min(1, w / imgW));
+    const ch = Math.max(0.02, Math.min(1, h / imgH));
+    const cx = Math.max(0, Math.min(1 - cw, x / imgW));
+    const cy = Math.max(0, Math.min(1 - ch, y / imgH));
+    return { x: cx, y: cy, width: cw, height: ch };
+  };
+
+  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+    onChange(clamp(e.target.x(), e.target.y(), rw, rh));
+  };
+
+  const handleTransformEnd = () => {
+    const node = rectRef.current;
+    if (!node) return;
+    const newW = node.width() * node.scaleX();
+    const newH = node.height() * node.scaleY();
+    node.scaleX(1);
+    node.scaleY(1);
+    onChange(clamp(node.x(), node.y(), newW, newH));
+  };
+
+  return (
+    <>
+      {/* Dark veil outside the crop area (4 rects) */}
+      <Rect x={0} y={0} width={imgW} height={ry} fill="rgba(0,0,0,0.6)" listening={false} />
+      <Rect x={0} y={ry + rh} width={imgW} height={Math.max(0, imgH - ry - rh)} fill="rgba(0,0,0,0.6)" listening={false} />
+      <Rect x={0} y={ry} width={rx} height={rh} fill="rgba(0,0,0,0.6)" listening={false} />
+      <Rect x={rx + rw} y={ry} width={Math.max(0, imgW - rx - rw)} height={rh} fill="rgba(0,0,0,0.6)" listening={false} />
+      {/* Crop rect */}
+      <Rect
+        ref={rectRef}
+        x={rx}
+        y={ry}
+        width={rw}
+        height={rh}
+        stroke="#5e9fe8"
+        strokeWidth={2}
+        dash={[8, 4]}
+        fill="rgba(94,159,232,0.05)"
+        draggable
+        onDragEnd={handleDragEnd}
+        onTransformEnd={handleTransformEnd}
+      />
+      <Transformer
+        ref={trRef}
+        rotateEnabled={false}
+        keepRatio={false}
+        boundBoxFunc={(oldBox, newBox) => {
+          if (newBox.width < 20 || newBox.height < 20) return oldBox;
+          return newBox;
+        }}
+      />
+    </>
+  );
+}
+
 export function CanvasArea() {
   const {
     documents, activeDocIndex, setActiveDoc,
     activeTool, cleanupSettings,
-    addStroke, updateWatermark, updateText,
+    addStroke, updateWatermark, updateText, updateShape,
     selectedObject, setSelectedObject,
     layerVisibility,
     viewport, setViewport,
     addDocuments,
+    pushHistory, setLeftTab,
+    fontsVersion, cropRect, setCropRect,
   } = useStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -235,7 +491,11 @@ export function CanvasArea() {
   const isPainting = useRef(false);
   const currentStroke = useRef<number[]>([]);
   const strokeId = useRef<string>('');
-  const [brushPreview, setBrushPreview] = useState<{ x: number; y: number; r: number } | null>(null);
+  // Live stroke rendered imperatively (no React re-renders while drawing)
+  const liveLineRef = useRef<Konva.Line>(null);
+  const livePoints = useRef<number[]>([]);
+  // Brush cursor updated imperatively via DOM
+  const cursorRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
@@ -325,6 +585,16 @@ export function CanvasArea() {
       isPainting.current = true;
       strokeId.current = uid();
       currentStroke.current = [nx, ny];
+      // Start the live preview line
+      livePoints.current = [imgX, imgY];
+      const line = liveLineRef.current;
+      if (line) {
+        line.points(livePoints.current);
+        line.stroke(cleanupSettings.brushColor);
+        line.strokeWidth(cleanupSettings.brushSize * activeDoc.height * previewScale);
+        line.visible(true);
+        line.getLayer()?.batchDraw();
+      }
     }
   };
 
@@ -343,19 +613,32 @@ export function CanvasArea() {
     if (activeTool === 'brush' && pos) {
       const imgX = (pos.x - viewport.x) / viewport.scale;
       const imgY = (pos.y - viewport.y) / viewport.scale;
-      setBrushPreview({
-        x: pos.x,
-        y: pos.y,
-        r: (cleanupSettings.brushSize * (activeDoc?.height ?? 1000) * previewScale * viewport.scale) / 2,
-      });
+
+      // Update the cursor circle directly via DOM (no React re-render)
+      const cursor = cursorRef.current;
+      if (cursor) {
+        const rad = (cleanupSettings.brushSize * (activeDoc?.height ?? 1000) * previewScale * viewport.scale) / 2;
+        cursor.style.display = 'block';
+        cursor.style.left = `${pos.x - rad}px`;
+        cursor.style.top = `${pos.y - rad}px`;
+        cursor.style.width = `${rad * 2}px`;
+        cursor.style.height = `${rad * 2}px`;
+      }
 
       if (isPainting.current) {
         const nx = imgX / imgW;
         const ny = imgY / imgH;
         currentStroke.current.push(nx, ny);
+        // Update the live line imperatively for instant feedback
+        livePoints.current.push(imgX, imgY);
+        const line = liveLineRef.current;
+        if (line) {
+          line.points(livePoints.current);
+          line.getLayer()?.batchDraw();
+        }
       }
-    } else {
-      setBrushPreview(null);
+    } else if (cursorRef.current) {
+      cursorRef.current.style.display = 'none';
     }
   };
 
@@ -375,11 +658,22 @@ export function CanvasArea() {
       }
       isPainting.current = false;
       currentStroke.current = [];
+      // Hide the live preview line (the committed stroke takes over)
+      livePoints.current = [];
+      const line = liveLineRef.current;
+      if (line) {
+        line.points([]);
+        line.visible(false);
+        line.getLayer()?.batchDraw();
+      }
     }
   };
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (e.target === stageRef.current) {
+    // Deselect when clicking the empty stage OR the base image itself
+    // (the image covers the whole canvas, so it counts as "empty space")
+    const target = e.target as Konva.Node;
+    if (target === (stageRef.current as unknown as Konva.Node) || target.name() === 'base-image') {
       setSelectedObject(null);
     }
   };
@@ -393,10 +687,6 @@ export function CanvasArea() {
     setLoadErrors(errors);
     setLoadingFiles(false);
   }
-
-  const brushRadius = activeDoc
-    ? (cleanupSettings.brushSize * activeDoc.height * previewScale * viewport.scale) / 2
-    : 10;
 
   // Keyboard brush size [ ]
   useEffect(() => {
@@ -552,8 +842,10 @@ export function CanvasArea() {
           onClick={handleStageClick}
           style={{ display: 'block' }}
         >
-          {/* Base image layer */}
+          {/* Base image layer — key includes fontsVersion so the canvas
+              repaints once web fonts finish loading */}
           <Layer
+            key={`layer-${fontsVersion}`}
             x={viewport.x}
             y={viewport.y}
             scaleX={viewport.scale}
@@ -561,12 +853,12 @@ export function CanvasArea() {
           >
             {/* Image background */}
             {layerVisibility.base && baseImg && (
-              <KonvaImage image={baseImg} width={imgW} height={imgH} />
+              <KonvaImage name="base-image" image={baseImg} width={imgW} height={imgH} />
             )}
 
             {/* Cleanup committed layer */}
             {layerVisibility.cleanup && cleanupImg && (
-              <KonvaImage image={cleanupImg} width={imgW} height={imgH} />
+              <KonvaImage name="base-image" image={cleanupImg} width={imgW} height={imgH} />
             )}
 
             {/* Live brush strokes */}
@@ -589,6 +881,19 @@ export function CanvasArea() {
               );
             })}
 
+            {/* Live stroke while drawing (updated imperatively) */}
+            <Line
+              ref={liveLineRef}
+              points={livePoints.current}
+              stroke={cleanupSettings.brushColor}
+              strokeWidth={activeDoc ? cleanupSettings.brushSize * activeDoc.height * previewScale : 10}
+              lineCap="round"
+              lineJoin="round"
+              tension={0.3}
+              listening={false}
+              visible={false}
+            />
+
             {/* Watermarks */}
             {layerVisibility.watermarks && activeDoc.watermarks.map(wm => (
               <WatermarkNode
@@ -600,6 +905,7 @@ export function CanvasArea() {
                 isSelected={selectedObject?.id === wm.id}
                 onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
                 onChange={updates => updateWatermark(wm.id, updates)}
+                onBeforeChange={pushHistory}
               />
             ))}
 
@@ -614,21 +920,49 @@ export function CanvasArea() {
                 isSelected={selectedObject?.id === txt.id}
                 onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
                 onChange={updates => updateText(txt.id, updates)}
+                onBeforeChange={pushHistory}
+                onEditRequest={() => {
+                  setSelectedObject({ id: txt.id, type: 'text' });
+                  setLeftTab('text');
+                }}
               />
             ))}
+
+            {/* Shapes */}
+            {layerVisibility.shapes && (activeDoc.shapes ?? []).map(shape => (
+              <ShapeNode
+                key={shape.id}
+                shape={shape}
+                docWidth={activeDoc.width}
+                docHeight={activeDoc.height}
+                previewScale={previewScale}
+                isSelected={selectedObject?.id === shape.id}
+                onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+                onChange={updates => updateShape(shape.id, updates)}
+                onBeforeChange={pushHistory}
+              />
+            ))}
+
+            {/* Crop overlay */}
+            {activeTool === 'crop' && cropRect && (
+              <CropOverlay
+                cropRect={cropRect}
+                imgW={imgW}
+                imgH={imgH}
+                onChange={setCropRect}
+              />
+            )}
           </Layer>
         </Stage>
       )}
 
-      {/* Brush cursor */}
-      {activeTool === 'brush' && brushPreview && (
+      {/* Brush cursor (positioned imperatively, no re-renders) */}
+      {activeTool === 'brush' && (
         <div
+          ref={cursorRef}
           style={{
             position: 'absolute',
-            left: brushPreview.x - brushPreview.r,
-            top: brushPreview.y - brushPreview.r,
-            width: brushPreview.r * 2,
-            height: brushPreview.r * 2,
+            display: 'none',
             borderRadius: '50%',
             border: '1px solid rgba(255,255,255,0.7)',
             pointerEvents: 'none',

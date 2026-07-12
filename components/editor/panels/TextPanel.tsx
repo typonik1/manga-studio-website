@@ -1,15 +1,27 @@
 'use client';
 
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
+import { saveCustomFont } from '@/utils/fonts';
+import { translateText, type TranslateLang } from '@/utils/translate';
 import type { TextObject } from '@/types';
 import { MANGA_FONTS, TEXT_PRESETS } from '@/types';
 import { PanelRow, PanelSlider, PanelLabel, PanelSection } from './PanelComponents';
 
 export function TextPanel() {
-  const { textSettings, updateTextSettings, addText, activeDocIndex, documents, selectedObject, updateText } = useStore();
+  const {
+    textSettings, updateTextSettings, addText, activeDocIndex, documents,
+    selectedObject, updateText, customFonts, addCustomFont, bumpFontsVersion,
+    addStroke,
+  } = useStore();
   const customFontRef = useRef<HTMLInputElement>(null);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
+  const [langFrom, setLangFrom] = useState<TranslateLang>('en');
+  const [langTo, setLangTo] = useState<TranslateLang>('ru');
+  const [pageStatus, setPageStatus] = useState<string | null>(null);
+  const [isPageTranslating, setIsPageTranslating] = useState(false);
 
   const hasDoc = activeDocIndex >= 0;
   const activeDoc = hasDoc ? documents[activeDocIndex] : null;
@@ -55,9 +67,10 @@ export function TextPanel() {
       try {
         const buffer = ev.target?.result as ArrayBuffer;
         const fontName = file.name.replace(/\.[^.]+$/, '');
-        const face = new FontFace(fontName, buffer);
-        const loaded = await face.load();
-        (document.fonts as any).add(loaded);
+        // Registers the font AND saves it to IndexedDB so it survives reloads
+        await saveCustomFont(fontName, buffer);
+        addCustomFont(fontName);
+        bumpFontsVersion();
         updateTextSettings({ fontFamily: fontName });
       } catch {
         alert('Не удалось загрузить шрифт. Проверьте файл.');
@@ -66,6 +79,116 @@ export function TextPanel() {
     reader.readAsArrayBuffer(file);
     e.target.value = '';
   }
+
+  async function handleTranslate() {
+    if (!selectedText || !selectedText.text.trim()) return;
+    setIsTranslating(true);
+    setTranslateError(null);
+    try {
+      const translated = await translateText(selectedText.text, langFrom, langTo);
+      updateText(selectedText.id, { text: translated });
+    } catch {
+      setTranslateError('Не удалось перевести. Попробуйте позже.');
+    } finally {
+      setIsTranslating(false);
+    }
+  }
+
+  /**
+   * Page auto-translate: OCR the image, cover each found text block
+   * with a white brush stroke (cleanup layer), then place the
+   * translated text on top at the same position.
+   */
+  async function handlePageTranslate() {
+    if (!activeDoc || isPageTranslating) return;
+    setIsPageTranslating(true);
+    setPageStatus('Загружаем распознавание…');
+    try {
+      const { recognizeParagraphs } = await import('@/utils/ocr');
+      const src = activeDoc.cleanup.committed ?? activeDoc.originalSrc;
+
+      const paragraphs = await recognizeParagraphs(src, langFrom, pct => {
+        setPageStatus(`Распознаём текст… ${pct}%`);
+      });
+
+      if (paragraphs.length === 0) {
+        setPageStatus('Текст на картинке не найден');
+        return;
+      }
+
+      const W = activeDoc.width;
+      const H = activeDoc.height;
+
+      for (let i = 0; i < paragraphs.length; i++) {
+        const p = paragraphs[i];
+        setPageStatus(`Переводим блок ${i + 1} из ${paragraphs.length}…`);
+
+        let translated: string;
+        try {
+          translated = await translateText(p.text, langFrom, langTo);
+        } catch {
+          translated = p.text; // keep original if translation fails
+        }
+
+        // 1) Cover the original text line-by-line with white strokes on the
+        // cleanup layer (tight covers instead of one huge blob).
+        // Round line caps extend by (size*H/2) px horizontally.
+        const coverBoxes = p.lines.length > 0 ? p.lines : [p];
+        for (const box of coverBoxes) {
+          const pad = box.height * 0.2;
+          const size = box.height + pad * 2; // stroke width, fraction of image height
+          const capX = (size * H) / 2 / W;   // cap radius in normalized x units
+          const yc = box.y + box.height / 2;
+          let x0 = box.x + capX;
+          let x1 = box.x + box.width - capX;
+          if (x1 < x0) { x0 = x1 = box.x + box.width / 2; } // narrow line -> dot
+          addStroke({
+            id: uid(),
+            points: [x0, yc, x1, yc],
+            size,
+            color: '#ffffff',
+            opacity: 1,
+          });
+        }
+
+        // 2) Place the translated text on top of the covered area.
+        // Base the font size on the average recognized line height.
+        const avgLineH = p.lines.length > 0
+          ? p.lines.reduce((s, l) => s + l.height, 0) / p.lines.length
+          : p.height / p.lineCount;
+        const fontSize = Math.max(0.012, avgLineH * 0.72);
+        addText({
+          id: uid(),
+          text: translated,
+          fontFamily: textSettings.fontFamily,
+          fontSize,
+          fill: '#000000',
+          stroke: '',
+          strokeWidth: 0,
+          shadowColor: '#000000',
+          shadowBlur: 0,
+          lineHeight: 1.1,
+          align: 'center',
+          width: p.width * 1.15,
+          x: p.x - p.width * 0.075,
+          y: p.y,
+          scaleX: 1,
+          scaleY: 1,
+          rotation: 0,
+          visible: true,
+        });
+      }
+
+      setPageStatus(`Готово: переведено блоков — ${paragraphs.length}`);
+    } catch (err) {
+      console.log('[v0] Page translate error:', err);
+      setPageStatus('Ошибка распознавания. Попробуйте ещё раз.');
+    } finally {
+      setIsPageTranslating(false);
+    }
+  }
+
+  const allFonts = [...MANGA_FONTS, ...customFonts.filter(f => !MANGA_FONTS.includes(f))];
 
   const settings = selectedText ? {
     fontFamily: selectedText.fontFamily,
@@ -91,6 +214,58 @@ export function TextPanel() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div className="section-label">Текст</div>
+
+      {/* Page auto-translate (OCR + translate + overlay) */}
+      <PanelSection title="Автоперевод страницы">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+          <select
+            value={langFrom}
+            onChange={e => setLangFrom(e.target.value as TranslateLang)}
+            style={{ flex: 1, fontSize: 11 }}
+          >
+            <option value="en">EN</option>
+            <option value="ru">RU</option>
+            <option value="ja">JA</option>
+            <option value="ko">KO</option>
+            <option value="zh">ZH</option>
+          </select>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>→</span>
+          <select
+            value={langTo}
+            onChange={e => setLangTo(e.target.value as TranslateLang)}
+            style={{ flex: 1, fontSize: 11 }}
+          >
+            <option value="ru">RU</option>
+            <option value="en">EN</option>
+            <option value="ja">JA</option>
+            <option value="ko">KO</option>
+            <option value="zh">ZH</option>
+          </select>
+        </div>
+        <button
+          onClick={handlePageTranslate}
+          disabled={!hasDoc || isPageTranslating}
+          style={{
+            width: '100%', padding: '7px 8px', fontSize: 12,
+            borderRadius: 6, border: 'none', fontWeight: 600,
+            background: hasDoc && !isPageTranslating ? 'var(--accent)' : 'var(--bg-active)',
+            color: hasDoc && !isPageTranslating ? '#fff' : 'var(--text-muted)',
+            cursor: hasDoc && !isPageTranslating ? 'pointer' : 'not-allowed',
+          }}
+        >
+          {isPageTranslating ? 'Обрабатываем…' : 'Распознать и перевести'}
+        </button>
+        {pageStatus && (
+          <div style={{ marginTop: 4, fontSize: 11, color: isPageTranslating ? 'var(--text-muted)' : 'var(--accent)' }}>
+            {pageStatus}
+          </div>
+        )}
+        <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          Найдёт текст на картинке, закрасит его и поставит перевод сверху. Каждый блок можно двигать и редактировать.
+        </div>
+      </PanelSection>
+
+      <div className="divider" />
 
       {/* Presets */}
       <PanelSection title="Пресеты">
@@ -119,17 +294,100 @@ export function TextPanel() {
       <div className="divider" />
 
       {selectedText && (
-        <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: -4 }}>
-          Редактирование выбранного
-        </div>
+        <>
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: -4 }}>
+            Редактирование выбранного
+          </div>
+          <div>
+            <PanelLabel>Содержимое</PanelLabel>
+            <textarea
+              value={selectedText.text}
+              onChange={e => updateText(selectedText.id, { text: e.target.value })}
+              rows={3}
+              style={{
+                width: '100%',
+                resize: 'vertical',
+                background: 'var(--bg-panel-raised)',
+                border: '1px solid var(--border-default)',
+                borderRadius: 6,
+                color: 'var(--text-primary)',
+                fontSize: 12,
+                padding: '6px 8px',
+                fontFamily: 'inherit',
+                lineHeight: 1.4,
+              }}
+            />
+          </div>
+
+          {/* Auto-translate */}
+          <div>
+            <PanelLabel>Автоперевод</PanelLabel>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <select
+                value={langFrom}
+                onChange={e => setLangFrom(e.target.value as TranslateLang)}
+                style={{ flex: 1, fontSize: 11 }}
+              >
+                <option value="en">EN</option>
+                <option value="ru">RU</option>
+                <option value="ja">JA</option>
+                <option value="ko">KO</option>
+                <option value="zh">ZH</option>
+              </select>
+              <button
+                onClick={() => { const f = langFrom; setLangFrom(langTo); setLangTo(f); }}
+                title="Поменять направление"
+                style={{
+                  padding: '4px 6px', fontSize: 12, borderRadius: 5,
+                  border: '1px solid var(--border-default)',
+                  background: 'var(--bg-panel-raised)',
+                  color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                ⇄
+              </button>
+              <select
+                value={langTo}
+                onChange={e => setLangTo(e.target.value as TranslateLang)}
+                style={{ flex: 1, fontSize: 11 }}
+              >
+                <option value="ru">RU</option>
+                <option value="en">EN</option>
+                <option value="ja">JA</option>
+                <option value="ko">KO</option>
+                <option value="zh">ZH</option>
+              </select>
+            </div>
+            <button
+              onClick={handleTranslate}
+              disabled={isTranslating || !selectedText.text.trim()}
+              style={{
+                marginTop: 4, width: '100%', padding: '6px 8px', fontSize: 12,
+                borderRadius: 6, border: '1px solid var(--accent)',
+                background: 'transparent',
+                color: isTranslating ? 'var(--text-muted)' : 'var(--accent)',
+                cursor: isTranslating ? 'wait' : 'pointer', fontWeight: 600,
+              }}
+            >
+              {isTranslating ? 'Переводим…' : `Перевести ${langFrom.toUpperCase()} → ${langTo.toUpperCase()}`}
+            </button>
+            {translateError && (
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>
+                {translateError}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {/* Font */}
       <div>
         <PanelLabel>Шрифт</PanelLabel>
         <select value={settings.fontFamily} onChange={e => update({ fontFamily: e.target.value })}>
-          {MANGA_FONTS.map(f => (
-            <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
+          {allFonts.map(f => (
+            <option key={f} value={f} style={{ fontFamily: f }}>
+              {f}{customFonts.includes(f) && !MANGA_FONTS.includes(f) ? ' (свой)' : ''}
+            </option>
           ))}
         </select>
       </div>

@@ -45,6 +45,12 @@ export interface TextObject {
   scaleY: number;
   rotation: number;
   visible: boolean;
+  /** OCR text exactly as it was seen before translation. */
+  sourceText?: string;
+  /** Identifies text created by a page auto-translation run. */
+  translationBatchId?: string;
+  /** Whether this object is currently showing its translated value. */
+  isTranslated?: boolean;
 }
 
 export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'arrow' | 'star';

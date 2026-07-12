@@ -121,6 +121,7 @@ export interface AppState {
   addText: (text: TextObject) => void;
   updateText: (id: string, updates: Partial<TextObject>) => void;
   deleteText: (id: string) => void;
+  restorePageSourceText: () => void;
   addShape: (shape: ShapeObject) => void;
   updateShape: (id: string, updates: Partial<ShapeObject>) => void;
   deleteShape: (id: string) => void;
@@ -306,6 +307,20 @@ export const useStore = create<AppState>((set, get) => ({
       const docs = [...state.documents];
       const withH = withHistory(docs[state.activeDocIndex]);
       docs[state.activeDocIndex] = { ...withH, texts: withH.texts.filter(t => t.id !== id) };
+      return { documents: docs, selectedObject: null };
+    }),
+
+  restorePageSourceText: () =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const withH = withHistory(docs[state.activeDocIndex]);
+      const texts = withH.texts.map(text =>
+        text.translationBatchId && text.sourceText
+          ? { ...text, text: text.sourceText, isTranslated: false }
+          : text
+      );
+      docs[state.activeDocIndex] = { ...withH, texts };
       return { documents: docs, selectedObject: null };
     }),
 

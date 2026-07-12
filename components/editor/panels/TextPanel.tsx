@@ -13,7 +13,7 @@ export function TextPanel() {
   const {
     textSettings, updateTextSettings, addText, activeDocIndex, documents,
     selectedObject, updateText, customFonts, addCustomFont, bumpFontsVersion,
-    addStroke,
+    addStroke, restorePageSourceText,
   } = useStore();
   const customFontRef = useRef<HTMLInputElement>(null);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -30,6 +30,14 @@ export function TextPanel() {
   const selectedText = selectedObject?.type === 'text' && activeDoc
     ? activeDoc.texts.find(t => t.id === selectedObject.id)
     : null;
+  const canRestoreSourceText = activeDoc?.texts.some(text => text.translationBatchId && text.sourceText && text.isTranslated) ?? false;
+
+  function handleRestoreSourceText() {
+    restorePageSourceText();
+    setTranslatedBlocks(0);
+    setPageProgress(0);
+    setPageStatus('Перевод отменён · показан исходный текст так, как его распознал OCR.');
+  }
 
   function handleAddText() {
     if (!activeDoc) return;
@@ -125,6 +133,7 @@ export function TextPanel() {
 
       const W = activeDoc.width;
       const H = activeDoc.height;
+      const translationBatchId = uid();
 
       for (let i = 0; i < paragraphs.length; i++) {
         const p = paragraphs[i];
@@ -184,6 +193,9 @@ export function TextPanel() {
           scaleY: 1,
           rotation: 0,
           visible: true,
+          sourceText: p.text,
+          translationBatchId,
+          isTranslated: translated !== p.text,
         });
       }
 
@@ -264,6 +276,11 @@ export function TextPanel() {
         <button className="ui-button ui-button-primary" onClick={handlePageTranslate} disabled={!hasDoc || isPageTranslating} style={{ width: '100%' }}>
           {isPageTranslating ? 'Обрабатываем страницу…' : translatedBlocks !== null ? 'Повторить автоперевод' : 'Распознать и перевести'}
         </button>
+        {canRestoreSourceText && !isPageTranslating && (
+          <button className="ui-button ui-button-secondary" onClick={handleRestoreSourceText} style={{ width: '100%' }}>
+            Отменить перевод и показать оригинал
+          </button>
+        )}
         {isPageTranslating && <div className="editor-progress" role="progressbar" aria-label="Прогресс автоперевода" aria-valuenow={pageProgress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${pageProgress}%` }} /></div>}
         {pageStatus && (
           <div className="editor-status" role={isPageTranslating ? 'status' : translatedBlocks === null ? 'alert' : 'status'} data-tone={translatedBlocks && translatedBlocks > 0 ? 'success' : undefined}>
@@ -276,7 +293,7 @@ export function TextPanel() {
       <div className="divider" />
 
       {/* Presets */}
-      <PanelSection title="Пресеты">
+      <PanelSection title="Пр��сеты">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
           {Object.keys(TEXT_PRESETS).map(key => (
             <button

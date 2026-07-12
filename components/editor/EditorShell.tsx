@@ -32,7 +32,7 @@ const CanvasArea = dynamic(
 );
 
 export function EditorShell() {
-  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, documents } = useStore();
+  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, documents } = useStore();
 
   // Register hasChanges for beforeunload
   useEffect(() => {
@@ -40,6 +40,23 @@ export function EditorShell() {
       documents.some(d => d.hasChanges);
     return () => { delete (window as any).__mangaStudioHasChanges; };
   }, [documents]);
+
+  // Load all fonts (Google + saved custom) once, then force a canvas redraw
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { preloadGoogleFonts, loadSavedCustomFonts } = await import('@/utils/fonts');
+      const [, customNames] = await Promise.all([
+        preloadGoogleFonts(),
+        loadSavedCustomFonts(),
+      ]);
+      if (cancelled) return;
+      const { setCustomFonts, bumpFontsVersion } = useStore.getState();
+      if (customNames.length > 0) setCustomFonts(customNames);
+      bumpFontsVersion();
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName.toLowerCase();
@@ -58,11 +75,14 @@ export function EditorShell() {
     if (e.key === '1') { setLeftTab('watermark'); return; }
     if (e.key === '2') { setLeftTab('cleanup'); return; }
     if (e.key === '3') { setLeftTab('text'); return; }
+    if (e.key === '4') { setLeftTab('insert'); return; }
+    if (e.key === '5') { setLeftTab('transform'); return; }
     if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObject) {
       if (selectedObject.type === 'watermark') deleteWatermark(selectedObject.id);
+      else if (selectedObject.type === 'shape') deleteShape(selectedObject.id);
       else deleteText(selectedObject.id);
     }
-  }, [undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText]);
+  }, [undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);

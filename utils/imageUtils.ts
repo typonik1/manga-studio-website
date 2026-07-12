@@ -43,6 +43,7 @@ export function loadImageFromFile(file: File): Promise<ImageDocument> {
         cleanup: { committed: null, strokes: [] },
         watermarks: [],
         texts: [],
+        shapes: [],
         past: [],
         future: [],
         hasChanges: false,
@@ -79,6 +80,156 @@ export async function loadImagesFromFiles(
     onProgress?.(i + 1, files.length);
   }
   return { docs, errors };
+}
+
+function loadImg(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Не удалось загрузить изображение'));
+    img.src = src;
+  });
+}
+
+function canvasToObjectURL(canvas: HTMLCanvasElement): Promise<string> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (blob) resolve(URL.createObjectURL(blob));
+      else reject(new Error('toBlob failed'));
+    }, 'image/png');
+  });
+}
+
+/** Resize the document's base image (and committed cleanup) to new dimensions */
+export async function resizeDocument(
+  doc: ImageDocument,
+  newW: number,
+  newH: number
+): Promise<Partial<ImageDocument>> {
+  newW = Math.max(1, Math.round(newW));
+  newH = Math.max(1, Math.round(newH));
+  const base = await loadImg(doc.originalSrc);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = newW;
+  canvas.height = newH;
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(base, 0, 0, newW, newH);
+
+  let committed: string | null = null;
+  if (doc.cleanup.committed) {
+    const clean = await loadImg(doc.cleanup.committed);
+    const cc = document.createElement('canvas');
+    cc.width = newW;
+    cc.height = newH;
+    const cctx = cc.getContext('2d')!;
+    cctx.imageSmoothingQuality = 'high';
+    cctx.drawImage(clean, 0, 0, newW, newH);
+    committed = cc.toDataURL('image/png');
+  }
+
+  const originalSrc = await canvasToObjectURL(canvas);
+  const thumbImg = await loadImg(originalSrc);
+
+  return {
+    originalSrc,
+    width: newW,
+    height: newH,
+    thumbnail: createThumbnail(thumbImg, 160),
+    cleanup: { committed, strokes: doc.cleanup.strokes },
+    // Resize invalidates history snapshots (they reference old dimensions)
+    past: [],
+    future: [],
+    hasChanges: true,
+  };
+}
+
+/** Crop the document to a normalized rect; remaps all object coordinates */
+export async function cropDocument(
+  doc: ImageDocument,
+  rect: { x: number; y: number; width: number; height: number }
+): Promise<Partial<ImageDocument>> {
+  const cx = Math.max(0, Math.min(1, rect.x));
+  const cy = Math.max(0, Math.min(1, rect.y));
+  const cw = Math.max(0.01, Math.min(1 - cx, rect.width));
+  const ch = Math.max(0.01, Math.min(1 - cy, rect.height));
+
+  const pxX = Math.round(cx * doc.width);
+  const pxY = Math.round(cy * doc.height);
+  const pxW = Math.max(1, Math.round(cw * doc.width));
+  const pxH = Math.max(1, Math.round(ch * doc.height));
+
+  const base = await loadImg(doc.originalSrc);
+  const canvas = document.createElement('canvas');
+  canvas.width = pxW;
+  canvas.height = pxH;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(base, pxX, pxY, pxW, pxH, 0, 0, pxW, pxH);
+
+  let committed: string | null = null;
+  if (doc.cleanup.committed) {
+    const clean = await loadImg(doc.cleanup.committed);
+    const cc = document.createElement('canvas');
+    cc.width = pxW;
+    cc.height = pxH;
+    cc.getContext('2d')!.drawImage(clean, pxX, pxY, pxW, pxH, 0, 0, pxW, pxH);
+    committed = cc.toDataURL('image/png');
+  }
+
+  // Remap normalized coordinates into the new (cropped) space
+  const mapX = (x: number) => (x - cx) / cw;
+  const mapY = (y: number) => (y - cy) / ch;
+
+  const watermarks = doc.watermarks.map(w => ({
+    ...w,
+    x: mapX(w.x),
+    y: mapY(w.y),
+    // fractions of width/height grow when the image shrinks
+    fontSize: w.fontSize !== undefined ? w.fontSize / ch : w.fontSize,
+    imageWidth: w.imageWidth !== undefined ? w.imageWidth / cw : w.imageWidth,
+    imageHeight: w.imageHeight !== undefined ? w.imageHeight / ch : w.imageHeight,
+  }));
+
+  const texts = doc.texts.map(t => ({
+    ...t,
+    x: mapX(t.x),
+    y: mapY(t.y),
+    fontSize: t.fontSize / ch,
+    width: t.width / cw,
+  }));
+
+  const shapes = doc.shapes.map(s => ({
+    ...s,
+    x: mapX(s.x),
+    y: mapY(s.y),
+    width: s.width / cw,
+    height: s.height / ch,
+  }));
+
+  const strokes = doc.cleanup.strokes.map(st => ({
+    ...st,
+    points: st.points.map((v, i) => (i % 2 === 0 ? mapX(v) : mapY(v))),
+    size: st.size / ch,
+  }));
+
+  const originalSrc = await canvasToObjectURL(canvas);
+  const thumbImg = await loadImg(originalSrc);
+
+  return {
+    originalSrc,
+    width: pxW,
+    height: pxH,
+    thumbnail: createThumbnail(thumbImg, 160),
+    cleanup: { committed, strokes },
+    watermarks,
+    texts,
+    shapes,
+    past: [],
+    future: [],
+    hasChanges: true,
+  };
 }
 
 export function formatFileSize(bytes: number): string {

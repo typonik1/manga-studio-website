@@ -5,11 +5,15 @@ import type { LeftTab, ActiveTool } from '@/types';
 import { WatermarkPanel } from './panels/WatermarkPanel';
 import { CleanupPanel } from './panels/CleanupPanel';
 import { TextPanel } from './panels/TextPanel';
+import { InsertPanel } from './panels/InsertPanel';
+import { TransformPanel } from './panels/TransformPanel';
 
 const TABS: { key: LeftTab; label: string; hotkey: string }[] = [
   { key: 'watermark', label: 'Вотерка', hotkey: '1' },
   { key: 'cleanup', label: 'Очистка', hotkey: '2' },
   { key: 'text', label: 'Текст', hotkey: '3' },
+  { key: 'insert', label: 'Вставка', hotkey: '4' },
+  { key: 'transform', label: 'Размер', hotkey: '5' },
 ];
 
 const TOOLS: { key: ActiveTool; label: string; hotkey: string; icon: React.ReactNode }[] = [
@@ -119,8 +123,8 @@ export function LeftPanel() {
             title={`${tab.label} (${tab.hotkey})`}
             style={{
               flex: 1,
-              padding: '8px 4px',
-              fontSize: 12,
+              padding: '8px 2px',
+              fontSize: 11,
               fontWeight: leftTab === tab.key ? 600 : 400,
               color: leftTab === tab.key ? 'var(--accent)' : 'var(--text-secondary)',
               background: 'transparent',
@@ -141,6 +145,8 @@ export function LeftPanel() {
         {leftTab === 'watermark' && <WatermarkPanel />}
         {leftTab === 'cleanup' && <CleanupPanel />}
         {leftTab === 'text' && <TextPanel />}
+        {leftTab === 'insert' && <InsertPanel />}
+        {leftTab === 'transform' && <TransformPanel />}
       </div>
     </aside>
   );

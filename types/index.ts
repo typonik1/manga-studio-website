@@ -47,6 +47,26 @@ export interface TextObject {
   visible: boolean;
 }
 
+export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'arrow' | 'star';
+
+export interface ShapeObject {
+  id: string;
+  kind: ShapeKind;
+  x: number;        // normalized center x
+  y: number;        // normalized center y
+  width: number;    // normalized fraction of image width
+  height: number;   // normalized fraction of image height
+  fill: string;     // '' = no fill
+  stroke: string;
+  strokeWidth: number; // px at original resolution
+  opacity: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+  cornerRadius: number; // for rect, px at original resolution
+  visible: boolean;
+}
+
 export interface CleanupLayerState {
   committed: string | null; // dataURL of committed cleanup at original res
   strokes: StrokeData[];
@@ -56,6 +76,7 @@ export interface HistorySnapshot {
   cleanup: CleanupLayerState;
   watermarks: WatermarkObject[];
   texts: TextObject[];
+  shapes: ShapeObject[];
 }
 
 export interface ImageDocument {
@@ -69,17 +90,33 @@ export interface ImageDocument {
   cleanup: CleanupLayerState;
   watermarks: WatermarkObject[];
   texts: TextObject[];
+  shapes: ShapeObject[];
   past: HistorySnapshot[];
   future: HistorySnapshot[];
   hasChanges: boolean;
 }
 
-export type ActiveTool = 'select' | 'brush' | 'pan';
-export type LeftTab = 'watermark' | 'cleanup' | 'text';
+export type ActiveTool = 'select' | 'brush' | 'pan' | 'crop';
+export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform';
 
 export interface SelectedObject {
   id: string;
-  type: 'watermark' | 'text';
+  type: 'watermark' | 'text' | 'shape';
+}
+
+export interface CropRect {
+  x: number; // normalized
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ShapeSettings {
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+  opacity: number;
+  cornerRadius: number;
 }
 
 export interface WatermarkSettings {
@@ -136,6 +173,7 @@ export interface LayerVisibility {
   cleanup: boolean;
   watermarks: boolean;
   texts: boolean;
+  shapes: boolean;
 }
 
 export const MANGA_FONTS = [

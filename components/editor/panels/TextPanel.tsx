@@ -1,15 +1,24 @@
 'use client';
 
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
+import { saveCustomFont } from '@/utils/fonts';
+import { translateText, type TranslateLang } from '@/utils/translate';
 import type { TextObject } from '@/types';
 import { MANGA_FONTS, TEXT_PRESETS } from '@/types';
 import { PanelRow, PanelSlider, PanelLabel, PanelSection } from './PanelComponents';
 
 export function TextPanel() {
-  const { textSettings, updateTextSettings, addText, activeDocIndex, documents, selectedObject, updateText } = useStore();
+  const {
+    textSettings, updateTextSettings, addText, activeDocIndex, documents,
+    selectedObject, updateText, customFonts, addCustomFont, bumpFontsVersion,
+  } = useStore();
   const customFontRef = useRef<HTMLInputElement>(null);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
+  const [langFrom, setLangFrom] = useState<TranslateLang>('en');
+  const [langTo, setLangTo] = useState<TranslateLang>('ru');
 
   const hasDoc = activeDocIndex >= 0;
   const activeDoc = hasDoc ? documents[activeDocIndex] : null;
@@ -55,9 +64,10 @@ export function TextPanel() {
       try {
         const buffer = ev.target?.result as ArrayBuffer;
         const fontName = file.name.replace(/\.[^.]+$/, '');
-        const face = new FontFace(fontName, buffer);
-        const loaded = await face.load();
-        (document.fonts as any).add(loaded);
+        // Registers the font AND saves it to IndexedDB so it survives reloads
+        await saveCustomFont(fontName, buffer);
+        addCustomFont(fontName);
+        bumpFontsVersion();
         updateTextSettings({ fontFamily: fontName });
       } catch {
         alert('Не удалось загрузить шрифт. Проверьте файл.');
@@ -66,6 +76,22 @@ export function TextPanel() {
     reader.readAsArrayBuffer(file);
     e.target.value = '';
   }
+
+  async function handleTranslate() {
+    if (!selectedText || !selectedText.text.trim()) return;
+    setIsTranslating(true);
+    setTranslateError(null);
+    try {
+      const translated = await translateText(selectedText.text, langFrom, langTo);
+      updateText(selectedText.id, { text: translated });
+    } catch {
+      setTranslateError('Не удалось перевести. Попробуйте позже.');
+    } finally {
+      setIsTranslating(false);
+    }
+  }
+
+  const allFonts = [...MANGA_FONTS, ...customFonts.filter(f => !MANGA_FONTS.includes(f))];
 
   const settings = selectedText ? {
     fontFamily: selectedText.fontFamily,
@@ -143,6 +169,65 @@ export function TextPanel() {
               }}
             />
           </div>
+
+          {/* Auto-translate */}
+          <div>
+            <PanelLabel>Автоперевод</PanelLabel>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <select
+                value={langFrom}
+                onChange={e => setLangFrom(e.target.value as TranslateLang)}
+                style={{ flex: 1, fontSize: 11 }}
+              >
+                <option value="en">EN</option>
+                <option value="ru">RU</option>
+                <option value="ja">JA</option>
+                <option value="ko">KO</option>
+                <option value="zh">ZH</option>
+              </select>
+              <button
+                onClick={() => { const f = langFrom; setLangFrom(langTo); setLangTo(f); }}
+                title="Поменять направление"
+                style={{
+                  padding: '4px 6px', fontSize: 12, borderRadius: 5,
+                  border: '1px solid var(--border-default)',
+                  background: 'var(--bg-panel-raised)',
+                  color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                ⇄
+              </button>
+              <select
+                value={langTo}
+                onChange={e => setLangTo(e.target.value as TranslateLang)}
+                style={{ flex: 1, fontSize: 11 }}
+              >
+                <option value="ru">RU</option>
+                <option value="en">EN</option>
+                <option value="ja">JA</option>
+                <option value="ko">KO</option>
+                <option value="zh">ZH</option>
+              </select>
+            </div>
+            <button
+              onClick={handleTranslate}
+              disabled={isTranslating || !selectedText.text.trim()}
+              style={{
+                marginTop: 4, width: '100%', padding: '6px 8px', fontSize: 12,
+                borderRadius: 6, border: '1px solid var(--accent)',
+                background: 'transparent',
+                color: isTranslating ? 'var(--text-muted)' : 'var(--accent)',
+                cursor: isTranslating ? 'wait' : 'pointer', fontWeight: 600,
+              }}
+            >
+              {isTranslating ? 'Переводим…' : `Перевести ${langFrom.toUpperCase()} → ${langTo.toUpperCase()}`}
+            </button>
+            {translateError && (
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>
+                {translateError}
+              </div>
+            )}
+          </div>
         </>
       )}
 
@@ -150,8 +235,10 @@ export function TextPanel() {
       <div>
         <PanelLabel>Шрифт</PanelLabel>
         <select value={settings.fontFamily} onChange={e => update({ fontFamily: e.target.value })}>
-          {MANGA_FONTS.map(f => (
-            <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
+          {allFonts.map(f => (
+            <option key={f} value={f} style={{ fontFamily: f }}>
+              {f}{customFonts.includes(f) && !MANGA_FONTS.includes(f) ? ' (свой)' : ''}
+            </option>
           ))}
         </select>
       </div>

@@ -573,7 +573,7 @@ export function CanvasArea() {
       panVpStart.current = { x: viewport.x, y: viewport.y };
       return;
     }
-    if ((activeTool === 'brush' || activeTool === 'eraser') && activeDoc) {
+    if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && activeDoc) {
       const stage = stageRef.current;
       if (!stage) return;
       const pos = stage.getPointerPosition();
@@ -591,7 +591,7 @@ export function CanvasArea() {
       const line = liveLineRef.current;
       if (line) {
         line.points(livePoints.current);
-        line.stroke(activeTool === 'eraser' ? '#000000' : cleanupSettings.brushColor);
+        line.stroke(activeTool === 'eraser' ? '#000000' : activeTool === 'maskBrush' ? 'rgba(255,128,0,0.6)' : cleanupSettings.brushColor);
         line.globalCompositeOperation(activeTool === 'eraser' ? 'destination-out' : 'source-over');
         line.strokeWidth(cleanupSettings.brushSize * activeDoc.height * previewScale);
         line.visible(true);
@@ -612,7 +612,7 @@ export function CanvasArea() {
       return;
     }
 
-    if ((activeTool === 'brush' || activeTool === 'eraser') && pos) {
+    if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && pos) {
       const imgX = (pos.x - viewport.x) / viewport.scale;
       const imgY = (pos.y - viewport.y) / viewport.scale;
 
@@ -656,6 +656,7 @@ export function CanvasArea() {
           color: cleanupSettings.brushColor,
           opacity: 1,
           mode: activeTool === 'eraser' ? 'erase' : 'paint',
+          purpose: activeTool === 'maskBrush' ? 'mask' : 'paint',
         };
         addStroke(stroke);
         window.requestAnimationFrame(() => {
@@ -726,7 +727,7 @@ export function CanvasArea() {
         position: 'relative',
         overflow: 'hidden',
         background: '#141414',
-        cursor: activeTool === 'pan' ? 'grab' : activeTool === 'brush' || activeTool === 'eraser' ? 'none' : activeTool === 'lasso' || activeTool === 'wand' ? 'crosshair' : 'default',
+        cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : activeTool === 'lasso' || activeTool === 'wand' ? 'crosshair' : 'default',
       }}
     >
       <ToolOptionsBar />
@@ -968,7 +969,7 @@ export function CanvasArea() {
       )}
 
       {/* Brush cursor (positioned imperatively, no re-renders) */}
-      {(activeTool === 'brush' || activeTool === 'eraser') && (
+      {(activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && (
         <div
           ref={cursorRef}
           style={{

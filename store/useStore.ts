@@ -43,6 +43,7 @@ const defaultCleanupSettings: CleanupSettings = {
   brushColor: '#ffffff',
   inpaintRadius: 4,
   mode: 'brush',
+  cleanupMethod: 'auto',
   magicThreshold: 30,
 };
 
@@ -118,6 +119,8 @@ export interface AppState {
   moveSelectedObject: (direction: 'forward' | 'backward') => void;
   updateDocumentThumbnail: (id: string, dataUrl: string) => void;
   addStroke: (stroke: StrokeData) => void;
+  clearMaskStrokes: () => void;
+  applyTranslationBatch: (cleanupDataUrl: string, texts: TextObject[]) => void;
   addWatermark: (wm: WatermarkObject) => void;
   updateWatermark: (id: string, updates: Partial<WatermarkObject>) => void;
   deleteWatermark: (id: string) => void;
@@ -255,6 +258,31 @@ export const useStore = create<AppState>((set, get) => ({
       };
       return { documents: docs };
     }),
+
+  clearMaskStrokes: () => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const current = state.documents[state.activeDocIndex];
+    if (!current.cleanup.strokes.some(stroke => stroke.purpose === 'mask')) return {};
+    const docs = [...state.documents];
+    const withH = withHistory(current);
+    docs[state.activeDocIndex] = {
+      ...withH,
+      cleanup: { ...withH.cleanup, strokes: withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask') },
+    };
+    return { documents: docs };
+  }),
+
+  applyTranslationBatch: (cleanupDataUrl, texts) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const withH = withHistory(docs[state.activeDocIndex]);
+    docs[state.activeDocIndex] = {
+      ...withH,
+      cleanup: { committed: cleanupDataUrl, strokes: withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask') },
+      texts: [...withH.texts, ...texts],
+    };
+    return { documents: docs };
+  }),
 
   addWatermark: (wm) =>
     set(state => {

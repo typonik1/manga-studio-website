@@ -6,6 +6,7 @@ export interface StrokeData {
   opacity: number;
   /** Paint is the default for documents created before eraser support. */
   mode?: 'paint' | 'erase';
+  purpose?: 'paint' | 'mask';
 }
 
 export interface WatermarkObject {
@@ -104,7 +105,8 @@ export interface ImageDocument {
   hasChanges: boolean;
 }
 
-export type ActiveTool = 'select' | 'brush' | 'eraser' | 'pan' | 'lasso' | 'text' | 'watermark' | 'wand' | 'crop';
+export type CleanupMethod = 'auto' | 'white' | 'background' | 'inpaint';
+export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'text' | 'watermark' | 'wand' | 'crop';
 export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform';
 
 export interface SelectedObject {
@@ -149,6 +151,7 @@ export interface CleanupSettings {
   brushColor: string;
   inpaintRadius: number;
   mode: 'brush' | 'inpaint' | 'magic';
+  cleanupMethod: CleanupMethod;
   magicThreshold: number;
 }
 

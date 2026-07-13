@@ -99,13 +99,13 @@ export function ToolOptionsBar() {
         </button>
         <button
           disabled={!selectionActive || running !== null}
-          title="AI-восстановление области через Clipdrop"
+          title="AI удаляет объект в выделении и дорисовывает фон (Clipdrop)"
           onClick={() => {
             abortRef.current = new AbortController();
             void runAction('ai', () => aiCleanupMaskedArea(abortRef.current?.signal));
           }}
         >
-          {running === 'ai' ? 'AI работает…' : 'AI-восстановить'}
+          {running === 'ai' ? 'AI работает…' : 'AI-удаление объекта'}
         </button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Не сбрасывать выделение после действия">
           <input type="checkbox" checked={cleanupSettings.keepSelectionAfterAction} onChange={e => updateCleanupSettings({ keepSelectionAfterAction: e.target.checked })} />

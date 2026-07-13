@@ -274,7 +274,7 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
           {activeDoc.watermarks.map(wm => (
             <ObjectRow
               key={wm.id}
-              label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : 'Лого'}
+              label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : '��ого'}
               prefix="W"
               isSelected={selectedObject?.id === wm.id}
               visible={wm.visible}
@@ -365,7 +365,7 @@ function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
               { key: 'opacity', label: 'Прозрачность', value: base?.opacity ?? 1, min: 0, max: 100, apply: (v: number) => updateBaseLayer({ opacity: v / 100 }) },
               { key: 'brightness', label: 'Яркость', value: adjustments.brightness, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, brightness: v / 100 } }) },
               { key: 'contrast', label: 'Контраст', value: adjustments.contrast, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, contrast: v / 100 } }) },
-              { key: 'saturation', label: 'Насыщенност��', value: adjustments.saturation, min: 0, max: 200, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, saturation: v / 100 } }) },
+              { key: 'saturation', label: 'Насыщенность', value: adjustments.saturation, min: 0, max: 200, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, saturation: v / 100 } }) },
             ] as const).map(slider => (
               <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>

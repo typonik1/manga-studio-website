@@ -7,7 +7,7 @@ import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
 import { resolveLayerOrder } from '@/utils/layerOrder';
-import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask } from '@/utils/cleanupRaster';
+import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask, bakeStrokeIntoLayerSrc } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
 import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
 import { ToolOptionsBar } from './ToolOptionsBar';
@@ -1068,7 +1068,26 @@ export function CanvasArea() {
           // applyEraseElements then punches the covered area out of the layer.
           addEraseElement(target, { type: 'brush', stroke: { ...stroke, mode: 'paint' } });
         } else {
-          addStroke(stroke);
+          // If a drawing layer is selected, bake the stroke into its bitmap so
+          // the drawing lives on that layer (moves/hides/reorders with it).
+          const selected = activeDoc.selectedLayer;
+          const drawingLayer = selected?.type === 'ai'
+            ? activeDoc.aiLayers.find(layer => layer.id === selected.id && layer.operation === 'drawing')
+            : undefined;
+          if (drawingLayer) {
+            const docId = activeDoc.id;
+            const layerId = drawingLayer.id;
+            void bakeStrokeIntoLayerSrc(drawingLayer, activeDoc.width, activeDoc.height, stroke)
+              .then(src => {
+                const state = useStore.getState();
+                if (state.documents[state.activeDocIndex]?.id === docId) {
+                  state.updateAiLayer(layerId, { src });
+                }
+              })
+              .catch(() => { /* keep previous bitmap on failure */ });
+          } else {
+            addStroke(stroke);
+          }
         }
         window.requestAnimationFrame(() => {
           const stage = stageRef.current;
@@ -1158,7 +1177,9 @@ export function CanvasArea() {
         isolation: 'isolate',
         zIndex: 0,
         background: 'var(--bg-base)',
-        cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect' ? 'crosshair' : 'default',
+        // Cursor is set on the Stage itself (not here) so HUD panels and
+        // buttons over the canvas keep the normal system cursor.
+        cursor: 'default',
       }}
     >
       <ToolOptionsBar />
@@ -1283,7 +1304,11 @@ export function CanvasArea() {
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onClick={handleStageClick}
-          style={{ display: 'block' }}
+          onMouseLeave={() => { if (cursorRef.current) cursorRef.current.style.display = 'none'; }}
+          style={{
+            display: 'block',
+            cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect' ? 'crosshair' : 'default',
+          }}
         >
           {/* Base image layer — key includes fontsVersion so the canvas
               repaints once web fonts finish loading */}

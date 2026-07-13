@@ -120,6 +120,48 @@ export async function buildRasterLayerCanvas(layer: AiRasterLayer, width: number
   return canvas;
 }
 
+/**
+ * Bakes a brush stroke (doc-normalized points) into a drawing layer's bitmap
+ * and returns the new src. Applies the inverse of the layer's non-destructive
+ * transform so the stroke lands exactly where the user drew it on screen.
+ */
+export async function bakeStrokeIntoLayerSrc(
+  layer: AiRasterLayer,
+  docWidth: number,
+  docHeight: number,
+  stroke: StrokeData,
+): Promise<string> {
+  const canvas = document.createElement('canvas');
+  canvas.width = docWidth; canvas.height = docHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas недоступен.');
+  const image = await loadCleanupImage(layer.src);
+  ctx.drawImage(image, 0, 0, docWidth, docHeight);
+
+  const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0 } = layer;
+  ctx.save();
+  // Inverse of drawPlacedLayer's transform: layer-local = S^-1 · R^-1 · T^-1 · doc.
+  ctx.scale(1 / (scaleX || 1), 1 / (scaleY || 1));
+  ctx.rotate((-rotation * Math.PI) / 180);
+  ctx.translate(-x * docWidth, -y * docHeight);
+
+  ctx.strokeStyle = stroke.color;
+  ctx.globalAlpha = stroke.opacity;
+  ctx.lineWidth = Math.max(1, stroke.size * docHeight);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
+  ctx.beginPath();
+  for (let index = 0; index < stroke.points.length; index += 2) {
+    const px = stroke.points[index] * docWidth;
+    const py = stroke.points[index + 1] * docHeight;
+    if (!index) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  ctx.restore();
+  return canvas.toDataURL('image/png');
+}
+
 export interface RasterPlacement {
   x?: number;
   y?: number;

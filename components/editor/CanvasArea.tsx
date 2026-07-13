@@ -1136,6 +1136,16 @@ export function CanvasArea() {
       const { cleanupSettings: cs, updateCleanupSettings: ucs } = useStore.getState();
       if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        // Enter/Escape commits the current transform: deselect the layer/object
+        // so the transformer disappears and the layer "stays put".
+        const store = useStore.getState();
+        const doc = store.documents[store.activeDocIndex];
+        if (doc?.selectedLayer && (doc.selectedLayer.type === 'base' || doc.selectedLayer.type === 'ai')) {
+          store.selectLayer(null);
+        }
+        if (store.selectedObject) store.setSelectedObject(null);
+      }
       if (e.key === 'Escape') {
         if (isPainting.current) {
           isPainting.current = false; currentStroke.current = []; livePoints.current = [];

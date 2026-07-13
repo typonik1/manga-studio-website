@@ -1,19 +1,65 @@
 'use client';
 
+import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
-import { PanelSlider, PanelRow, PanelLabel, PanelButton } from './PanelComponents';
+import { PanelSlider, PanelRow } from './PanelComponents';
 import { simpleInpaint } from '@/utils/imageUtils';
+import { buildCleanupMask, buildCleanupSource } from '@/utils/cleanupRaster';
+import { cleanupWithClipdrop, removeBackgroundWithClipdrop } from '@/lib/clipdrop/client';
+
+const primaryButtonStyle = {
+  padding: '7px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+  border: 'none', background: 'var(--accent)', color: 'var(--accent-foreground)', cursor: 'pointer',
+} as const;
+
+const secondaryButtonStyle = {
+  padding: '6px', borderRadius: 6, fontSize: 11,
+  border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)',
+  color: 'var(--text-secondary)', cursor: 'pointer',
+} as const;
 
 export function CleanupPanel() {
   const {
     cleanupSettings, updateCleanupSettings,
     setActiveTool, activeTool,
     activeDocIndex, documents,
-    applyCleanupCommit, setInpaintRunning,
+    applyCleanupCommit, applyAiCleanupCommit, clearMaskStrokes, setInpaintRunning,
     isInpaintRunning, inpaintProgress,
   } = useStore();
+  const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
+  const [aiError, setAiError] = useState('');
+  const abortRef = useRef<AbortController | null>(null);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
+  const hasMask = activeDoc?.cleanup.strokes.some(stroke => stroke.purpose === 'mask' && stroke.mode !== 'erase') ?? false;
+
+  async function handleClipdrop(operation: 'cleanup' | 'background') {
+    if (!activeDoc || aiOperation) return;
+    const documentId = activeDoc.id;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setAiError('');
+    setAiOperation(operation);
+    try {
+      const image = await buildCleanupSource(activeDoc);
+      let result: string;
+      if (operation === 'cleanup') {
+        const mask = await buildCleanupMask(activeDoc);
+        if (mask.isEmpty) throw new Error('Сначала закрасьте объект кистью маски.');
+        result = await cleanupWithClipdrop(image, mask.blob, controller.signal);
+      } else {
+        result = await removeBackgroundWithClipdrop(image, controller.signal);
+      }
+      applyAiCleanupCommit(documentId, result, operation === 'cleanup');
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setAiError(error instanceof Error ? error.message : 'Не удалось обработать изображение.');
+      }
+    } finally {
+      abortRef.current = null;
+      setAiOperation(null);
+    }
+  }
 
   async function handleInpaint() {
     if (!activeDoc || isInpaintRunning) return;
@@ -107,7 +153,7 @@ export function CleanupPanel() {
             key={m.key}
             onClick={() => {
               updateCleanupSettings({ mode: m.key });
-              setActiveTool(m.key === 'brush' ? 'brush' : 'select');
+              setActiveTool(m.key === 'brush' ? 'brush' : 'maskBrush');
             }}
             style={{
               flex: 1,
@@ -231,6 +277,55 @@ export function CleanupPanel() {
           )}
         </>
       )}
+
+      <div className="divider" />
+      <div className="section-label">Clipdrop AI</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+        Маска удаляет отмеченный объект. Удаление фона работает автоматически и сохраняет прозрачность PNG.
+      </div>
+      <button
+        type="button"
+        aria-label="Включить кисть маски"
+        onClick={() => { updateCleanupSettings({ mode: 'inpaint' }); setActiveTool('maskBrush'); }}
+        disabled={!activeDoc || Boolean(aiOperation)}
+        style={secondaryButtonStyle}
+      >
+        Кисть маски
+      </button>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          type="button"
+          onClick={() => handleClipdrop('cleanup')}
+          disabled={!activeDoc || !hasMask || Boolean(aiOperation)}
+          aria-busy={aiOperation === 'cleanup'}
+          style={{ ...primaryButtonStyle, flex: 1 }}
+        >
+          {aiOperation === 'cleanup' ? 'Удаляем…' : 'Удалить отмеченное'}
+        </button>
+        <button
+          type="button"
+          onClick={clearMaskStrokes}
+          disabled={!hasMask || Boolean(aiOperation)}
+          style={secondaryButtonStyle}
+        >
+          Очистить маску
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => handleClipdrop('background')}
+        disabled={!activeDoc || Boolean(aiOperation)}
+        aria-busy={aiOperation === 'background'}
+        style={primaryButtonStyle}
+      >
+        {aiOperation === 'background' ? 'Удаляем фон…' : 'Удалить фон'}
+      </button>
+      {aiOperation && (
+        <button type="button" onClick={() => abortRef.current?.abort()} style={secondaryButtonStyle}>
+          Отменить запрос
+        </button>
+      )}
+      {aiError && <div role="alert" style={{ color: 'var(--destructive)', fontSize: 11, lineHeight: 1.4 }}>{aiError}</div>}
 
       <div className="divider" />
 

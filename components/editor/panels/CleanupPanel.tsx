@@ -23,7 +23,7 @@ export function CleanupPanel() {
     cleanupSettings, updateCleanupSettings,
     setActiveTool, activeTool,
     activeDocIndex, documents,
-    applyCleanupCommit, applyAiCleanupCommit, clearMaskStrokes, setInpaintRunning,
+    applyCleanupCommit, addAiLayer, createMask, clearActiveMask, setInpaintRunning,
     isInpaintRunning, inpaintProgress,
   } = useStore();
   const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
@@ -31,7 +31,8 @@ export function CleanupPanel() {
   const abortRef = useRef<AbortController | null>(null);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
-  const hasMask = activeDoc?.cleanup.strokes.some(stroke => stroke.purpose === 'mask' && stroke.mode !== 'erase') ?? false;
+  const activeMask = activeDoc?.masks.find(mask => mask.id === activeDoc.activeMaskId) ?? null;
+  const hasMask = activeMask?.strokes.some(stroke => stroke.mode !== 'erase') ?? false;
 
   async function handleClipdrop(operation: 'cleanup' | 'background') {
     if (!activeDoc || aiOperation) return;
@@ -50,7 +51,17 @@ export function CleanupPanel() {
       } else {
         result = await removeBackgroundWithClipdrop(image, controller.signal);
       }
-      applyAiCleanupCommit(documentId, result, operation === 'cleanup');
+      const current = useStore.getState().documents.find(doc => doc.id === documentId);
+      const index = (current?.aiLayers.filter(layer => layer.operation === operation).length ?? 0) + 1;
+      addAiLayer(documentId, {
+        id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: operation === 'cleanup' ? `Удаление объекта ${index}` : `Фон удалён ${index}`,
+        src: result,
+        visible: true,
+        opacity: 1,
+        operation: operation === 'cleanup' ? 'cleanup' : 'remove-background',
+        maskId: operation === 'cleanup' ? activeMask?.id : undefined,
+      });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         setAiError(error instanceof Error ? error.message : 'Не удалось обработать изображение.');
@@ -279,10 +290,18 @@ export function CleanupPanel() {
       )}
 
       <div className="divider" />
-      <div className="section-label">Clipdrop AI</div>
+      <div className="section-label">Маска и удаление</div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-        Маска удаляет отмеченный объект. Удаление фона работает автоматически и сохраняет прозрачность PNG.
+        {activeMask ? `Активна: ${activeMask.name} · ${activeMask.strokes.length} штр.` : 'Создайте маску и закрасьте объект оранжевой кистью.'}
       </div>
+      <button
+        type="button"
+        onClick={() => { createMask(); setActiveTool('maskBrush'); }}
+        disabled={!activeDoc || Boolean(aiOperation)}
+        style={secondaryButtonStyle}
+      >
+        Новая маска
+      </button>
       <button
         type="button"
         aria-label="Включить кисть маски"
@@ -304,7 +323,7 @@ export function CleanupPanel() {
         </button>
         <button
           type="button"
-          onClick={clearMaskStrokes}
+          onClick={() => { if (window.confirm('Очистить все штрихи активной маски?')) clearActiveMask(); }}
           disabled={!hasMask || Boolean(aiOperation)}
           style={secondaryButtonStyle}
         >

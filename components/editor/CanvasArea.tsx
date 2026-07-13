@@ -30,6 +30,44 @@ function useImage(src: string | null | undefined) {
   return img;
 }
 
+function RasterLayerNode({ src, width, height, opacity }: { src: string; width: number; height: number; opacity: number }) {
+  const image = useImage(src);
+  if (!image) return null;
+  return <KonvaImage name="ai-raster-layer" image={image} width={width} height={height} opacity={opacity} listening={false} />;
+}
+
+function MaskOverlayNode({ strokes, width, height, opacity }: { strokes: StrokeData[]; width: number; height: number; opacity: number }) {
+  const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const next = document.createElement('canvas');
+    next.width = Math.max(1, Math.round(width));
+    next.height = Math.max(1, Math.round(height));
+    const ctx = next.getContext('2d');
+    if (!ctx) return;
+    for (const stroke of strokes) {
+      if (stroke.points.length < 2) continue;
+      ctx.save();
+      ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
+      ctx.strokeStyle = 'rgb(255, 128, 0)';
+      ctx.globalAlpha = stroke.opacity;
+      ctx.lineWidth = Math.max(1, stroke.size * height);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      stroke.points.forEach((value, index) => {
+        if (index % 2 !== 0) return;
+        const x = value * width;
+        const y = stroke.points[index + 1] * height;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.restore();
+    }
+    setCanvas(next);
+  }, [strokes, width, height]);
+  return canvas ? <KonvaImage image={canvas} width={width} height={height} opacity={opacity} listening={false} /> : null;
+}
+
 function WatermarkNode({
   wm,
   docWidth,
@@ -479,7 +517,7 @@ export function CanvasArea() {
   const {
     documents, activeDocIndex, setActiveDoc,
     activeTool, cleanupSettings,
-    addStroke, updateWatermark, updateText, updateShape,
+    addStroke, addMaskStroke, updateWatermark, updateText, updateShape,
     selectedObject, setSelectedObject,
     layerVisibility,
     viewport, setViewport,
@@ -661,7 +699,9 @@ export function CanvasArea() {
           mode: activeTool === 'eraser' ? 'erase' : 'paint',
           purpose: activeTool === 'maskBrush' ? 'mask' : 'paint',
         };
-        addStroke(stroke);
+        const editsMask = activeTool === 'maskBrush' || (activeTool === 'eraser' && activeDoc.selectedLayer?.type === 'mask');
+        if (editsMask) addMaskStroke(stroke);
+        else addStroke(stroke);
         window.requestAnimationFrame(() => {
           const stage = stageRef.current;
           if (!stage) return;
@@ -709,6 +749,13 @@ export function CanvasArea() {
       const { cleanupSettings: cs, updateCleanupSettings: ucs } = useStore.getState();
       if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
+      if (e.key === 'Escape' && isPainting.current) {
+        isPainting.current = false;
+        currentStroke.current = [];
+        livePoints.current = [];
+        const line = liveLineRef.current;
+        if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -880,8 +927,13 @@ export function CanvasArea() {
               <KonvaImage name="base-image" image={cleanupImg} width={imgW} height={imgH} />
             )}
 
+            {/* Non-destructive AI raster layers */}
+            {layerVisibility.cleanup && (activeDoc.aiLayers ?? []).filter(layer => layer.visible).map(layer => (
+              <RasterLayerNode key={layer.id} src={layer.src} width={imgW} height={imgH} opacity={layer.opacity} />
+            ))}
+
             {/* Live brush strokes */}
-            {layerVisibility.cleanup && activeDoc.cleanup.strokes.map(stroke => {
+            {layerVisibility.cleanup && activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask').map(stroke => {
               const pts = stroke.points.flatMap((v, i) =>
                 i % 2 === 0 ? v * imgW : v * imgH
               );
@@ -899,6 +951,11 @@ export function CanvasArea() {
                 />
               );
             })}
+
+            {/* Persistent editor-only mask overlays */}
+            {(activeDoc.masks ?? []).filter(mask => mask.visible).map(mask => (
+              <MaskOverlayNode key={mask.id} strokes={mask.strokes} width={imgW} height={imgH} opacity={mask.opacity} />
+            ))}
 
             {/* Live stroke while drawing (updated imperatively) */}
             <Line

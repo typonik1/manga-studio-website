@@ -18,6 +18,9 @@ import type {
   ActiveTool,
   LeftTab,
   CropRect,
+  MaskLayer,
+  AiRasterLayer,
+  SelectedLayer,
 } from '../types';
 
 const MAX_HISTORY = 40;
@@ -77,6 +80,10 @@ const defaultShapeSettings: ShapeSettings = {
 function snap(doc: ImageDocument): HistorySnapshot {
   return {
     cleanup: { committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
+    masks: (doc.masks ?? []).map(mask => ({ ...mask, strokes: mask.strokes.map(stroke => ({ ...stroke, points: [...stroke.points] })) })),
+    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer })),
+    activeMaskId: doc.activeMaskId ?? null,
+    selectedLayer: doc.selectedLayer ? { ...doc.selectedLayer } : null,
     watermarks: doc.watermarks.map(w => ({ ...w })),
     texts: doc.texts.map(t => ({ ...t })),
     shapes: (doc.shapes ?? []).map(s => ({ ...s })),
@@ -120,6 +127,15 @@ export interface AppState {
   moveSelectedObject: (direction: 'forward' | 'backward') => void;
   updateDocumentThumbnail: (id: string, dataUrl: string) => void;
   addStroke: (stroke: StrokeData) => void;
+  createMask: () => string | null;
+  selectLayer: (layer: SelectedLayer | null) => void;
+  addMaskStroke: (stroke: StrokeData) => void;
+  clearActiveMask: () => void;
+  updateMask: (id: string, updates: Partial<Pick<MaskLayer, 'name' | 'visible' | 'opacity'>>) => void;
+  deleteMask: (id: string) => void;
+  addAiLayer: (documentId: string, layer: AiRasterLayer) => void;
+  updateAiLayer: (id: string, updates: Partial<Pick<AiRasterLayer, 'name' | 'visible' | 'opacity'>>) => void;
+  deleteAiLayer: (id: string) => void;
   clearMaskStrokes: () => void;
   applyTranslationBatch: (cleanupDataUrl: string, texts: TextObject[]) => void;
   addWatermark: (wm: WatermarkObject) => void;
@@ -261,18 +277,117 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs };
     }),
 
-  clearMaskStrokes: () => set(state => {
+  createMask: () => {
+    const state = get();
+    if (state.activeDocIndex < 0) return null;
+    const id = `mask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    set(current => {
+      const docs = [...current.documents];
+      const doc = withHistory(docs[current.activeDocIndex]);
+      const mask: MaskLayer = { id, name: `Маска ${(doc.masks?.length ?? 0) + 1}`, strokes: [], visible: true, opacity: 0.55 };
+      docs[current.activeDocIndex] = { ...doc, masks: [...(doc.masks ?? []), mask], activeMaskId: id, selectedLayer: { id, type: 'mask' } };
+      return { documents: docs };
+    });
+    return id;
+  },
+
+  selectLayer: (layer) => set(state => {
     if (state.activeDocIndex < 0) return {};
-    const current = state.documents[state.activeDocIndex];
-    if (!current.cleanup.strokes.some(stroke => stroke.purpose === 'mask')) return {};
     const docs = [...state.documents];
-    const withH = withHistory(current);
+    const doc = docs[state.activeDocIndex];
+    docs[state.activeDocIndex] = { ...doc, selectedLayer: layer, activeMaskId: layer?.type === 'mask' ? layer.id : doc.activeMaskId };
+    return { documents: docs, selectedObject: null };
+  }),
+
+  addMaskStroke: (stroke) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    let doc = docs[state.activeDocIndex];
+    let maskId = doc.activeMaskId;
+    if (!maskId || !(doc.masks ?? []).some(mask => mask.id === maskId)) {
+      maskId = `mask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      doc = { ...doc, masks: [...(doc.masks ?? []), { id: maskId, name: `Маска ${(doc.masks?.length ?? 0) + 1}`, strokes: [], visible: true, opacity: 0.55 }] };
+    }
+    const withH = withHistory(doc);
     docs[state.activeDocIndex] = {
       ...withH,
-      cleanup: { ...withH.cleanup, strokes: withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask') },
+      masks: withH.masks.map(mask => mask.id === maskId ? { ...mask, strokes: [...mask.strokes, { ...stroke, purpose: 'mask' }] } : mask),
+      activeMaskId: maskId,
+      selectedLayer: { id: maskId, type: 'mask' },
+    };
+    return { documents: docs, selectedObject: null };
+  }),
+
+  clearActiveMask: () => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const current = docs[state.activeDocIndex];
+    if (!current.activeMaskId) return {};
+    const mask = current.masks.find(item => item.id === current.activeMaskId);
+    if (!mask?.strokes.length) return {};
+    const doc = withHistory(current);
+    docs[state.activeDocIndex] = { ...doc, masks: doc.masks.map(item => item.id === doc.activeMaskId ? { ...item, strokes: [] } : item) };
+    return { documents: docs };
+  }),
+
+  updateMask: (id, updates) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    docs[state.activeDocIndex] = { ...doc, masks: doc.masks.map(mask => mask.id === id ? { ...mask, ...updates } : mask) };
+    return { documents: docs };
+  }),
+
+  deleteMask: (id) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    docs[state.activeDocIndex] = {
+      ...doc,
+      masks: doc.masks.filter(mask => mask.id !== id),
+      activeMaskId: doc.activeMaskId === id ? null : doc.activeMaskId,
+      selectedLayer: doc.selectedLayer?.id === id ? null : doc.selectedLayer,
+      aiLayers: doc.aiLayers.map(layer => layer.maskId === id ? { ...layer, maskId: undefined } : layer),
     };
     return { documents: docs };
   }),
+
+  addAiLayer: (documentId, layer) => set(state => {
+    const index = state.documents.findIndex(doc => doc.id === documentId);
+    if (index < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[index]);
+    docs[index] = {
+      ...doc,
+      aiLayers: [...(doc.aiLayers ?? []), layer],
+      masks: doc.masks.map(mask => mask.id === layer.maskId ? { ...mask, resultLayerId: layer.id } : mask),
+      selectedLayer: { id: layer.id, type: 'ai' },
+    };
+    return { documents: docs };
+  }),
+
+  updateAiLayer: (id, updates) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    docs[state.activeDocIndex] = { ...doc, aiLayers: doc.aiLayers.map(layer => layer.id === id ? { ...layer, ...updates } : layer) };
+    return { documents: docs };
+  }),
+
+  deleteAiLayer: (id) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    docs[state.activeDocIndex] = {
+      ...doc,
+      aiLayers: doc.aiLayers.filter(layer => layer.id !== id),
+      masks: doc.masks.map(mask => mask.resultLayerId === id ? { ...mask, resultLayerId: undefined } : mask),
+      selectedLayer: doc.selectedLayer?.id === id ? null : doc.selectedLayer,
+    };
+    return { documents: docs };
+  }),
+
+  clearMaskStrokes: () => get().clearActiveMask(),
 
   applyTranslationBatch: (cleanupDataUrl, texts) => set(state => {
     if (state.activeDocIndex < 0) return {};
@@ -488,7 +603,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (doc.past.length === 0) return {};
       const past = [...doc.past];
       const snapshot = past.pop()!;
-      const current: HistorySnapshot = { cleanup: doc.cleanup, watermarks: [...doc.watermarks], texts: [...doc.texts], shapes: [...(doc.shapes ?? [])] };
+      const current = snap(doc);
       const future = [current, ...doc.future].slice(0, MAX_HISTORY);
       docs[state.activeDocIndex] = { ...doc, ...snapshot, past, future };
       return { documents: docs, selectedObject: null };
@@ -502,7 +617,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (doc.future.length === 0) return {};
       const future = [...doc.future];
       const snapshot = future.shift()!;
-      const current: HistorySnapshot = { cleanup: doc.cleanup, watermarks: [...doc.watermarks], texts: [...doc.texts], shapes: [...(doc.shapes ?? [])] };
+      const current = snap(doc);
       const past = [...doc.past, current].slice(-MAX_HISTORY);
       docs[state.activeDocIndex] = { ...doc, ...snapshot, past, future };
       return { documents: docs, selectedObject: null };
@@ -549,6 +664,10 @@ export const useStore = create<AppState>((set, get) => ({
       docs[state.activeDocIndex] = {
         ...withH,
         cleanup: { committed: null, strokes: [] },
+        masks: [],
+        aiLayers: [],
+        activeMaskId: null,
+        selectedLayer: null,
         watermarks: [],
         texts: [],
         shapes: [],

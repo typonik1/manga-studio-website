@@ -42,6 +42,18 @@ export async function buildCleanupSource(doc: ImageDocument): Promise<Blob> {
   const source = await loadImage(doc.cleanup.committed ?? doc.originalSrc);
   ctx.clearRect(0, 0, doc.width, doc.height);
   ctx.drawImage(source, 0, 0, doc.width, doc.height);
+  for (const layer of doc.aiLayers ?? []) {
+    if (!layer.visible) continue;
+    try {
+      const image = await loadImage(layer.src);
+      ctx.save();
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(image, 0, 0, doc.width, doc.height);
+      ctx.restore();
+    } catch {
+      // A broken optional layer must not prevent processing the remaining composition.
+    }
+  }
   return canvasToBlob(canvas);
 }
 
@@ -53,7 +65,8 @@ export async function buildCleanupMask(doc: ImageDocument): Promise<{ blob: Blob
   if (!ctx) throw new Error('Canvas недоступен.');
   ctx.fillStyle = 'black';
   ctx.fillRect(0, 0, doc.width, doc.height);
-  const strokes = doc.cleanup.strokes.filter(stroke => stroke.purpose === 'mask');
+  const activeMask = (doc.masks ?? []).find(mask => mask.id === doc.activeMaskId);
+  const strokes = activeMask?.strokes ?? [];
   for (const stroke of strokes) drawStroke(ctx, stroke, doc.width, doc.height);
   const pixels = ctx.getImageData(0, 0, doc.width, doc.height).data;
   let isEmpty = true;

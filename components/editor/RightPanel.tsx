@@ -127,7 +127,7 @@ function GalleryPanel() {
 }
 
 function LayersPanel() {
-const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, deleteWatermark, deleteText, deleteShape } = useStore();
+const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, deleteWatermark, deleteText, deleteShape } = useStore();
 const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 
 const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
@@ -187,6 +187,40 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
         </div>
       ))}
 
+      {((activeDoc.aiLayers?.length ?? 0) > 0 || (activeDoc.masks?.length ?? 0) > 0) && (
+        <>
+          <div className="section-label" style={{ padding: '12px 2px 6px' }}>Маски и AI-результаты</div>
+          {[...(activeDoc.aiLayers ?? [])].reverse().map(layer => (
+            <LayerRow
+              key={layer.id}
+              label={layer.name}
+              prefix="AI"
+              selected={activeDoc.selectedLayer?.id === layer.id}
+              visible={layer.visible}
+              opacity={layer.opacity}
+              onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
+              onVisibility={() => updateAiLayer(layer.id, { visible: !layer.visible })}
+              onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
+              onDelete={() => deleteAiLayer(layer.id)}
+            />
+          ))}
+          {[...(activeDoc.masks ?? [])].reverse().map(mask => (
+            <LayerRow
+              key={mask.id}
+              label={mask.name}
+              prefix="M"
+              selected={activeDoc.selectedLayer?.id === mask.id}
+              visible={mask.visible}
+              opacity={mask.opacity}
+              onSelect={() => { selectLayer({ id: mask.id, type: 'mask' }); setActiveTool('maskBrush'); setLeftTab('cleanup'); }}
+              onVisibility={() => updateMask(mask.id, { visible: !mask.visible })}
+              onOpacity={opacity => updateMask(mask.id, { opacity })}
+              onDelete={() => deleteMask(mask.id)}
+            />
+          ))}
+        </>
+      )}
+
       {/* Objects */}
       {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0 || (activeDoc.shapes ?? []).length > 0) && (
         <>
@@ -235,6 +269,23 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisibility, onOpacity, onDelete }: {
+  label: string; prefix: string; selected: boolean; visible: boolean; opacity: number;
+  onSelect: () => void; onVisibility: () => void; onOpacity: (value: number) => void; onDelete: () => void;
+}) {
+  return (
+    <div onClick={onSelect} style={{ padding: 6, borderRadius: 6, marginBottom: 3, background: selected ? 'var(--accent-dim)' : 'var(--bg-panel-raised)', border: selected ? '1px solid var(--accent)' : '1px solid transparent' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ width: 22, fontSize: 9, fontWeight: 700, color: selected ? 'var(--accent)' : 'var(--text-muted)' }}>{prefix}</span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+        <button type="button" aria-label={visible ? 'Скрыть слой' : 'Показать слой'} onClick={event => { event.stopPropagation(); onVisibility(); }} style={{ border: 0, background: 'none', color: visible ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}>{visible ? '◉' : '○'}</button>
+        <button type="button" aria-label="Удалить слой" onClick={event => { event.stopPropagation(); onDelete(); }} style={{ border: 0, background: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>×</button>
+      </div>
+      {selected && <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 5 }}><span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Прозрачность</span><input aria-label="Прозрачность слоя" type="range" min={0} max={100} value={Math.round(opacity * 100)} onClick={event => event.stopPropagation()} onChange={event => onOpacity(Number(event.target.value) / 100)} style={{ flex: 1 }} /><span style={{ fontSize: 10, color: 'var(--text-muted)', width: 28 }}>{Math.round(opacity * 100)}%</span></div>}
     </div>
   );
 }

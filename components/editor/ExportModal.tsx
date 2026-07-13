@@ -34,8 +34,25 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.drawImage(cleanImg, 0, 0, doc.width, doc.height);
   }
 
+  // Non-destructive AI raster layers (masks remain editor-only)
+  for (const layer of doc.aiLayers ?? []) {
+    if (!layer.visible) continue;
+    const layerImg = new window.Image();
+    layerImg.crossOrigin = 'anonymous';
+    await new Promise<void>(resolve => {
+      layerImg.onload = () => resolve();
+      layerImg.onerror = () => resolve();
+      layerImg.src = layer.src;
+    });
+    if (!layerImg.naturalWidth) continue;
+    ctx.save();
+    ctx.globalAlpha = layer.opacity;
+    ctx.drawImage(layerImg, 0, 0, doc.width, doc.height);
+    ctx.restore();
+  }
+
   // Brush strokes (white paint on top)
-  for (const stroke of doc.cleanup.strokes) {
+  for (const stroke of doc.cleanup.strokes.filter(item => item.purpose !== 'mask')) {
     const pts = stroke.points;
     if (pts.length < 2) continue;
     ctx.beginPath();

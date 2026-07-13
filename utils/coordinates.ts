@@ -58,6 +58,19 @@ export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
     watermarks: document.watermarks.map(sanitizeWatermark).filter((item): item is WatermarkObject => Boolean(item)),
     shapes: (document.shapes ?? []).map(sanitizeShape).filter((item): item is ShapeObject => Boolean(item)),
     cleanup: { ...document.cleanup, strokes: document.cleanup.strokes.map(sanitizeStroke).filter((item): item is StrokeData => Boolean(item)) },
+    masks: (document.masks ?? []).map(mask => ({
+      ...mask,
+      visible: mask.visible !== false,
+      opacity: clamp01(Number.isFinite(mask.opacity) ? mask.opacity : 0.55),
+      strokes: (mask.strokes ?? []).map(sanitizeStroke).filter((item): item is StrokeData => Boolean(item)),
+    })),
+    aiLayers: (document.aiLayers ?? []).map(layer => ({
+      ...layer,
+      visible: layer.visible !== false,
+      opacity: clamp01(Number.isFinite(layer.opacity) ? layer.opacity : 1),
+    })),
+    activeMaskId: document.activeMaskId ?? null,
+    selectedLayer: document.selectedLayer ?? null,
   };
 }
 

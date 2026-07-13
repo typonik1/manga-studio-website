@@ -77,12 +77,37 @@ export interface ShapeObject {
 }
 
 export interface CleanupLayerState {
-  committed: string | null; // dataURL of committed cleanup at original res
+  committed: string | null; // legacy dataURL kept for older documents
   strokes: StrokeData[];
 }
 
+export interface MaskLayer {
+  id: string;
+  name: string;
+  strokes: StrokeData[];
+  visible: boolean;
+  opacity: number;
+  resultLayerId?: string;
+}
+
+export interface AiRasterLayer {
+  id: string;
+  name: string;
+  src: string;
+  visible: boolean;
+  opacity: number;
+  operation: 'cleanup' | 'remove-background';
+  maskId?: string;
+}
+
+export type SelectedLayer = { id: string; type: 'mask' | 'ai' };
+
 export interface HistorySnapshot {
   cleanup: CleanupLayerState;
+  masks: MaskLayer[];
+  aiLayers: AiRasterLayer[];
+  activeMaskId: string | null;
+  selectedLayer: SelectedLayer | null;
   watermarks: WatermarkObject[];
   texts: TextObject[];
   shapes: ShapeObject[];
@@ -97,6 +122,10 @@ export interface ImageDocument {
   height: number;
   name: string;
   cleanup: CleanupLayerState;
+  masks: MaskLayer[];
+  aiLayers: AiRasterLayer[];
+  activeMaskId: string | null;
+  selectedLayer: SelectedLayer | null;
   watermarks: WatermarkObject[];
   texts: TextObject[];
   shapes: ShapeObject[];

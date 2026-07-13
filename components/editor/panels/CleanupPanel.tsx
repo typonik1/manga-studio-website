@@ -1,10 +1,10 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
 import { simpleInpaint } from '@/utils/imageUtils';
-import { buildCleanupMask, buildCleanupSource, buildCleanupSourceCanvas, createCleanupPatch } from '@/utils/cleanupRaster';
+import { buildCleanupMask, buildCleanupSource, buildCleanupSourceCanvas, createCleanupPatch, createColorPatch } from '@/utils/cleanupRaster';
 import { cleanupWithClipdrop, removeBackgroundWithClipdrop } from '@/lib/clipdrop/client';
 
 const primaryButtonStyle = {
@@ -23,7 +23,7 @@ export function CleanupPanel() {
     cleanupSettings, updateCleanupSettings,
     setActiveTool, activeTool,
     activeDocIndex, documents,
-    applyCleanupCommit, addAiLayer, createMask, clearActiveMask, setInpaintRunning,
+    addAiLayer, createMask, clearActiveMask, setInpaintRunning,
     isInpaintRunning, inpaintProgress,
   } = useStore();
   const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
@@ -95,14 +95,39 @@ export function CleanupPanel() {
       setInpaintRunning(true, 85);
 
       ctx.putImageData(result, 0, 0);
-      const dataURL = canvas.toDataURL('image/png');
-      applyCleanupCommit(dataURL);
+      const patch = await createCleanupPatch(canvas.toDataURL('image/png'), mask.canvas, activeDoc.width, activeDoc.height);
+      addAiLayer(activeDoc.id, {
+        id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: `Локальное замывание ${activeDoc.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
+        src: patch, visible: true, opacity: 1, operation: 'cleanup', maskId: activeMask?.id,
+      });
       setInpaintRunning(false, 100);
     } catch (err) {
       setInpaintRunning(false, 0);
       alert('Ошибка при замывании. Попробуйте ещё раз.');
     }
   }
+
+  useEffect(() => {
+    const inpaint = () => { void handleInpaint(); };
+    const fill = (event: Event) => {
+      void (async () => {
+        if (!activeDoc || !activeMask) return;
+        const mask = await buildCleanupMask(activeDoc);
+        if (mask.isEmpty) return;
+        const color = (event as CustomEvent<{ color?: string }>).detail?.color ?? '#ffffff';
+        const patch = await createColorPatch(mask.canvas, activeDoc.width, activeDoc.height, color);
+        addAiLayer(activeDoc.id, {
+          id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: `Заливка маски ${activeDoc.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
+          src: patch, visible: true, opacity: 1, operation: 'cleanup', maskId: activeMask.id,
+        });
+      })();
+    };
+    window.addEventListener('manga:mask-inpaint', inpaint);
+    window.addEventListener('manga:mask-fill', fill);
+    return () => { window.removeEventListener('manga:mask-inpaint', inpaint); window.removeEventListener('manga:mask-fill', fill); };
+  });
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -228,13 +253,13 @@ export function CleanupPanel() {
           ) : (
             <button
               onClick={handleInpaint}
-              disabled={!activeDoc || activeDoc.cleanup.strokes.length === 0}
+              disabled={!activeDoc || !hasMask}
               style={{
                 padding: '7px', borderRadius: 6, fontSize: 13, fontWeight: 600,
                 border: 'none',
-                background: activeDoc && activeDoc.cleanup.strokes.length > 0 ? 'var(--accent)' : 'var(--bg-active)',
-                color: activeDoc && activeDoc.cleanup.strokes.length > 0 ? '#fff' : 'var(--text-muted)',
-                cursor: activeDoc && activeDoc.cleanup.strokes.length > 0 ? 'pointer' : 'not-allowed',
+                background: activeDoc && hasMask ? 'var(--accent)' : 'var(--bg-active)',
+                color: activeDoc && hasMask ? '#fff' : 'var(--text-muted)',
+                cursor: activeDoc && hasMask ? 'pointer' : 'not-allowed',
               }}
             >
               Замыть

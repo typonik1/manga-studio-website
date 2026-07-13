@@ -12,18 +12,21 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
   canvas.height = doc.height;
   const ctx = canvas.getContext('2d')!;
 
-  // Load base image
-  const baseImg = new window.Image();
-  baseImg.crossOrigin = 'anonymous';
-  await new Promise<void>((res, rej) => {
-    baseImg.onload = () => res();
-    baseImg.onerror = rej;
-    baseImg.src = doc.originalSrc;
-  });
-  ctx.drawImage(baseImg, 0, 0, doc.width, doc.height);
+  // Load the base unless a visible AI layer intentionally replaces it.
+  const hasReplacement = doc.aiLayers.some(layer => layer.visible && layer.replacesBase);
+  if (!hasReplacement) {
+    const baseImg = new window.Image();
+    baseImg.crossOrigin = 'anonymous';
+    await new Promise<void>((res, rej) => {
+      baseImg.onload = () => res();
+      baseImg.onerror = rej;
+      baseImg.src = doc.originalSrc;
+    });
+    ctx.drawImage(baseImg, 0, 0, doc.width, doc.height);
+  }
 
   // Cleanup committed
-  if (doc.cleanup.committed) {
+  if (!hasReplacement && doc.cleanup.committed) {
     const cleanImg = new window.Image();
     cleanImg.crossOrigin = 'anonymous';
     await new Promise<void>((res, rej) => {

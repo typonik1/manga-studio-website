@@ -114,6 +114,14 @@ export async function buildCleanupMask(doc: ImageDocument): Promise<{ blob: Blob
   return { blob: await canvasToPngBlob(output), isEmpty, canvas };
 }
 
+export async function createColorPatch(maskCanvas: HTMLCanvasElement, width: number, height: number, color: string): Promise<string> {
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = color; ctx.fillRect(0, 0, width, height);
+  ctx.globalCompositeOperation = 'destination-in'; ctx.drawImage(maskCanvas, 0, 0, width, height);
+  return canvas.toDataURL('image/png');
+}
+
 export async function createCleanupPatch(resultSrc: string, maskCanvas: HTMLCanvasElement, width: number, height: number): Promise<string> {
   const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
   const ctx = canvas.getContext('2d')!;

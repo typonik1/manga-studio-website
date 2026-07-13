@@ -784,12 +784,17 @@ export function CanvasArea() {
       const { cleanupSettings: cs, updateCleanupSettings: ucs } = useStore.getState();
       if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
-      if (e.key === 'Escape' && isPainting.current) {
-        isPainting.current = false;
-        currentStroke.current = [];
-        livePoints.current = [];
-        const line = liveLineRef.current;
-        if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+      if (e.key === 'Escape') {
+        if (isPainting.current) {
+          isPainting.current = false; currentStroke.current = []; livePoints.current = [];
+          const line = liveLineRef.current;
+          if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+        }
+        if (isLassoing.current) {
+          isLassoing.current = false; lassoPoints.current = [];
+          const line = liveLassoRef.current;
+          if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+        }
       }
     };
     window.addEventListener('keydown', handler);

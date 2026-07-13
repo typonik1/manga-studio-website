@@ -11,6 +11,7 @@ export function TransformPanel() {
     activeTool, setActiveTool,
     cropRect, setCropRect,
     applyDocumentTransform,
+    layerCropTarget, applyLayerCrop, cancelLayerCrop,
   } = useStore();
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
@@ -80,12 +81,15 @@ export function TransformPanel() {
   }
 
   function cancelCrop() {
+    if (layerCropTarget) { cancelLayerCrop(); return; }
     setCropRect(null);
     setActiveTool('select');
   }
 
   async function handleApplyCrop() {
     if (!activeDoc || !cropRect) return;
+    // Layer crop is non-destructive and handled entirely by the store.
+    if (layerCropTarget) { applyLayerCrop(); return; }
     setIsWorking(true);
     setError(null);
     try {

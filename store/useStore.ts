@@ -24,7 +24,10 @@ import type {
   MaskElement,
   AiRasterLayer,
   SelectedLayer,
+  LayerReference,
 } from '../types';
+import { DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
+import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
 
 const MAX_HISTORY = 40;
 
@@ -112,6 +115,7 @@ function snap(doc: ImageDocument): HistorySnapshot {
     watermarks: doc.watermarks.map(w => ({ ...w })),
     texts: doc.texts.map(t => ({ ...t })),
     shapes: (doc.shapes ?? []).map(s => ({ ...s })),
+    layerOrder: (doc.layerOrder ?? []).map(ref => ({ ...ref })),
   };
 }
 
@@ -140,7 +144,14 @@ export interface AppState {
   customFonts: string[];
   fontsVersion: number;
   cropRect: CropRect | null;
+  /** When set, the crop tool edits this layer's non-destructive crop instead of the whole document. */
+  layerCropTarget: LayerReference | null;
+  rightTab: 'layers' | 'gallery';
 
+  setLayerCropTarget: (target: LayerReference | null) => void;
+  setRightTab: (tab: 'layers' | 'gallery') => void;
+  applyLayerCrop: () => void;
+  cancelLayerCrop: () => void;
   addDocuments: (docs: ImageDocument[]) => void;
   removeDocument: (id: string) => void;
   setActiveDoc: (index: number) => void;
@@ -160,11 +171,17 @@ export interface AppState {
   updateMask: (id: string, updates: Partial<Pick<MaskLayer, 'name' | 'visible' | 'opacity'>>) => void;
   deleteMask: (id: string) => void;
   addAiLayer: (documentId: string, layer: AiRasterLayer) => void;
-  updateAiLayer: (id: string, updates: Partial<Pick<AiRasterLayer, 'name' | 'visible' | 'opacity'>>) => void;
+  updateAiLayer: (id: string, updates: Partial<Omit<AiRasterLayer, 'id' | 'operation'>>, options?: { history?: boolean }) => void;
   deleteAiLayer: (id: string) => void;
   duplicateAiLayer: (id: string) => void;
   duplicateBaseLayer: () => string | null;
-  updateBaseLayer: (updates: Partial<Pick<BaseLayerState, 'visible' | 'locked' | 'opacity'>> & { adjustments?: Partial<BaseLayerState['adjustments']> }) => void;
+  updateBaseLayer: (updates: Partial<Omit<BaseLayerState, 'id' | 'eraseElements' | 'adjustments'>> & { adjustments?: Partial<BaseLayerState['adjustments']> }, options?: { history?: boolean }) => void;
+  resetBaseLayerSettings: () => void;
+  reorderLayer: (sourceIndex: number, destinationIndex: number) => void;
+  moveLayerForward: (layer: LayerReference) => void;
+  moveLayerBackward: (layer: LayerReference) => void;
+  moveLayerToTop: (layer: LayerReference) => void;
+  moveLayerToBottom: (layer: LayerReference) => void;
   addEraseElement: (target: SelectedLayer | { type: 'base' }, element: MaskElement) => void;
   clearEraseElements: (target: SelectedLayer | { type: 'base' }) => void;
   clearMaskStrokes: () => void;
@@ -221,6 +238,29 @@ export const useStore = create<AppState>((set, get) => ({
   customFonts: [],
   fontsVersion: 0,
   cropRect: null,
+  layerCropTarget: null,
+  rightTab: 'gallery',
+
+  setLayerCropTarget: (target) => set({ layerCropTarget: target }),
+  setRightTab: (tab) => set({ rightTab: tab }),
+
+  applyLayerCrop: () => {
+    const state = get();
+    const target = state.layerCropTarget;
+    const rect = state.cropRect;
+    if (!target || !rect || state.activeDocIndex < 0) return;
+    if (target.type === 'base') {
+      state.updateBaseLayer({ crop: rect });
+    } else if (target.type === 'ai') {
+      state.updateAiLayer(target.id, { crop: rect });
+    }
+    set({ layerCropTarget: null, cropRect: null, activeTool: 'select' });
+  },
+
+  cancelLayerCrop: () => {
+    if (!get().layerCropTarget) return;
+    set({ layerCropTarget: null, cropRect: null, activeTool: 'select' });
+  },
 
   addDocuments: (newDocs) =>
     set(state => {
@@ -426,10 +466,10 @@ export const useStore = create<AppState>((set, get) => ({
     return { documents: docs };
   }),
 
-  updateAiLayer: (id, updates) => set(state => {
+  updateAiLayer: (id, updates, options) => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
-    const doc = withHistory(docs[state.activeDocIndex]);
+    const doc = options?.history === false ? { ...docs[state.activeDocIndex], hasChanges: true } : withHistory(docs[state.activeDocIndex]);
     docs[state.activeDocIndex] = { ...doc, aiLayers: doc.aiLayers.map(layer => layer.id === id ? { ...layer, ...updates } : layer) };
     return { documents: docs };
   }),
@@ -464,7 +504,10 @@ export const useStore = create<AppState>((set, get) => ({
     const index = doc.aiLayers.findIndex(layer => layer.id === id);
     const aiLayers = [...doc.aiLayers];
     aiLayers.splice(index + 1, 0, copy);
-    docs[state.activeDocIndex] = { ...doc, aiLayers, selectedLayer: { id: copyId, type: 'ai' } };
+    const order = resolveLayerOrder(doc);
+    const orderIndex = order.findIndex(ref => ref.type === 'ai' && ref.id === id);
+    if (orderIndex >= 0) order.splice(orderIndex + 1, 0, { type: 'ai', id: copyId });
+    docs[state.activeDocIndex] = { ...doc, aiLayers, layerOrder: orderIndex >= 0 ? order : doc.layerOrder, selectedLayer: { id: copyId, type: 'ai' } };
     return { documents: docs };
   }),
 
@@ -484,16 +527,19 @@ export const useStore = create<AppState>((set, get) => ({
         operation: 'duplicate',
         eraseElements: [],
       };
-      docs[current.activeDocIndex] = { ...doc, aiLayers: [copy, ...doc.aiLayers], selectedLayer: { id, type: 'ai' } };
+      const order = resolveLayerOrder(doc);
+      const baseIndex = order.findIndex(ref => ref.type === 'base');
+      order.splice(baseIndex + 1, 0, { type: 'ai', id });
+      docs[current.activeDocIndex] = { ...doc, aiLayers: [copy, ...doc.aiLayers], layerOrder: order, selectedLayer: { id, type: 'ai' } };
       return { documents: docs };
     });
     return id;
   },
 
-  updateBaseLayer: (updates) => set(state => {
+  updateBaseLayer: (updates, options) => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
-    const doc = withHistory(docs[state.activeDocIndex]);
+    const doc = options?.history === false ? { ...docs[state.activeDocIndex], hasChanges: true } : withHistory(docs[state.activeDocIndex]);
     const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
     docs[state.activeDocIndex] = {
       ...doc,
@@ -505,6 +551,72 @@ export const useStore = create<AppState>((set, get) => ({
     };
     return { documents: docs };
   }),
+
+  resetBaseLayerSettings: () => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
+    docs[state.activeDocIndex] = {
+      ...doc,
+      baseLayer: {
+        ...baseLayer,
+        opacity: 1,
+        visible: true,
+        adjustments: { ...DEFAULT_BASE_ADJUSTMENTS },
+        crop: null,
+        ...DEFAULT_LAYER_TRANSFORM,
+        // eraseElements are intentionally preserved — use «Восстановить стёртое».
+      },
+    };
+    return { documents: docs };
+  }),
+
+  reorderLayer: (sourceIndex, destinationIndex) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const current = docs[state.activeDocIndex];
+    const order = resolveLayerOrder(current);
+    if (sourceIndex < 0 || sourceIndex >= order.length || destinationIndex < 0 || destinationIndex >= order.length || sourceIndex === destinationIndex) return {};
+    const doc = withHistory(current);
+    const next = [...order];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(destinationIndex, 0, moved);
+    docs[state.activeDocIndex] = { ...doc, layerOrder: next };
+    return { documents: docs };
+  }),
+
+  moveLayerForward: (layer) => {
+    const state = get();
+    if (state.activeDocIndex < 0) return;
+    const order = resolveLayerOrder(state.documents[state.activeDocIndex]);
+    const index = order.findIndex(ref => layerRefKey(ref) === layerRefKey(layer));
+    if (index >= 0 && index < order.length - 1) state.reorderLayer(index, index + 1);
+  },
+
+  moveLayerBackward: (layer) => {
+    const state = get();
+    if (state.activeDocIndex < 0) return;
+    const order = resolveLayerOrder(state.documents[state.activeDocIndex]);
+    const index = order.findIndex(ref => layerRefKey(ref) === layerRefKey(layer));
+    if (index > 0) state.reorderLayer(index, index - 1);
+  },
+
+  moveLayerToTop: (layer) => {
+    const state = get();
+    if (state.activeDocIndex < 0) return;
+    const order = resolveLayerOrder(state.documents[state.activeDocIndex]);
+    const index = order.findIndex(ref => layerRefKey(ref) === layerRefKey(layer));
+    if (index >= 0 && index < order.length - 1) state.reorderLayer(index, order.length - 1);
+  },
+
+  moveLayerToBottom: (layer) => {
+    const state = get();
+    if (state.activeDocIndex < 0) return;
+    const order = resolveLayerOrder(state.documents[state.activeDocIndex]);
+    const index = order.findIndex(ref => layerRefKey(ref) === layerRefKey(layer));
+    if (index > 0) state.reorderLayer(index, 0);
+  },
 
   addEraseElement: (target, element) => set(state => {
     if (state.activeDocIndex < 0) return {};
@@ -827,6 +939,7 @@ export const useStore = create<AppState>((set, get) => ({
         watermarks: [],
         texts: [],
         shapes: [],
+        layerOrder: [],
         hasChanges: false,
       };
       return { documents: docs, selectedObject: null };

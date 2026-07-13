@@ -1,4 +1,5 @@
 import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData } from '@/types';
+import { resolveLayerOrder } from './layerOrder';
 
 export function loadCleanupImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -104,16 +105,59 @@ export async function buildBaseCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
   return canvas;
 }
 
-/** Renders one raster/AI layer with its own erase mask applied. */
+/** Renders one raster/AI layer with its adjustments and erase mask applied. */
 export async function buildRasterLayerCanvas(layer: AiRasterLayer, width: number, height: number): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   canvas.width = width; canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas недоступен.');
   const image = await loadCleanupImage(layer.src);
+  ctx.save();
+  ctx.filter = adjustmentsFilter(layer.adjustments);
   ctx.drawImage(image, 0, 0, width, height);
+  ctx.restore();
   await applyEraseElements(canvas, layer.eraseElements);
   return canvas;
+}
+
+export interface RasterPlacement {
+  x?: number;
+  y?: number;
+  scaleX?: number;
+  scaleY?: number;
+  rotation?: number;
+  crop?: { x: number; y: number; width: number; height: number } | null;
+  opacity?: number;
+}
+
+/**
+ * Draws a fully-rendered layer canvas onto the composition applying the
+ * non-destructive transform (x/y normalized to doc size, scale, rotation)
+ * and crop. Identity transform + no crop = plain drawImage.
+ */
+export function drawPlacedLayer(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLCanvasElement,
+  placement: RasterPlacement,
+  width: number,
+  height: number,
+) {
+  const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0, crop, opacity = 1 } = placement;
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.translate(x * width, y * height);
+  ctx.rotate((rotation * Math.PI) / 180);
+  ctx.scale(scaleX, scaleY);
+  if (crop) {
+    ctx.drawImage(
+      source,
+      crop.x * source.width, crop.y * source.height, crop.width * source.width, crop.height * source.height,
+      crop.x * width, crop.y * height, crop.width * width, crop.height * height,
+    );
+  } else {
+    ctx.drawImage(source, 0, 0, width, height);
+  }
+  ctx.restore();
 }
 
 export async function buildCleanupSourceCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
@@ -124,22 +168,29 @@ export async function buildCleanupSourceCanvas(doc: ImageDocument): Promise<HTML
   if (!ctx) throw new Error('Canvas недоступен.');
   const replacing = [...(doc.aiLayers ?? [])].reverse().find(layer => layer.visible && layer.replacesBase);
   const baseVisible = doc.baseLayer?.visible !== false;
-  if (!replacing && baseVisible) {
-    const base = await buildBaseCanvas(doc);
-    ctx.save();
-    ctx.globalAlpha = doc.baseLayer?.opacity ?? 1;
-    ctx.drawImage(base, 0, 0, doc.width, doc.height);
-    ctx.restore();
-  }
-  for (const layer of doc.aiLayers ?? []) {
-    if (!layer.visible) continue;
-    try {
-      const image = await buildRasterLayerCanvas(layer, doc.width, doc.height);
-      ctx.save();
-      ctx.globalAlpha = layer.opacity;
-      ctx.drawImage(image, 0, 0, doc.width, doc.height);
-      ctx.restore();
-    } catch { /* ignore broken optional layers */ }
+  // Follow the document's unified z-order so previews, exports and AI sources match.
+  const order = resolveLayerOrder(doc);
+  for (const ref of order) {
+    if (ref.type === 'base') {
+      if (replacing || !baseVisible) continue;
+      const base = await buildBaseCanvas(doc);
+      const state = doc.baseLayer;
+      drawPlacedLayer(ctx, base, {
+        x: state?.x, y: state?.y, scaleX: state?.scaleX, scaleY: state?.scaleY, rotation: state?.rotation,
+        crop: state?.crop, opacity: state?.opacity ?? 1,
+      }, doc.width, doc.height);
+    } else if (ref.type === 'ai') {
+      const layer = (doc.aiLayers ?? []).find(item => item.id === ref.id);
+      if (!layer || !layer.visible) continue;
+      try {
+        const image = await buildRasterLayerCanvas(layer, doc.width, doc.height);
+        drawPlacedLayer(ctx, image, {
+          x: layer.x, y: layer.y, scaleX: layer.scaleX, scaleY: layer.scaleY, rotation: layer.rotation,
+          crop: layer.crop, opacity: layer.opacity,
+        }, doc.width, doc.height);
+      } catch { /* ignore broken optional layers */ }
+    }
+    // text/watermark/shape refs are not part of the cleanup source.
   }
   return canvas;
 }

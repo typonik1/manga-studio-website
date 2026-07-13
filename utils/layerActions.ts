@@ -43,20 +43,23 @@ function finishSelection(clearedByDefault = true) {
 
 /**
  * «Удалить пиксели» — makes the selected area transparent, fully locally.
- * Applies a non-destructive erase mask to the selected raster layer
+ * Applies a non-destructive erase mask to the explicitly passed target layer.
+ * When no target is given, falls back to the currently selected layer
  * (or the base layer when nothing else is selected).
  */
-export async function deleteMaskedPixels(): Promise<void> {
+export async function deleteMaskedPixels(target?: { id?: string; type: 'base' | 'ai' }): Promise<void> {
   const doc = getActiveDoc();
   if (!doc) throw new Error('Нет активного изображения.');
   const mask = await requireSelectionMask(doc);
   const element: MaskElement = { type: 'bitmap', src: mask.canvas.toDataURL('image/png') };
 
   const state = useStore.getState();
-  const selected = doc.selectedLayer;
+  // The explicit target always wins — never depend on selectedLayer when it's given.
+  const resolved = target ?? (doc.selectedLayer?.type === 'ai' ? { id: doc.selectedLayer.id, type: 'ai' as const } : { type: 'base' as const });
 
-  if (selected?.type === 'ai' && doc.aiLayers.some(layer => layer.id === selected.id)) {
-    state.addEraseElement({ id: selected.id, type: 'ai' }, element);
+  if (resolved.type === 'ai' && resolved.id) {
+    if (!doc.aiLayers.some(layer => layer.id === resolved.id)) throw new Error('Слой не найден.');
+    state.addEraseElement({ id: resolved.id, type: 'ai' }, element);
     finishSelection();
     return;
   }

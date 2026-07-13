@@ -232,7 +232,7 @@ export function CleanupPanel() {
           aria-busy={aiOperation === 'cleanup'}
           style={{ ...primaryButtonStyle, flex: 1 }}
         >
-          {aiOperation === 'cleanup' ? 'Удаляем…' : 'Удалить отмеченное'}
+          {aiOperation === 'cleanup' ? 'Удаляем…' : 'AI-удаление объекта'}
         </button>
         <button
           type="button"

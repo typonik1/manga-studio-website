@@ -1136,6 +1136,16 @@ export function CanvasArea() {
       const { cleanupSettings: cs, updateCleanupSettings: ucs } = useStore.getState();
       if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        // Enter/Escape commits the current transform: deselect the layer/object
+        // so the transformer disappears and the layer "stays put".
+        const store = useStore.getState();
+        const doc = store.documents[store.activeDocIndex];
+        if (doc?.selectedLayer && (doc.selectedLayer.type === 'base' || doc.selectedLayer.type === 'ai')) {
+          store.selectLayer(null);
+        }
+        if (store.selectedObject) store.setSelectedObject(null);
+      }
       if (e.key === 'Escape') {
         if (isPainting.current) {
           isPainting.current = false; currentStroke.current = []; livePoints.current = [];
@@ -1410,54 +1420,66 @@ export function CanvasArea() {
               visible={false}
             />
 
-            {/* Watermarks */}
-            {layerVisibility.watermarks && activeDoc.watermarks.map(wm => (
-              <WatermarkNode
-                key={wm.id}
-                wm={wm}
-                docWidth={activeDoc.width}
-                docHeight={activeDoc.height}
-                previewScale={previewScale}
-                isSelected={selectedObject?.id === wm.id}
-                onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
-                onChange={updates => updateWatermark(wm.id, updates)}
-                onBeforeChange={pushHistory}
-              />
-            ))}
-
-            {/* Texts */}
-            {layerVisibility.texts && activeDoc.texts.map(txt => (
-              <TextNode
-                key={txt.id}
-                txt={txt}
-                docWidth={activeDoc.width}
-                docHeight={activeDoc.height}
-                previewScale={previewScale}
-                isSelected={selectedObject?.id === txt.id}
-                onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
-                onChange={updates => updateText(txt.id, updates)}
-                onBeforeChange={pushHistory}
-                onEditRequest={() => {
-                  setSelectedObject({ id: txt.id, type: 'text' });
-                  setLeftTab('text');
-                }}
-              />
-            ))}
-
-            {/* Shapes */}
-            {layerVisibility.shapes && (activeDoc.shapes ?? []).map(shape => (
-              <ShapeNode
-                key={shape.id}
-                shape={shape}
-                docWidth={activeDoc.width}
-                docHeight={activeDoc.height}
-                previewScale={previewScale}
-                isSelected={selectedObject?.id === shape.id}
-                onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
-                onChange={updates => updateShape(shape.id, updates)}
-                onBeforeChange={pushHistory}
-              />
-            ))}
+            {/* Watermarks, texts and shapes rendered bottom → top following the
+                unified layer order, so panel order always matches the canvas. */}
+            {resolveLayerOrder(activeDoc).map(ref => {
+              if (ref.type === 'watermark') {
+                const wm = activeDoc.watermarks.find(item => item.id === ref.id);
+                if (!wm || !layerVisibility.watermarks) return null;
+                return (
+                  <WatermarkNode
+                    key={wm.id}
+                    wm={wm}
+                    docWidth={activeDoc.width}
+                    docHeight={activeDoc.height}
+                    previewScale={previewScale}
+                    isSelected={selectedObject?.id === wm.id}
+                    onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
+                    onChange={updates => updateWatermark(wm.id, updates)}
+                    onBeforeChange={pushHistory}
+                  />
+                );
+              }
+              if (ref.type === 'text') {
+                const txt = activeDoc.texts.find(item => item.id === ref.id);
+                if (!txt || !layerVisibility.texts) return null;
+                return (
+                  <TextNode
+                    key={txt.id}
+                    txt={txt}
+                    docWidth={activeDoc.width}
+                    docHeight={activeDoc.height}
+                    previewScale={previewScale}
+                    isSelected={selectedObject?.id === txt.id}
+                    onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
+                    onChange={updates => updateText(txt.id, updates)}
+                    onBeforeChange={pushHistory}
+                    onEditRequest={() => {
+                      setSelectedObject({ id: txt.id, type: 'text' });
+                      setLeftTab('text');
+                    }}
+                  />
+                );
+              }
+              if (ref.type === 'shape') {
+                const shape = (activeDoc.shapes ?? []).find(item => item.id === ref.id);
+                if (!shape || !layerVisibility.shapes) return null;
+                return (
+                  <ShapeNode
+                    key={shape.id}
+                    shape={shape}
+                    docWidth={activeDoc.width}
+                    docHeight={activeDoc.height}
+                    previewScale={previewScale}
+                    isSelected={selectedObject?.id === shape.id}
+                    onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+                    onChange={updates => updateShape(shape.id, updates)}
+                    onBeforeChange={pushHistory}
+                  />
+                );
+              }
+              return null;
+            })}
 
             {/* Crop overlay */}
             {activeTool === 'crop' && cropRect && (

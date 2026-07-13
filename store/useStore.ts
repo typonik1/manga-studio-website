@@ -522,14 +522,25 @@ export const useStore = create<AppState>((set, get) => ({
     set(current => {
       const docs = [...current.documents];
       const doc = withHistory(docs[current.activeDocIndex]);
+      // The copy must inherit everything the user already did to the base:
+      // adjustments, opacity, crop, transform and erased areas.
+      const base = doc.baseLayer;
       const copy: AiRasterLayer = {
         id,
         name: `Копия — ${doc.name}`,
         src: doc.cleanup.committed ?? doc.originalSrc,
         visible: true,
-        opacity: 1,
+        opacity: base?.opacity ?? 1,
         operation: 'duplicate',
-        eraseElements: [],
+        eraseElements: cloneElements(base?.eraseElements ?? []),
+        adjustments: base ? { ...base.adjustments } : undefined,
+        crop: base?.crop ?? null,
+        locked: false,
+        x: base?.x ?? 0,
+        y: base?.y ?? 0,
+        scaleX: base?.scaleX ?? 1,
+        scaleY: base?.scaleY ?? 1,
+        rotation: base?.rotation ?? 0,
       };
       const order = resolveLayerOrder(doc);
       const baseIndex = order.findIndex(ref => ref.type === 'base');
@@ -677,7 +688,11 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const withH = withHistory(docs[state.activeDocIndex]);
-      docs[state.activeDocIndex] = { ...withH, watermarks: [...withH.watermarks, wm] };
+      // Explicitly append the new object on TOP of the unified stack —
+      // otherwise it would resolve into its type group and could render
+      // below objects the user added earlier.
+      const layerOrder = [...resolveLayerOrder(withH), { type: 'watermark' as const, id: wm.id }];
+      docs[state.activeDocIndex] = { ...withH, watermarks: [...withH.watermarks, wm], layerOrder };
       return { documents: docs };
     }),
 
@@ -762,7 +777,9 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const withH = withHistory(docs[state.activeDocIndex]);
-      docs[state.activeDocIndex] = { ...withH, texts: [...withH.texts, text] };
+      // New text goes on TOP of the unified stack (see addWatermark).
+      const layerOrder = [...resolveLayerOrder(withH), { type: 'text' as const, id: text.id }];
+      docs[state.activeDocIndex] = { ...withH, texts: [...withH.texts, text], layerOrder };
       return { documents: docs };
     }),
 
@@ -809,7 +826,9 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const withH = withHistory(docs[state.activeDocIndex]);
-      docs[state.activeDocIndex] = { ...withH, shapes: [...(withH.shapes ?? []), shape] };
+      // New shape goes on TOP of the unified stack (see addWatermark).
+      const layerOrder = [...resolveLayerOrder(withH), { type: 'shape' as const, id: shape.id }];
+      docs[state.activeDocIndex] = { ...withH, shapes: [...(withH.shapes ?? []), shape], layerOrder };
       return { documents: docs, selectedObject: { id: shape.id, type: 'shape' } };
     }),
 

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
-import type { ImageDocument, LayerVisibility } from '@/types';
+import type { ImageDocument, LayerVisibility, BaseLayerAdjustments } from '@/types';
 import { LayerContextMenu } from './LayerContextMenu';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { createDrawingLayer } from '@/utils/layerActions';
@@ -128,7 +128,7 @@ function GalleryPanel() {
 }
 
 function LayersPanel() {
-const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, deleteWatermark, deleteText, deleteShape, reorderLayer } = useStore();
+const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, duplicateAiLayer, deleteWatermark, deleteText, deleteShape, reorderLayer } = useStore();
 const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 const [aiMenu, setAiMenu] = useState<{ x: number; y: number; id: string } | null>(null);
 const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -217,10 +217,12 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
           const wrapperProps = {
             draggable: true,
             onDragStart: (e: React.DragEvent) => {
-              // Sliders and buttons inside the row must not start a row drag —
-              // otherwise moving a slider drags a ghost of the whole row.
-              if ((e.target as HTMLElement).closest('input, button, select, textarea')) {
+              // The expanded settings area (sliders, labels, buttons) must never
+              // start a row drag — otherwise moving a slider tears off a ghost
+              // of the whole panel. Row reorder starts only from the header.
+              if ((e.target as HTMLElement).closest('input, button, select, textarea, [data-nodrag]')) {
                 e.preventDefault();
+                e.stopPropagation();
                 return;
               }
               dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
@@ -264,6 +266,11 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                 onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
                 onDelete={() => deleteAiLayer(layer.id)}
                 onContextMenu={e => { e.preventDefault(); setAiMenu({ x: e.clientX, y: e.clientY, id: layer.id }); }}
+                locked={layer.locked === true}
+                onLock={() => updateAiLayer(layer.id, { locked: layer.locked !== true })}
+                adjustments={layer.adjustments}
+                onAdjustments={updates => updateAiLayer(layer.id, { adjustments: { brightness: 1, contrast: 1, saturation: 1, ...layer.adjustments, ...updates } })}
+                onDuplicate={() => duplicateAiLayer(layer.id)}
               />
             </div>
           );
@@ -294,47 +301,94 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
         <>
           <div className="section-label" style={{ padding: '12px 2px 6px' }}>Объекты</div>
 
-          {activeDoc.watermarks.map(wm => (
-            <ObjectRow
-              key={wm.id}
-              label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : '��ого'}
-              prefix="W"
-              isSelected={selectedObject?.id === wm.id}
-              visible={wm.visible}
-              onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
-              onDelete={() => deleteWatermark(wm.id)}
-              isBatch={wm.isBatch}
-            />
-          ))}
-
-          {activeDoc.texts.map(txt => (
-            <ObjectRow
-              key={txt.id}
-              label={txt.text.slice(0, 18)}
-              prefix="T"
-              isSelected={selectedObject?.id === txt.id}
-              visible={txt.visible}
-              onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
-              onDelete={() => deleteText(txt.id)}
-            />
-          ))}
-
-          {(activeDoc.shapes ?? []).map(shape => (
-            <ObjectRow
-              key={shape.id}
-              label={
-                shape.kind === 'rect' ? 'Прямоугольник' :
-                shape.kind === 'ellipse' ? 'Эллипс' :
-                shape.kind === 'line' ? 'Линия' :
-                shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
+          {/* Unified object stack: top object first, drag to reorder (same
+              global order the canvas renders, so panel = picture). */}
+          {[...resolveLayerOrder(activeDoc)]
+            .map((ref, orderIndex) => ({ ref, orderIndex }))
+            .filter(({ ref }) => ref.type === 'watermark' || ref.type === 'text' || ref.type === 'shape')
+            .reverse()
+            .map(({ ref, orderIndex }) => {
+              const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
+              const wrapperProps = {
+                draggable: true,
+                onDragStart: (e: React.DragEvent) => {
+                  if ((e.target as HTMLElement).closest('input, button, select, textarea, [data-nodrag]')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                  }
+                  dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
+                },
+                onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropIndex(orderIndex); },
+                onDragLeave: () => setDropIndex(current => (current === orderIndex ? null : current)),
+                onDrop: (e: React.DragEvent) => {
+                  e.preventDefault();
+                  const from = dragIndexRef.current;
+                  if (from !== null && from !== orderIndex) reorderLayer(from, orderIndex);
+                  dragIndexRef.current = null; setDragIndex(null); setDropIndex(null);
+                },
+                onDragEnd: () => { dragIndexRef.current = null; setDragIndex(null); setDropIndex(null); },
+                style: {
+                  opacity: dragIndex === orderIndex ? 0.45 : 1,
+                  outline: isDropTarget ? '2px solid var(--accent)' : 'none',
+                  outlineOffset: -1,
+                  borderRadius: 6,
+                  cursor: 'grab',
+                } as React.CSSProperties,
+              };
+              if (ref.type === 'watermark') {
+                const wm = activeDoc.watermarks.find(item => item.id === ref.id);
+                if (!wm) return null;
+                return (
+                  <div key={wm.id} {...wrapperProps}>
+                    <ObjectRow
+                      label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : 'Лого'}
+                      prefix="W"
+                      isSelected={selectedObject?.id === wm.id}
+                      visible={wm.visible}
+                      onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
+                      onDelete={() => deleteWatermark(wm.id)}
+                      isBatch={wm.isBatch}
+                    />
+                  </div>
+                );
               }
-              prefix="S"
-              isSelected={selectedObject?.id === shape.id}
-              visible={shape.visible}
-              onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
-              onDelete={() => deleteShape(shape.id)}
-            />
-          ))}
+              if (ref.type === 'text') {
+                const txt = activeDoc.texts.find(item => item.id === ref.id);
+                if (!txt) return null;
+                return (
+                  <div key={txt.id} {...wrapperProps}>
+                    <ObjectRow
+                      label={txt.text.slice(0, 18)}
+                      prefix="T"
+                      isSelected={selectedObject?.id === txt.id}
+                      visible={txt.visible}
+                      onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
+                      onDelete={() => deleteText(txt.id)}
+                    />
+                  </div>
+                );
+              }
+              const shape = (activeDoc.shapes ?? []).find(item => item.id === ref.id);
+              if (!shape) return null;
+              return (
+                <div key={shape.id} {...wrapperProps}>
+                  <ObjectRow
+                    label={
+                      shape.kind === 'rect' ? 'Прямоугольник' :
+                      shape.kind === 'ellipse' ? 'Эллипс' :
+                      shape.kind === 'line' ? 'Линия' :
+                      shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
+                    }
+                    prefix="S"
+                    isSelected={selectedObject?.id === shape.id}
+                    visible={shape.visible}
+                    onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+                    onDelete={() => deleteShape(shape.id)}
+                  />
+                </div>
+              );
+            })}
         </>
       )}
 
@@ -375,15 +429,15 @@ function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
           <button
             type="button"
             aria-label={locked ? 'Разблокировать слой' : 'Заблокировать слой'}
-            title={locked ? 'Слой заблокирован — нажмите, чтобы разблокировать' : 'Слой разблокирован'}
+            title={locked ? 'Слой заблокирован — нажмите, чтобы разблокировать (иначе его нельзя двигать)' : 'Слой разблокирован — можно двигать и масштабировать'}
             onClick={e => { e.stopPropagation(); updateBaseLayer({ locked: !locked }); }}
-            style={{ border: 0, background: 'none', color: locked ? 'var(--text-muted)' : 'var(--accent)', cursor: 'pointer', fontSize: 13 }}
+            style={{ border: 0, background: 'none', color: locked ? 'var(--warning, #e5a50a)' : 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
           >
-            {locked ? '▣' : '▢'}
+            <LockIcon locked={locked} />
           </button>
         </div>
         {selected && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 6 }} onClick={e => e.stopPropagation()}>
+          <div data-nodrag draggable={false} style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 6, cursor: 'default' }} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
             {([
               { key: 'opacity', label: 'Прозрачность', value: base?.opacity ?? 1, min: 0, max: 100, apply: (v: number) => updateBaseLayer({ opacity: v / 100 }) },
               { key: 'brightness', label: 'Яркость', value: adjustments.brightness, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, brightness: v / 100 } }) },
@@ -410,20 +464,66 @@ function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
   );
 }
 
-function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisibility, onOpacity, onDelete, onContextMenu }: {
+function LockIcon({ locked }: { locked: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      {locked
+        ? <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        : <path d="M8 11V7a4 4 0 0 1 7.5-1.8" />}
+    </svg>
+  );
+}
+
+function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisibility, onOpacity, onDelete, onContextMenu, locked, onLock, adjustments, onAdjustments, onDuplicate }: {
   label: string; prefix: string; selected: boolean; visible: boolean; opacity: number;
   onSelect: () => void; onVisibility: () => void; onOpacity: (value: number) => void; onDelete: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
+  locked?: boolean; onLock?: () => void;
+  adjustments?: BaseLayerAdjustments; onAdjustments?: (updates: Partial<BaseLayerAdjustments>) => void;
+  onDuplicate?: () => void;
 }) {
+  const adj = adjustments ?? { brightness: 1, contrast: 1, saturation: 1 };
   return (
     <div onClick={onSelect} onContextMenu={onContextMenu} style={{ padding: 6, borderRadius: 6, marginBottom: 3, background: selected ? 'var(--accent-dim)' : 'var(--bg-panel-raised)', border: selected ? '1px solid var(--accent)' : '1px solid transparent' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ width: 22, fontSize: 9, fontWeight: 700, color: selected ? 'var(--accent)' : 'var(--text-muted)' }}>{prefix}</span>
         <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
         <button type="button" aria-label={visible ? 'Скрыть слой' : 'Показать слой'} onClick={event => { event.stopPropagation(); onVisibility(); }} style={{ border: 0, background: 'none', color: visible ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}>{visible ? '◉' : '○'}</button>
+        {onLock && (
+          <button
+            type="button"
+            aria-label={locked ? 'Разблокировать слой' : 'Заблокировать слой'}
+            title={locked ? 'Слой заблокирован — нажмите, чтобы разблокировать (иначе его нельзя двигать)' : 'Слой разблокирован — можно двигать и масштабировать'}
+            onClick={event => { event.stopPropagation(); onLock(); }}
+            style={{ border: 0, background: 'none', color: locked ? 'var(--warning, #e5a50a)' : 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+          >
+            <LockIcon locked={Boolean(locked)} />
+          </button>
+        )}
         <button type="button" aria-label="Удалить слой" onClick={event => { event.stopPropagation(); onDelete(); }} style={{ border: 0, background: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>×</button>
       </div>
-      {selected && <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 5 }}><span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Прозрачность</span><input aria-label="Прозрачность слоя" type="range" min={0} max={100} value={Math.round(opacity * 100)} onClick={event => event.stopPropagation()} onChange={event => onOpacity(Number(event.target.value) / 100)} style={{ flex: 1 }} /><span style={{ fontSize: 10, color: 'var(--text-muted)', width: 28 }}>{Math.round(opacity * 100)}%</span></div>}
+      {selected && (
+        <div data-nodrag draggable={false} style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 5, cursor: 'default' }} onClick={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()}>
+          {([
+            { key: 'opacity', label: 'Прозрачность', value: opacity, min: 0, max: 100, apply: (v: number) => onOpacity(v / 100) },
+            ...(onAdjustments ? [
+              { key: 'brightness', label: 'Яркость', value: adj.brightness, min: 20, max: 180, apply: (v: number) => onAdjustments({ brightness: v / 100 }) },
+              { key: 'contrast', label: 'Контраст', value: adj.contrast, min: 20, max: 180, apply: (v: number) => onAdjustments({ contrast: v / 100 }) },
+              { key: 'saturation', label: 'Насыщенность', value: adj.saturation, min: 0, max: 200, apply: (v: number) => onAdjustments({ saturation: v / 100 }) },
+            ] : []),
+          ]).map(slider => (
+            <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>
+              <input aria-label={slider.label} type="range" min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={event => slider.apply(Number(event.target.value))} style={{ flex: 1 }} />
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 30 }}>{Math.round(slider.value * 100)}%</span>
+            </div>
+          ))}
+          {onDuplicate && (
+            <button type="button" onClick={onDuplicate} style={{ padding: '4px 6px', fontSize: 10, borderRadius: 5, border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)', cursor: 'pointer' }}>Дублировать</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

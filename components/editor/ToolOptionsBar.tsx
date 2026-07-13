@@ -7,12 +7,12 @@ export function ToolOptionsBar() {
   const state = useStore();
   const { activeTool, cleanupSettings, updateCleanupSettings, selectedObject, documents, activeDocIndex } = state;
   const doc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
-  const isMarking = activeTool === 'brush' || activeTool === 'eraser';
+  const isMarking = activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser';
 
   if (!doc) return null;
   return (
     <div className="tool-options" aria-label="Параметры активного инструмента">
-      <strong>{activeTool === 'eraser' ? 'Ластик' : activeTool === 'brush' ? 'Кисть' : activeTool === 'select' ? 'Выделение' : activeTool === 'pan' ? 'Рука' : activeTool === 'text' ? 'Текст' : activeTool === 'watermark' ? 'Вотерка' : activeTool === 'wand' ? 'Волшебный бабл' : 'Лассо'}</strong>
+      <strong>{activeTool === 'eraser' ? 'Ластик' : activeTool === 'maskBrush' ? 'Маска' : activeTool === 'brush' ? 'Кисть' : activeTool === 'select' ? 'Выделение' : activeTool === 'pan' ? 'Рука' : activeTool === 'text' ? 'Текст' : activeTool === 'watermark' ? 'Вотерка' : activeTool === 'wand' ? 'Волшебный бабл' : 'Лассо'}</strong>
       {isMarking && <>
         <label>Размер <input type="range" min="3" max="200" value={Math.round(cleanupSettings.brushSize * 1000)} onChange={e => updateCleanupSettings({ brushSize: Number(e.target.value) / 1000 })} /></label>
         <input className="tool-number" aria-label="Размер инструмента" type="number" min="3" max="200" value={Math.round(cleanupSettings.brushSize * 1000)} onChange={e => updateCleanupSettings({ brushSize: Math.max(3, Math.min(200, Number(e.target.value))) / 1000 })} />

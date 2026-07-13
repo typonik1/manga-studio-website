@@ -76,7 +76,8 @@ export function EditorShell() {
     if (e.code === 'Space') { e.preventDefault(); setActiveTool('pan'); return; }
     if (e.code === 'KeyT') { setActiveTool('text'); setLeftTab('text'); return; }
     if (e.code === 'KeyW') { setActiveTool('watermark'); setLeftTab('watermark'); return; }
-    if (e.code === 'KeyM') { setActiveTool('wand'); setLeftTab('cleanup'); return; }
+    if (e.code === 'KeyM') { setActiveTool('maskBrush'); setLeftTab('cleanup'); return; }
+    if (e.code === 'KeyG') { setActiveTool('wand'); setLeftTab('cleanup'); return; }
     if (e.key === '1') { setLeftTab('watermark'); return; }
     if (e.key === '2') { setLeftTab('cleanup'); return; }
     if (e.key === '3') { setLeftTab('text'); return; }

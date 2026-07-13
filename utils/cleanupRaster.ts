@@ -142,20 +142,26 @@ export async function createFloodMask(doc: ImageDocument, normalizedX: number, n
   const sx = Math.min(width - 1, Math.max(0, Math.floor(normalizedX * width)));
   const sy = Math.min(height - 1, Math.max(0, Math.floor(normalizedY * height)));
   const seed = (sy * width + sx) * 4;
-  const visited = new Uint8Array(width * height);
+  const queued = new Uint8Array(width * height);
   const selected = new Uint8Array(width * height);
   const queue = new Int32Array(width * height);
-  let head = 0, tail = 0, count = 0; queue[tail++] = sy * width + sx;
+  let head = 0, tail = 0, count = 0;
+  const seedPixel = sy * width + sx;
+  queue[tail++] = seedPixel;
+  queued[seedPixel] = 1;
   const limit = Math.max(4, threshold * 2.55);
   while (head < tail) {
-    const pixel = queue[head++]; if (visited[pixel]) continue; visited[pixel] = 1;
+    const pixel = queue[head++];
     const offset = pixel * 4;
     const distance = Math.max(Math.abs(data[offset] - data[seed]), Math.abs(data[offset + 1] - data[seed + 1]), Math.abs(data[offset + 2] - data[seed + 2]), Math.abs(data[offset + 3] - data[seed + 3]));
     if (distance > limit) continue;
     selected[pixel] = 1; count++;
     const x = pixel % width, y = Math.floor(pixel / width);
-    if (x > 0) queue[tail++] = pixel - 1; if (x + 1 < width) queue[tail++] = pixel + 1;
-    if (y > 0) queue[tail++] = pixel - width; if (y + 1 < height) queue[tail++] = pixel + width;
+    const enqueue = (next: number) => { if (!queued[next]) { queued[next] = 1; queue[tail++] = next; } };
+    if (x > 0) enqueue(pixel - 1);
+    if (x + 1 < width) enqueue(pixel + 1);
+    if (y > 0) enqueue(pixel - width);
+    if (y + 1 < height) enqueue(pixel + width);
   }
   const mask = document.createElement('canvas'); mask.width = width; mask.height = height;
   const maskCtx = mask.getContext('2d')!; const image = maskCtx.createImageData(width, height);

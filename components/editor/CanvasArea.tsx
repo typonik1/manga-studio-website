@@ -139,11 +139,16 @@ function MaskOverlayNode({ elements, strokes, width, height, opacity }: { elemen
           ctx.globalAlpha = stroke.opacity; ctx.lineWidth = Math.max(1, stroke.size * height); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
           for (let index = 0; index < stroke.points.length; index += 2) { const x = stroke.points[index] * width, y = stroke.points[index + 1] * height; if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.stroke();
         } else if (element.type === 'polygon') {
+          // 'erase' polygons must punch holes in the orange preview, matching buildCleanupMask.
+          ctx.globalCompositeOperation = element.mode === 'erase' ? 'destination-out' : 'source-over';
           ctx.beginPath(); for (let index = 0; index < element.points.length; index += 2) { const x = element.points[index] * width, y = element.points[index + 1] * height; if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.closePath(); ctx.fill();
         } else {
           const bitmap = new window.Image(); bitmap.crossOrigin = 'anonymous'; await new Promise<void>((resolve, reject) => { bitmap.onload = () => resolve(); bitmap.onerror = reject; bitmap.src = element.src; });
           const tinted = document.createElement('canvas'); tinted.width = next.width; tinted.height = next.height; const tintedCtx = tinted.getContext('2d')!;
-          tintedCtx.drawImage(bitmap, 0, 0, next.width, next.height); tintedCtx.globalCompositeOperation = 'source-in'; tintedCtx.fillStyle = 'rgb(255, 128, 0)'; tintedCtx.fillRect(0, 0, next.width, next.height); ctx.drawImage(tinted, 0, 0);
+          tintedCtx.drawImage(bitmap, 0, 0, next.width, next.height); tintedCtx.globalCompositeOperation = 'source-in'; tintedCtx.fillStyle = 'rgb(255, 128, 0)'; tintedCtx.fillRect(0, 0, next.width, next.height);
+          // 'erase' bitmaps subtract from the preview instead of adding to it.
+          ctx.globalCompositeOperation = element.mode === 'erase' ? 'destination-out' : 'source-over';
+          ctx.drawImage(tinted, 0, 0);
         }
         ctx.restore();
       }

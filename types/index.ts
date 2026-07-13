@@ -92,6 +92,17 @@ export interface BaseLayerAdjustments {
   saturation: number; // 1 = neutral
 }
 
+/** Non-destructive transform shared by raster layers (base + AI). x/y are normalized to doc size. */
+export interface LayerTransform {
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number; // degrees
+}
+
+export const DEFAULT_LAYER_TRANSFORM: LayerTransform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
+
 export interface BaseLayerState {
   id: string;
   visible: boolean;
@@ -99,6 +110,13 @@ export interface BaseLayerState {
   opacity: number;
   eraseElements: MaskElement[];
   adjustments: BaseLayerAdjustments;
+  /** Non-destructive crop, normalized to doc size. */
+  crop?: CropRect | null;
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
 }
 
 export const DEFAULT_BASE_ADJUSTMENTS: BaseLayerAdjustments = { brightness: 1, contrast: 1, saturation: 1 };
@@ -111,6 +129,8 @@ export function createBaseLayerState(documentId: string): BaseLayerState {
     opacity: 1,
     eraseElements: [],
     adjustments: { ...DEFAULT_BASE_ADJUSTMENTS },
+    crop: null,
+    ...DEFAULT_LAYER_TRANSFORM,
   };
 }
 
@@ -134,9 +154,26 @@ export interface AiRasterLayer {
   replacesBase?: boolean;
   maskId?: string;
   eraseElements?: MaskElement[];
+  adjustments?: BaseLayerAdjustments;
+  /** Non-destructive crop, normalized to doc size. */
+  crop?: CropRect | null;
+  locked?: boolean;
+  x?: number;
+  y?: number;
+  scaleX?: number;
+  scaleY?: number;
+  rotation?: number;
 }
 
 export type SelectedLayer = { id: string; type: 'base' | 'mask' | 'ai' };
+
+/** A single entry in the document's unified z-order stack. */
+export type LayerReference =
+  | { type: 'base'; id: string }
+  | { type: 'ai'; id: string }
+  | { type: 'text'; id: string }
+  | { type: 'watermark'; id: string }
+  | { type: 'shape'; id: string };
 
 export interface HistorySnapshot {
   cleanup: CleanupLayerState;
@@ -148,6 +185,7 @@ export interface HistorySnapshot {
   watermarks: WatermarkObject[];
   texts: TextObject[];
   shapes: ShapeObject[];
+  layerOrder: LayerReference[];
 }
 
 export interface ImageDocument {
@@ -167,6 +205,8 @@ export interface ImageDocument {
   watermarks: WatermarkObject[];
   texts: TextObject[];
   shapes: ShapeObject[];
+  /** Unified z-order stack (bottom → top). Missing refs are appended on top at resolve time. */
+  layerOrder?: LayerReference[];
   past: HistorySnapshot[];
   future: HistorySnapshot[];
   hasChanges: boolean;

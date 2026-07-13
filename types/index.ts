@@ -150,7 +150,7 @@ export interface AiRasterLayer {
   src: string;
   visible: boolean;
   opacity: number;
-  operation: 'cleanup' | 'remove-background' | 'duplicate' | 'local-cutout';
+  operation: 'cleanup' | 'remove-background' | 'duplicate' | 'local-cutout' | 'drawing';
   replacesBase?: boolean;
   maskId?: string;
   eraseElements?: MaskElement[];

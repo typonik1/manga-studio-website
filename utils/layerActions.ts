@@ -101,6 +101,26 @@ export async function fillMaskedArea(color: string): Promise<void> {
   finishSelection();
 }
 
+/** «Новый слой» — creates an empty transparent drawing layer on top of the stack. */
+export function createDrawingLayer(): void {
+  const doc = getActiveDoc();
+  if (!doc) throw new Error('Нет активного изображения.');
+  const canvas = document.createElement('canvas');
+  canvas.width = doc.width;
+  canvas.height = doc.height;
+  const count = doc.aiLayers.filter(layer => layer.operation === 'drawing').length;
+  useStore.getState().addAiLayer(doc.id, {
+    id: newLayerId(),
+    name: `Рисунок ${count + 1}`,
+    src: canvas.toDataURL('image/png'),
+    visible: true,
+    opacity: 1,
+    operation: 'drawing',
+    locked: false,
+    eraseElements: [],
+  });
+}
+
 /** «Локально восстановить» — browser-only inpainting of the selection (simpleInpaint). */
 export async function inpaintMaskedArea(): Promise<void> {
   const doc = getActiveDoc();

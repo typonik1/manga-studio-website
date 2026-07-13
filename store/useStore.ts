@@ -249,11 +249,15 @@ export const useStore = create<AppState>((set, get) => ({
     const target = state.layerCropTarget;
     const rect = state.cropRect;
     if (!target || !rect || state.activeDocIndex < 0) return;
+    // Unlock the layer so the cropped fragment can immediately be moved/scaled
+    // with the select tool — that's what users expect right after cropping.
     if (target.type === 'base') {
-      state.updateBaseLayer({ crop: rect });
+      state.updateBaseLayer({ crop: rect, locked: false });
     } else if (target.type === 'ai') {
-      state.updateAiLayer(target.id, { crop: rect });
+      state.updateAiLayer(target.id, { crop: rect, locked: false });
     }
+    // Keep the layer selected so the transformer appears right away.
+    state.selectLayer({ id: target.id, type: target.type as 'base' | 'ai' });
     set({ layerCropTarget: null, cropRect: null, activeTool: 'select' });
   },
 

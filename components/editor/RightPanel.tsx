@@ -5,6 +5,7 @@ import { useStore } from '@/store/useStore';
 import type { ImageDocument, LayerVisibility } from '@/types';
 import { LayerContextMenu } from './LayerContextMenu';
 import { resolveLayerOrder } from '@/utils/layerOrder';
+import { createDrawingLayer } from '@/utils/layerActions';
 
 export function RightPanel() {
   const { rightTab: tab, setRightTab: setTab } = useStore();
@@ -192,7 +193,21 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
       ))}
 
       {/* Unified raster stack: top layer first, drag to reorder */}
-      <div className="section-label" style={{ padding: '12px 2px 6px' }}>Растровые слои</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 2px 6px' }}>
+        <div className="section-label" style={{ padding: 0 }}>Растровые слои</div>
+        <button
+          type="button"
+          onClick={() => { createDrawingLayer(); setActiveTool('brush'); }}
+          title="Создать пустой слой для рисования поверх"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 4,
+            padding: '2px 8px', fontSize: 11, borderRadius: 5, cursor: 'pointer',
+            border: '1px solid var(--border-default)', background: 'transparent', color: 'var(--text-secondary)',
+          }}
+        >
+          + Новый слой
+        </button>
+      </div>
       {[...resolveLayerOrder(activeDoc)]
         .map((ref, orderIndex) => ({ ref, orderIndex }))
         .filter(({ ref }) => ref.type === 'base' || ref.type === 'ai')
@@ -201,7 +216,15 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
           const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
           const wrapperProps = {
             draggable: true,
-            onDragStart: (e: React.DragEvent) => { dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move'; },
+            onDragStart: (e: React.DragEvent) => {
+              // Sliders and buttons inside the row must not start a row drag —
+              // otherwise moving a slider drags a ghost of the whole row.
+              if ((e.target as HTMLElement).closest('input, button, select, textarea')) {
+                e.preventDefault();
+                return;
+              }
+              dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
+            },
             onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropIndex(orderIndex); },
             onDragLeave: () => setDropIndex(current => (current === orderIndex ? null : current)),
             onDrop: (e: React.DragEvent) => {

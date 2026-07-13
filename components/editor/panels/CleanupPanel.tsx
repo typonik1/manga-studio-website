@@ -1,11 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
-import { simpleInpaint } from '@/utils/imageUtils';
-import { buildCleanupMask, buildCleanupSource, buildCleanupSourceCanvas, createCleanupPatch, createColorPatch } from '@/utils/cleanupRaster';
-import { cleanupWithClipdrop, removeBackgroundWithClipdrop } from '@/lib/clipdrop/client';
+import { aiCleanupMaskedArea, inpaintMaskedArea, removeBackgroundFromLayer } from '@/utils/layerActions';
 
 const primaryButtonStyle = {
   padding: '7px', borderRadius: 6, fontSize: 12, fontWeight: 600,
@@ -23,7 +21,7 @@ export function CleanupPanel() {
     cleanupSettings, updateCleanupSettings,
     setActiveTool, activeTool,
     activeDocIndex, documents,
-    addAiLayer, createMask, clearActiveMask, setInpaintRunning,
+    createMask, clearActiveMask, setInpaintRunning,
     isInpaintRunning, inpaintProgress,
   } = useStore();
   const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
@@ -36,34 +34,16 @@ export function CleanupPanel() {
 
   async function handleClipdrop(operation: 'cleanup' | 'background') {
     if (!activeDoc || aiOperation) return;
-    const documentId = activeDoc.id;
     const controller = new AbortController();
     abortRef.current = controller;
     setAiError('');
     setAiOperation(operation);
     try {
-      const image = await buildCleanupSource(activeDoc);
-      let result: string;
       if (operation === 'cleanup') {
-        const mask = await buildCleanupMask(activeDoc);
-        if (mask.isEmpty) throw new Error('Сначала создайте маску кистью, лассо или волшебным баблом.');
-        const fullResult = await cleanupWithClipdrop(image, mask.blob, controller.signal);
-        result = await createCleanupPatch(fullResult, mask.canvas, activeDoc.width, activeDoc.height);
+        await aiCleanupMaskedArea(controller.signal);
       } else {
-        result = await removeBackgroundWithClipdrop(image, controller.signal);
+        await removeBackgroundFromLayer({ id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' }, controller.signal);
       }
-      const current = useStore.getState().documents.find(doc => doc.id === documentId);
-      const index = (current?.aiLayers.filter(layer => layer.operation === operation).length ?? 0) + 1;
-      addAiLayer(documentId, {
-        id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        name: operation === 'cleanup' ? `Удаление объекта ${index}` : `Фон удалён ${index}`,
-        src: result,
-        visible: true,
-        opacity: 1,
-        operation: operation === 'cleanup' ? 'cleanup' : 'remove-background',
-        replacesBase: operation === 'background',
-        maskId: operation === 'cleanup' ? activeMask?.id : undefined,
-      });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         setAiError(error instanceof Error ? error.message : 'Не удалось обработать изображение.');
@@ -76,58 +56,12 @@ export function CleanupPanel() {
 
   async function handleInpaint() {
     if (!activeDoc || isInpaintRunning) return;
-    setInpaintRunning(true, 0);
     try {
-      await new Promise(r => setTimeout(r, 30));
-      setInpaintRunning(true, 15);
-
-      const canvas = await buildCleanupSourceCanvas(activeDoc);
-      const ctx = canvas.getContext('2d')!;
-      setInpaintRunning(true, 40);
-      const mask = await buildCleanupMask(activeDoc);
-      if (mask.isEmpty) throw new Error('Пустая маска');
-      setInpaintRunning(true, 60);
-      const maskCtx = mask.canvas.getContext('2d', { willReadFrequently: true })!;
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const maskData = maskCtx.getImageData(0, 0, mask.canvas.width, mask.canvas.height);
-      const result = simpleInpaint(imageData, maskData, cleanupSettings.inpaintRadius * 3);
-
-      setInpaintRunning(true, 85);
-
-      ctx.putImageData(result, 0, 0);
-      const patch = await createCleanupPatch(canvas.toDataURL('image/png'), mask.canvas, activeDoc.width, activeDoc.height);
-      addAiLayer(activeDoc.id, {
-        id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        name: `Локальное замывание ${activeDoc.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
-        src: patch, visible: true, opacity: 1, operation: 'cleanup', maskId: activeMask?.id,
-      });
-      setInpaintRunning(false, 100);
-    } catch (err) {
-      setInpaintRunning(false, 0);
+      await inpaintMaskedArea();
+    } catch {
       alert('Ошибка при замывании. Попробуйте ещё раз.');
     }
   }
-
-  useEffect(() => {
-    const inpaint = () => { void handleInpaint(); };
-    const fill = (event: Event) => {
-      void (async () => {
-        if (!activeDoc || !activeMask) return;
-        const mask = await buildCleanupMask(activeDoc);
-        if (mask.isEmpty) return;
-        const color = (event as CustomEvent<{ color?: string }>).detail?.color ?? '#ffffff';
-        const patch = await createColorPatch(mask.canvas, activeDoc.width, activeDoc.height, color);
-        addAiLayer(activeDoc.id, {
-          id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          name: `Заливка маски ${activeDoc.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
-          src: patch, visible: true, opacity: 1, operation: 'cleanup', maskId: activeMask.id,
-        });
-      })();
-    };
-    window.addEventListener('manga:mask-inpaint', inpaint);
-    window.addEventListener('manga:mask-fill', fill);
-    return () => { window.removeEventListener('manga:mask-inpaint', inpaint); window.removeEventListener('manga:mask-fill', fill); };
-  });
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -247,7 +181,7 @@ export function CleanupPanel() {
                   color: 'var(--text-secondary)', cursor: 'pointer',
                 }}
               >
-                ��тмена
+                Отмена
               </button>
             </div>
           ) : (

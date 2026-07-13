@@ -648,8 +648,6 @@ export function CanvasArea() {
   }, [wandInfo]);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
-  const baseImg = useImage(activeDoc?.originalSrc);
-  const cleanupImg = useImage(activeDoc?.cleanup.committed);
   const baseReplaced = activeDoc?.aiLayers.some(layer => layer.visible && layer.replacesBase) ?? false;
 
   // Resize observer
@@ -720,16 +718,30 @@ export function CanvasArea() {
       panVpStart.current = { x: viewport.x, y: viewport.y };
       return;
     }
-    if ((activeTool === 'lasso' || activeTool === 'wand') && activeDoc) {
+    if ((activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect') && activeDoc) {
       const stage = stageRef.current; const pos = stage?.getPointerPosition();
       if (!pos) return;
       const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
       if (!imagePoint?.inside) return;
+      // Shift = add to selection, Alt = subtract (overrides the panel toggle)
+      const mode: 'replace' | 'add' | 'subtract' = e.evt.altKey ? 'subtract' : e.evt.shiftKey ? 'add' : cleanupSettings.selectionMode;
       if (activeTool === 'wand') {
-        void createFloodMask(activeDoc, imagePoint.x, imagePoint.y, cleanupSettings.magicThreshold).then(({ src, coverage }) => {
-          addMaskElement({ type: 'bitmap', src });
-          if (coverage > 0.7) window.alert('Выделено больше 70% изображения. Уменьшите порог волшебного бабла, если это не ожидаемый результат.');
+        void createFloodMask(activeDoc, imagePoint.x, imagePoint.y, cleanupSettings.magicThreshold, cleanupSettings.wandContiguous).then(({ src, coverage }) => {
+          addMaskElement(
+            { type: 'bitmap', src, mode: mode === 'subtract' ? 'erase' : 'add' },
+            { replace: mode === 'replace' }
+          );
+          setWandInfo(`Выделено ~${Math.round(coverage * 100)}% изображения`);
+          if (coverage > 0.7) setWandPending({ src, coverage });
         }).catch(() => window.alert('Не удалось прочитать пиксели композиции.'));
+        return;
+      }
+      if (activeTool === 'rectSelect') {
+        isRectSelecting.current = true;
+        rectStart.current = { x: imagePoint.x, y: imagePoint.y };
+        rectCurrent.current = { x: imagePoint.x, y: imagePoint.y };
+        const rect = liveRectRef.current;
+        if (rect) { rect.setAttrs({ x: imagePoint.x * imgW, y: imagePoint.y * imgH, width: 0, height: 0 }); rect.visible(true); rect.getLayer()?.batchDraw(); }
         return;
       }
       isLassoing.current = true; lassoPoints.current = [imagePoint.x, imagePoint.y];
@@ -774,6 +786,19 @@ export function CanvasArea() {
       return;
     }
 
+    if (activeTool === 'rectSelect' && isRectSelecting.current && pos) {
+      const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (imagePoint) {
+        rectCurrent.current = { x: Math.min(1, Math.max(0, imagePoint.x)), y: Math.min(1, Math.max(0, imagePoint.y)) };
+        const x = Math.min(rectStart.current.x, rectCurrent.current.x) * imgW;
+        const y = Math.min(rectStart.current.y, rectCurrent.current.y) * imgH;
+        const w = Math.abs(rectCurrent.current.x - rectStart.current.x) * imgW;
+        const h = Math.abs(rectCurrent.current.y - rectStart.current.y) * imgH;
+        const rect = liveRectRef.current;
+        if (rect) { rect.setAttrs({ x, y, width: w, height: h }); rect.getLayer()?.batchDraw(); }
+      }
+      return;
+    }
     if (activeTool === 'lasso' && isLassoing.current && pos) {
       const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
       if (imagePoint?.inside) {
@@ -818,11 +843,31 @@ export function CanvasArea() {
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e?: Konva.KonvaEventObject<MouseEvent>) => {
     isPanning.current = false;
+    const selMode: 'replace' | 'add' | 'subtract' = e?.evt?.altKey ? 'subtract' : e?.evt?.shiftKey ? 'add' : cleanupSettings.selectionMode;
+    if (isRectSelecting.current) {
+      isRectSelecting.current = false;
+      const x1 = Math.min(rectStart.current.x, rectCurrent.current.x);
+      const y1 = Math.min(rectStart.current.y, rectCurrent.current.y);
+      const x2 = Math.max(rectStart.current.x, rectCurrent.current.x);
+      const y2 = Math.max(rectStart.current.y, rectCurrent.current.y);
+      if ((x2 - x1) > 0.004 && (y2 - y1) > 0.004) {
+        addMaskElement(
+          { type: 'polygon', points: [x1, y1, x2, y1, x2, y2, x1, y2], mode: selMode === 'subtract' ? 'erase' : 'add' },
+          { replace: selMode === 'replace' }
+        );
+      }
+      const rect = liveRectRef.current; if (rect) { rect.visible(false); rect.getLayer()?.batchDraw(); }
+    }
     if (isLassoing.current) {
       const points = [...lassoPoints.current];
-      if (points.length >= 6) addMaskElement({ type: 'polygon', points });
+      if (points.length >= 6) {
+        addMaskElement(
+          { type: 'polygon', points, mode: selMode === 'subtract' ? 'erase' : 'add' },
+          { replace: selMode === 'replace' }
+        );
+      }
       isLassoing.current = false; lassoPoints.current = [];
       const line = liveLassoRef.current; if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
     }
@@ -899,6 +944,11 @@ export function CanvasArea() {
           const line = liveLassoRef.current;
           if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
         }
+        if (isRectSelecting.current) {
+          isRectSelecting.current = false;
+          const rect = liveRectRef.current;
+          if (rect) { rect.visible(false); rect.getLayer()?.batchDraw(); }
+        }
       }
     };
     window.addEventListener('keydown', handler);
@@ -924,7 +974,7 @@ export function CanvasArea() {
         isolation: 'isolate',
         zIndex: 0,
         background: 'var(--bg-base)',
-        cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : activeTool === 'lasso' || activeTool === 'wand' ? 'crosshair' : 'default',
+        cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect' ? 'crosshair' : 'default',
       }}
     >
       <ToolOptionsBar />
@@ -1060,20 +1110,46 @@ export function CanvasArea() {
             scaleX={viewport.scale}
             scaleY={viewport.scale}
           >
-            {/* Image background */}
-            {layerVisibility.base && !baseReplaced && baseImg && (
-              <KonvaImage name="base-image" image={baseImg} width={imgW} height={imgH} />
+            {/* Transparency checkerboard under everything */}
+            {checkerPattern.current && (
+              <Rect
+                name="checker-bg"
+                width={imgW}
+                height={imgH}
+                fillPatternImage={checkerPattern.current as unknown as HTMLImageElement}
+                fillPatternRepeat="repeat"
+                listening={false}
+              />
+            )}
+
+            {/* Base image (original + adjustments + erase mask) */}
+            {layerVisibility.base && !baseReplaced && (doc => doc.baseLayer?.visible !== false)(activeDoc) && (
+              <BaseLayerNode
+                doc={activeDoc}
+                width={imgW}
+                height={imgH}
+                onSelect={() => { selectLayer({ id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' }); }}
+                onContextMenu={e => {
+                  e.evt.preventDefault();
+                  setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' } });
+                }}
+              />
             )}
 
             <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
-            {/* Cleanup committed layer */}
-            {layerVisibility.cleanup && cleanupImg && (
-              <KonvaImage name="base-image" image={cleanupImg} width={imgW} height={imgH} />
-            )}
-
             {/* Non-destructive AI raster layers */}
             {layerVisibility.cleanup && (activeDoc.aiLayers ?? []).filter(layer => layer.visible).map(layer => (
-              <RasterLayerNode key={layer.id} src={layer.src} width={imgW} height={imgH} opacity={layer.opacity} />
+              <RasterLayerNode
+                key={layer.id}
+                layer={layer}
+                width={imgW}
+                height={imgH}
+                onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
+                onContextMenu={e => {
+                  e.evt.preventDefault();
+                  setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: layer.id, type: 'ai' } });
+                }}
+              />
             ))}
 
             {/* Live brush strokes */}
@@ -1103,6 +1179,9 @@ export function CanvasArea() {
 
             {/* Live lasso contour */}
             <Line ref={liveLassoRef} points={[]} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} closed fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
+
+            {/* Live rectangular selection */}
+            <Rect ref={liveRectRef} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
 
             {/* Live stroke while drawing (updated imperatively) */}
             <Line
@@ -1179,6 +1258,51 @@ export function CanvasArea() {
           </Layer>
         </Stage>
       )}
+
+      {/* Wand coverage chip */}
+      {wandInfo && !wandPending && (
+        <div style={{
+          position: 'absolute', top: 48, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 30, background: 'rgba(0,0,0,0.65)', borderRadius: 12,
+          padding: '4px 12px', fontSize: 12, color: 'var(--text-secondary)',
+          backdropFilter: 'blur(4px)',
+        }}>
+          {wandInfo}
+        </div>
+      )}
+
+      {/* Wand: selection covers >70% — confirm keeping it */}
+      {wandPending && (
+        <div role="alertdialog" aria-label="Слишком большое выделение" style={{
+          position: 'absolute', top: 48, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 40, background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)',
+          borderRadius: 8, padding: '10px 14px', maxWidth: 340, fontSize: 12,
+          color: 'var(--text-primary)', boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
+        }}>
+          <div style={{ marginBottom: 8 }}>
+            {`Выделено ~${Math.round(wandPending.coverage * 100)}% изображения. Оставить выделение или отменить и уменьшить порог?`}
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={() => { useStore.getState().undo(); setWandPending(null); }}
+              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border-default)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}
+            >
+              Отменить
+            </button>
+            <button
+              type="button"
+              onClick={() => setWandPending(null)}
+              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 5, border: 'none', background: 'var(--accent)', color: 'var(--bg-base)', cursor: 'pointer' }}
+            >
+              Оставить
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Layer context menu */}
+      {contextMenu && <LayerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />}
 
       {/* Brush cursor (positioned imperatively, no re-renders) */}
       {(activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && (

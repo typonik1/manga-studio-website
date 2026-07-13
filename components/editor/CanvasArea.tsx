@@ -889,7 +889,7 @@ export function CanvasArea() {
                 <Line
                   key={stroke.id}
                   points={pts}
-                  stroke={stroke.color}
+                  stroke={stroke.purpose === 'mask' ? 'rgba(255,128,0,0.6)' : stroke.color}
                   strokeWidth={stroke.size * activeDoc.height * previewScale}
                   lineCap="round"
                   lineJoin="round"

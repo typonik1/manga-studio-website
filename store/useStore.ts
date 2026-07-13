@@ -150,6 +150,7 @@ export interface AppState {
   toggleLayerVisibility: (layer: keyof LayerVisibility) => void;
   setShowExportModal: (show: boolean) => void;
   applyCleanupCommit: (dataURL: string) => void;
+  applyAiCleanupCommit: (documentId: string, dataURL: string, clearMask: boolean) => void;
   clearCurrentDocument: () => void;
   setInpaintRunning: (running: boolean, progress?: number) => void;
 }
@@ -518,6 +519,24 @@ export const useStore = create<AppState>((set, get) => ({
       const docs = [...state.documents];
       const withH = withHistory(docs[state.activeDocIndex]);
       docs[state.activeDocIndex] = { ...withH, cleanup: { committed: dataURL, strokes: [] } };
+      return { documents: docs };
+    }),
+
+  applyAiCleanupCommit: (documentId, dataURL, clearMask) =>
+    set(state => {
+      const index = state.documents.findIndex(doc => doc.id === documentId);
+      if (index < 0) return {};
+      const docs = [...state.documents];
+      const withH = withHistory(docs[index]);
+      docs[index] = {
+        ...withH,
+        cleanup: {
+          committed: dataURL,
+          strokes: clearMask
+            ? withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask')
+            : withH.cleanup.strokes,
+        },
+      };
       return { documents: docs };
     }),
 

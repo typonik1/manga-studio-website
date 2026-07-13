@@ -5,6 +5,10 @@ import {
   buildCleanupSourceCanvas,
   createCleanupPatch,
   createColorPatch,
+  prepareClipdropCleanupInput,
+  fitBlobToPixelLimit,
+  loadCleanupImage,
+  CLIPDROP_RBG_MAX_PIXELS,
 } from './cleanupRaster';
 import { simpleInpaint } from './imageUtils';
 import { cleanupWithClipdrop, removeBackgroundWithClipdrop } from '@/lib/clipdrop/client';
@@ -163,9 +167,16 @@ export async function aiCleanupMaskedArea(signal?: AbortSignal): Promise<void> {
   const doc = getActiveDoc();
   if (!doc) throw new Error('Нет активного изображения.');
   const mask = await requireSelectionMask(doc);
-  const image = await buildCleanupSource(doc);
-  const fullResult = await cleanupWithClipdrop(image, mask.blob, signal);
-  const patch = await createCleanupPatch(fullResult, mask.canvas, doc.width, doc.height);
+  // Send only the selection's surroundings — this keeps requests within
+  // Clipdrop's 16 MP limit even for huge documents, and full resolution
+  // is preserved everywhere outside the patch.
+  const plan = await prepareClipdropCleanupInput(doc, mask.canvas);
+  const cropResult = await cleanupWithClipdrop(plan.image, plan.mask, signal);
+  // Paste the processed crop back into a full-size canvas at its position.
+  const full = await buildCleanupSourceCanvas(doc);
+  const cropImage = await loadCleanupImage(cropResult);
+  full.getContext('2d')!.drawImage(cropImage, plan.crop.x, plan.crop.y, plan.crop.width, plan.crop.height);
+  const patch = await createCleanupPatch(full.toDataURL('image/png'), mask.canvas, doc.width, doc.height);
   const current = refreshDoc(doc.id) ?? doc;
   useStore.getState().addAiLayer(doc.id, {
     id: newLayerId(),
@@ -186,7 +197,7 @@ export async function aiCleanupMaskedArea(signal?: AbortSignal): Promise<void> {
  */
 export async function removeBackgroundFromLayer(layer: { id: string; type: 'base' | 'ai' }, signal?: AbortSignal): Promise<void> {
   const doc = getActiveDoc();
-  if (!doc) throw new Error('Нет активного изображения.');
+  if (!doc) throw new Error('Нет ��ктивного изображения.');
 
   let image: Blob;
   if (layer.type === 'ai') {
@@ -198,6 +209,9 @@ export async function removeBackgroundFromLayer(layer: { id: string; type: 'base
     image = await buildCleanupSource(doc);
   }
 
+  // Clipdrop RBG rejects images above ~25 MP: downscale before sending.
+  // The result layer is stretched back to document size when rendered.
+  image = await fitBlobToPixelLimit(image, CLIPDROP_RBG_MAX_PIXELS);
   const result = await removeBackgroundWithClipdrop(image, signal);
   const current = refreshDoc(doc.id) ?? doc;
   useStore.getState().addAiLayer(doc.id, {

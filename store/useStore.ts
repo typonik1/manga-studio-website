@@ -50,6 +50,9 @@ const defaultCleanupSettings: CleanupSettings = {
   mode: 'brush',
   cleanupMethod: 'auto',
   magicThreshold: 30,
+  selectionMode: 'replace',
+  wandContiguous: true,
+  keepSelectionAfterAction: false,
 };
 
 const defaultTextSettings: TextSettings = {

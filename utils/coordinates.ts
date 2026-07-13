@@ -1,3 +1,4 @@
+import { createBaseLayerState, DEFAULT_BASE_ADJUSTMENTS } from '@/types';
 import type { ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject } from '@/types';
 
 export interface CoordinateSpace {
@@ -73,7 +74,16 @@ export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
       ...layer,
       visible: layer.visible !== false,
       opacity: clamp01(Number.isFinite(layer.opacity) ? layer.opacity : 1),
+      eraseElements: layer.eraseElements ?? [],
     })),
+    baseLayer: document.baseLayer
+      ? {
+          ...document.baseLayer,
+          opacity: clamp01(Number.isFinite(document.baseLayer.opacity) ? document.baseLayer.opacity : 1),
+          eraseElements: document.baseLayer.eraseElements ?? [],
+          adjustments: { ...DEFAULT_BASE_ADJUSTMENTS, ...document.baseLayer.adjustments },
+        }
+      : createBaseLayerState(document.id),
     activeMaskId: document.activeMaskId ?? null,
     selectedLayer: document.selectedLayer ?? null,
   };

@@ -6,6 +6,7 @@ import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
+import { resolveLayerOrder } from '@/utils/layerOrder';
 import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
 import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
@@ -44,50 +45,161 @@ function makeCheckerPattern(): HTMLCanvasElement {
   return tile;
 }
 
-function RasterLayerNode({ layer, width, height, onSelect, onContextMenu }: {
+/** Shared placement/transform values for a raster layer node. */
+interface RasterNodePlacement {
+  x?: number;
+  y?: number;
+  scaleX?: number;
+  scaleY?: number;
+  rotation?: number;
+  crop?: CropRect | null;
+}
+
+/**
+ * Wraps a raster image with its non-destructive transform + crop and, when
+ * selected with the select tool and unlocked, makes it draggable/transformable.
+ */
+function PlacedRasterImage({ nodeName, image, width, height, opacity, placement, interactive, isSelected, onSelect, onContextMenu, onBeforeChange, onChange }: {
+  nodeName: string;
+  image: CanvasImageSource;
+  width: number;
+  height: number;
+  opacity: number;
+  placement: RasterNodePlacement;
+  interactive: boolean;
+  isSelected: boolean;
+  onSelect: () => void;
+  onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
+  onBeforeChange: () => void;
+  onChange: (updates: { x?: number; y?: number; scaleX?: number; scaleY?: number; rotation?: number }) => void;
+}) {
+  const groupRef = useRef<Konva.Group>(null);
+  const trRef = useRef<Konva.Transformer>(null);
+  const draggable = interactive && isSelected;
+
+  useEffect(() => {
+    if (draggable && trRef.current && groupRef.current) {
+      trRef.current.nodes([groupRef.current]);
+      trRef.current.getLayer()?.batchDraw();
+    }
+  }, [draggable]);
+
+  const crop = placement.crop ?? null;
+  const naturalW = (image as HTMLImageElement).naturalWidth || (image as HTMLCanvasElement).width || width;
+  const naturalH = (image as HTMLImageElement).naturalHeight || (image as HTMLCanvasElement).height || height;
+
+  return (
+    <>
+      <Group
+        ref={groupRef}
+        x={(placement.x ?? 0) * width}
+        y={(placement.y ?? 0) * height}
+        scaleX={placement.scaleX ?? 1}
+        scaleY={placement.scaleY ?? 1}
+        rotation={placement.rotation ?? 0}
+        draggable={draggable}
+        onClick={onSelect}
+        onTap={onSelect}
+        onContextMenu={onContextMenu}
+        onDragStart={onBeforeChange}
+        onDragEnd={e => onChange({ x: e.target.x() / width, y: e.target.y() / height })}
+        onTransformStart={onBeforeChange}
+        onTransformEnd={() => {
+          const node = groupRef.current;
+          if (!node) return;
+          onChange({
+            x: node.x() / width,
+            y: node.y() / height,
+            scaleX: node.scaleX(),
+            scaleY: node.scaleY(),
+            rotation: node.rotation(),
+          });
+        }}
+      >
+        {crop ? (
+          <KonvaImage
+            name={nodeName}
+            image={image}
+            x={crop.x * width}
+            y={crop.y * height}
+            width={crop.width * width}
+            height={crop.height * height}
+            crop={{ x: crop.x * naturalW, y: crop.y * naturalH, width: crop.width * naturalW, height: crop.height * naturalH }}
+            opacity={opacity}
+          />
+        ) : (
+          <KonvaImage name={nodeName} image={image} width={width} height={height} opacity={opacity} />
+        )}
+      </Group>
+      {draggable && (
+        <Transformer
+          ref={trRef}
+          rotateEnabled
+          boundBoxFunc={(oldBox, newBox) => (newBox.width < 5 || newBox.height < 5 ? oldBox : newBox)}
+        />
+      )}
+    </>
+  );
+}
+
+function RasterLayerNode({ layer, width, height, interactive, isSelected, onSelect, onContextMenu }: {
   layer: AiRasterLayer;
   width: number;
   height: number;
+  interactive: boolean;
+  isSelected: boolean;
   onSelect: () => void;
   onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
 }) {
-  const plainImage = useImage(layer.eraseElements?.length ? null : layer.src);
+  const { updateAiLayer, pushHistory } = useStore();
+  const adjustments = layer.adjustments;
+  const needsProcessing = Boolean(
+    (layer.eraseElements?.length ?? 0) > 0 ||
+    (adjustments && (adjustments.brightness !== 1 || adjustments.contrast !== 1 || adjustments.saturation !== 1))
+  );
+  const plainImage = useImage(needsProcessing ? null : layer.src);
   const [erased, setErased] = useState<HTMLCanvasElement | null>(null);
-  const eraseCount = layer.eraseElements?.length ?? 0;
 
   useEffect(() => {
-    if (!eraseCount) { setErased(null); return; }
+    if (!needsProcessing) { setErased(null); return; }
     let cancelled = false;
     void buildRasterLayerCanvas(layer, Math.max(1, Math.round(width)), Math.max(1, Math.round(height)))
       .then(canvas => { if (!cancelled) setErased(canvas); })
       .catch(() => { if (!cancelled) setErased(null); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layer.src, layer.eraseElements, width, height]);
+  }, [layer.src, layer.eraseElements, adjustments, needsProcessing, width, height]);
 
-  const image = eraseCount ? erased : plainImage;
+  const image = needsProcessing ? erased : plainImage;
   if (!image) return null;
   return (
-    <KonvaImage
-      name={`ai-raster-layer ${layer.id}`}
+    <PlacedRasterImage
+      nodeName={`ai-raster-layer ${layer.id}`}
       image={image}
       width={width}
       height={height}
       opacity={layer.opacity}
-      onClick={onSelect}
-      onTap={onSelect}
+      placement={layer}
+      interactive={interactive && layer.locked !== true}
+      isSelected={isSelected}
+      onSelect={onSelect}
       onContextMenu={onContextMenu}
+      onBeforeChange={pushHistory}
+      onChange={updates => updateAiLayer(layer.id, updates, { history: false })}
     />
   );
 }
 
-function BaseLayerNode({ doc, width, height, onSelect, onContextMenu }: {
+function BaseLayerNode({ doc, width, height, interactive, isSelected, onSelect, onContextMenu }: {
   doc: ImageDocument;
   width: number;
   height: number;
+  interactive: boolean;
+  isSelected: boolean;
   onSelect: () => void;
   onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
 }) {
+  const { updateBaseLayer, pushHistory } = useStore();
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const adjustments = doc.baseLayer?.adjustments;
   const eraseElements = doc.baseLayer?.eraseElements;
@@ -109,16 +221,21 @@ function BaseLayerNode({ doc, width, height, onSelect, onContextMenu }: {
 
   const image = needsProcessing ? canvas : plainImage;
   if (!image) return null;
+  const state = doc.baseLayer;
   return (
-    <KonvaImage
-      name="base-image"
+    <PlacedRasterImage
+      nodeName="base-image"
       image={image}
       width={width}
       height={height}
-      opacity={doc.baseLayer?.opacity ?? 1}
-      onClick={onSelect}
-      onTap={onSelect}
+      opacity={state?.opacity ?? 1}
+      placement={state ?? {}}
+      interactive={interactive && state?.locked === false}
+      isSelected={isSelected}
+      onSelect={onSelect}
       onContextMenu={onContextMenu}
+      onBeforeChange={pushHistory}
+      onChange={updates => updateBaseLayer(updates, { history: false })}
     />
   );
 }
@@ -616,6 +733,7 @@ export function CanvasArea() {
     addDocuments,
     pushHistory, setLeftTab,
     fontsVersion, cropRect, setCropRect, updateDocumentThumbnail,
+    layerCropTarget, applyLayerCrop, cancelLayerCrop,
   } = useStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1127,35 +1245,49 @@ export function CanvasArea() {
               />
             )}
 
-            {/* Base image (original + adjustments + erase mask) */}
-            {layerVisibility.base && !baseReplaced && (doc => doc.baseLayer?.visible !== false)(activeDoc) && (
-              <BaseLayerNode
-                doc={activeDoc}
-                width={imgW}
-                height={imgH}
-                onSelect={() => { selectLayer({ id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' }); }}
-                onContextMenu={e => {
-                  e.evt.preventDefault();
-                  setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' } });
-                }}
-              />
-            )}
+            {/* Raster stack (base + AI) rendered bottom → top following the unified layer order */}
+            {resolveLayerOrder(activeDoc).map(ref => {
+              if (ref.type === 'base') {
+                if (!layerVisibility.base || baseReplaced || activeDoc.baseLayer?.visible === false) return null;
+                return (
+                  <BaseLayerNode
+                    key="base-node"
+                    doc={activeDoc}
+                    width={imgW}
+                    height={imgH}
+                    interactive={activeTool === 'select'}
+                    isSelected={activeDoc.selectedLayer?.type === 'base'}
+                    onSelect={() => { selectLayer({ id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' }); }}
+                    onContextMenu={e => {
+                      e.evt.preventDefault();
+                      setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' } });
+                    }}
+                  />
+                );
+              }
+              if (ref.type === 'ai') {
+                const layer = (activeDoc.aiLayers ?? []).find(item => item.id === ref.id);
+                if (!layer || !layerVisibility.cleanup || !layer.visible) return null;
+                return (
+                  <RasterLayerNode
+                    key={layer.id}
+                    layer={layer}
+                    width={imgW}
+                    height={imgH}
+                    interactive={activeTool === 'select'}
+                    isSelected={activeDoc.selectedLayer?.type === 'ai' && activeDoc.selectedLayer.id === layer.id}
+                    onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
+                    onContextMenu={e => {
+                      e.evt.preventDefault();
+                      setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: layer.id, type: 'ai' } });
+                    }}
+                  />
+                );
+              }
+              return null;
+            })}
 
             <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
-            {/* Non-destructive AI raster layers */}
-            {layerVisibility.cleanup && (activeDoc.aiLayers ?? []).filter(layer => layer.visible).map(layer => (
-              <RasterLayerNode
-                key={layer.id}
-                layer={layer}
-                width={imgW}
-                height={imgH}
-                onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
-                onContextMenu={e => {
-                  e.evt.preventDefault();
-                  setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: layer.id, type: 'ai' } });
-                }}
-              />
-            ))}
 
             {/* Live brush strokes */}
             {layerVisibility.cleanup && activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask').map(stroke => {
@@ -1262,6 +1394,33 @@ export function CanvasArea() {
             </Group>
           </Layer>
         </Stage>
+      )}
+
+      {/* Layer crop confirmation bar */}
+      {layerCropTarget && activeTool === 'crop' && (
+        <div style={{
+          position: 'absolute', top: 48, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 40, display: 'flex', alignItems: 'center', gap: 8,
+          background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)',
+          borderRadius: 8, padding: '6px 10px', fontSize: 12, color: 'var(--text-primary)',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
+        }}>
+          <span>Обрезка слоя — выделите область рамкой</span>
+          <button
+            type="button"
+            onClick={() => applyLayerCrop()}
+            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 5, border: 'none', background: 'var(--accent)', color: 'var(--bg-base)', cursor: 'pointer' }}
+          >
+            Применить
+          </button>
+          <button
+            type="button"
+            onClick={() => cancelLayerCrop()}
+            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border-default)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}
+          >
+            Отмена
+          </button>
+        </div>
       )}
 
       {/* Wand coverage chip */}

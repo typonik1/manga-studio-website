@@ -1,14 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import type { ImageDocument, LayerVisibility } from '@/types';
 import { LayerContextMenu } from './LayerContextMenu';
-
-type RightTab = 'layers' | 'gallery';
+import { resolveLayerOrder } from '@/utils/layerOrder';
 
 export function RightPanel() {
-  const [tab, setTab] = useState<RightTab>('gallery');
+  const { rightTab: tab, setRightTab: setTab } = useStore();
 
   return (
     <aside
@@ -128,9 +127,13 @@ function GalleryPanel() {
 }
 
 function LayersPanel() {
-const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, deleteWatermark, deleteText, deleteShape } = useStore();
+const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, deleteWatermark, deleteText, deleteShape, reorderLayer } = useStore();
 const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 const [aiMenu, setAiMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+const [dragIndex, setDragIndex] = useState<number | null>(null);
+const [dropIndex, setDropIndex] = useState<number | null>(null);
+// Ref mirrors dragIndex so drop handlers read the current value even before re-render.
+const dragIndexRef = useRef<number | null>(null);
 
 const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
 { key: 'cleanup', label: 'Очистка', icon: '✦' },
@@ -188,24 +191,64 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
         </div>
       ))}
 
-      {((activeDoc.aiLayers?.length ?? 0) > 0 || (activeDoc.masks?.length ?? 0) > 0) && (
+      {/* Unified raster stack: top layer first, drag to reorder */}
+      <div className="section-label" style={{ padding: '12px 2px 6px' }}>Растровые слои</div>
+      {[...resolveLayerOrder(activeDoc)]
+        .map((ref, orderIndex) => ({ ref, orderIndex }))
+        .filter(({ ref }) => ref.type === 'base' || ref.type === 'ai')
+        .reverse()
+        .map(({ ref, orderIndex }) => {
+          const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
+          const wrapperProps = {
+            draggable: true,
+            onDragStart: (e: React.DragEvent) => { dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move'; },
+            onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropIndex(orderIndex); },
+            onDragLeave: () => setDropIndex(current => (current === orderIndex ? null : current)),
+            onDrop: (e: React.DragEvent) => {
+              e.preventDefault();
+              const from = dragIndexRef.current;
+              if (from !== null && from !== orderIndex) reorderLayer(from, orderIndex);
+              dragIndexRef.current = null; setDragIndex(null); setDropIndex(null);
+            },
+            onDragEnd: () => { dragIndexRef.current = null; setDragIndex(null); setDropIndex(null); },
+            style: {
+              opacity: dragIndex === orderIndex ? 0.45 : 1,
+              outline: isDropTarget ? '2px solid var(--accent)' : 'none',
+              outlineOffset: -1,
+              borderRadius: 6,
+              cursor: 'grab',
+            } as React.CSSProperties,
+          };
+          if (ref.type === 'base') {
+            return (
+              <div key="base-row" {...wrapperProps}>
+                <BaseLayerRow activeDoc={activeDoc} />
+              </div>
+            );
+          }
+          const layer = (activeDoc.aiLayers ?? []).find(item => item.id === ref.id);
+          if (!layer) return null;
+          return (
+            <div key={layer.id} {...wrapperProps}>
+              <LayerRow
+                label={layer.name}
+                prefix="AI"
+                selected={activeDoc.selectedLayer?.id === layer.id}
+                visible={layer.visible}
+                opacity={layer.opacity}
+                onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
+                onVisibility={() => updateAiLayer(layer.id, { visible: !layer.visible })}
+                onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
+                onDelete={() => deleteAiLayer(layer.id)}
+                onContextMenu={e => { e.preventDefault(); setAiMenu({ x: e.clientX, y: e.clientY, id: layer.id }); }}
+              />
+            </div>
+          );
+        })}
+
+      {(activeDoc.masks?.length ?? 0) > 0 && (
         <>
-          <div className="section-label" style={{ padding: '12px 2px 6px' }}>Маски и AI-результаты</div>
-          {[...(activeDoc.aiLayers ?? [])].reverse().map(layer => (
-            <LayerRow
-              key={layer.id}
-              label={layer.name}
-              prefix="AI"
-              selected={activeDoc.selectedLayer?.id === layer.id}
-              visible={layer.visible}
-              opacity={layer.opacity}
-              onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
-              onVisibility={() => updateAiLayer(layer.id, { visible: !layer.visible })}
-              onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
-              onDelete={() => deleteAiLayer(layer.id)}
-              onContextMenu={e => { e.preventDefault(); setAiMenu({ x: e.clientX, y: e.clientY, id: layer.id }); }}
-            />
-          ))}
+          <div className="section-label" style={{ padding: '12px 2px 6px' }}>Маски</div>
           {[...(activeDoc.masks ?? [])].reverse().map(mask => (
             <LayerRow
               key={mask.id}
@@ -272,9 +315,6 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
         </>
       )}
 
-      <div className="section-label" style={{ padding: '12px 2px 6px' }}>Исходник</div>
-      <BaseLayerRow activeDoc={activeDoc} />
-
       {aiMenu && <LayerContextMenu menu={{ x: aiMenu.x, y: aiMenu.y, target: { id: aiMenu.id, type: 'ai' } }} onClose={() => setAiMenu(null)} />}
     </div>
   );
@@ -325,7 +365,7 @@ function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
               { key: 'opacity', label: 'Прозрачность', value: base?.opacity ?? 1, min: 0, max: 100, apply: (v: number) => updateBaseLayer({ opacity: v / 100 }) },
               { key: 'brightness', label: 'Яркость', value: adjustments.brightness, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, brightness: v / 100 } }) },
               { key: 'contrast', label: 'Контраст', value: adjustments.contrast, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, contrast: v / 100 } }) },
-              { key: 'saturation', label: 'Насыщенность', value: adjustments.saturation, min: 0, max: 200, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, saturation: v / 100 } }) },
+              { key: 'saturation', label: 'Насыщенност��', value: adjustments.saturation, min: 0, max: 200, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, saturation: v / 100 } }) },
             ] as const).map(slider => (
               <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>

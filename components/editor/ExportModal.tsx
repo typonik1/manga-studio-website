@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useStore } from '@/store/useStore';
 import type { ImageDocument } from '@/types';
+import { buildCleanupSourceCanvas } from '@/utils/cleanupRaster';
 
 async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   // Make sure web fonts are loaded before drawing text to canvas
@@ -12,47 +13,10 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
   canvas.height = doc.height;
   const ctx = canvas.getContext('2d')!;
 
-  // Load the base unless a visible AI layer intentionally replaces it.
-  const hasReplacement = doc.aiLayers.some(layer => layer.visible && layer.replacesBase);
-  if (!hasReplacement) {
-    const baseImg = new window.Image();
-    baseImg.crossOrigin = 'anonymous';
-    await new Promise<void>((res, rej) => {
-      baseImg.onload = () => res();
-      baseImg.onerror = rej;
-      baseImg.src = doc.originalSrc;
-    });
-    ctx.drawImage(baseImg, 0, 0, doc.width, doc.height);
-  }
-
-  // Cleanup committed
-  if (!hasReplacement && doc.cleanup.committed) {
-    const cleanImg = new window.Image();
-    cleanImg.crossOrigin = 'anonymous';
-    await new Promise<void>((res, rej) => {
-      cleanImg.onload = () => res();
-      cleanImg.onerror = rej;
-      cleanImg.src = doc.cleanup.committed!;
-    });
-    ctx.drawImage(cleanImg, 0, 0, doc.width, doc.height);
-  }
-
-  // Non-destructive AI raster layers (masks remain editor-only)
-  for (const layer of doc.aiLayers ?? []) {
-    if (!layer.visible) continue;
-    const layerImg = new window.Image();
-    layerImg.crossOrigin = 'anonymous';
-    await new Promise<void>(resolve => {
-      layerImg.onload = () => resolve();
-      layerImg.onerror = () => resolve();
-      layerImg.src = layer.src;
-    });
-    if (!layerImg.naturalWidth) continue;
-    ctx.save();
-    ctx.globalAlpha = layer.opacity;
-    ctx.drawImage(layerImg, 0, 0, doc.width, doc.height);
-    ctx.restore();
-  }
+  // Raster stack (base + AI) rendered by the shared pipeline: it follows the
+  // unified layer order and applies adjustments, erase masks, crop and transforms.
+  const raster = await buildCleanupSourceCanvas(doc);
+  ctx.drawImage(raster, 0, 0, doc.width, doc.height);
 
   // Brush strokes (white paint on top)
   for (const stroke of doc.cleanup.strokes.filter(item => item.purpose !== 'mask')) {

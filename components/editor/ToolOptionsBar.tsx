@@ -21,7 +21,11 @@ export function ToolOptionsBar() {
         {activeTool === 'brush' && <input aria-label="Цвет кисти" title="Цвет кисти" type="color" value={cleanupSettings.brushColor} onChange={event => updateCleanupSettings({ brushColor: event.target.value })} onMouseDown={event => event.stopPropagation()} style={{ width: 30, height: 26, cursor: 'pointer', pointerEvents: 'auto' }} />}
       </>}
       {activeTool === 'pan' && <span>Перетаскивайте холст. Удерживайте Space для временного режима.</span>}
-      {activeTool === 'lasso' && <><button onClick={() => window.dispatchEvent(new CustomEvent('manga:mask-inpaint'))}>Замыть</button><button onClick={() => window.dispatchEvent(new CustomEvent('manga:mask-fill', { detail: { color: '#ffffff' } }))}>Залить белым</button><button onClick={state.clearActiveMask}>Сбросить</button></>}
+      {activeTool === 'lasso' && <>
+        <button onClick={() => { state.setLeftTab('cleanup'); window.setTimeout(() => window.dispatchEvent(new CustomEvent('manga:mask-inpaint')), 0); }}>Замыть</button>
+        <button onClick={() => { state.setLeftTab('cleanup'); window.setTimeout(() => window.dispatchEvent(new CustomEvent('manga:mask-fill', { detail: { color: '#ffffff' } })), 0); }}>Залить белым</button>
+        <button onClick={state.clearActiveMask}>Сбросить</button>
+      </>}
       {(activeTool === 'text' || activeTool === 'watermark' || activeTool === 'wand') && <button onClick={() => state.setLeftTab(activeTool === 'text' ? 'text' : activeTool === 'watermark' ? 'watermark' : 'cleanup')}>Открыть настройки</button>}
       {activeTool === 'select' && (selectedObject ? <>
         <span>{selectedObject.type === 'text' ? 'Текст' : selectedObject.type === 'shape' ? 'Фигура' : 'Вотерка'}</span>

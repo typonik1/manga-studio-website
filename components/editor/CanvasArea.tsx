@@ -5,7 +5,8 @@ import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import type { StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
+import type { MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
+import { createFloodMask } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
 import { ToolOptionsBar } from './ToolOptionsBar';
 import { screenToImage } from '@/utils/coordinates';
@@ -36,35 +37,34 @@ function RasterLayerNode({ src, width, height, opacity }: { src: string; width: 
   return <KonvaImage name="ai-raster-layer" image={image} width={width} height={height} opacity={opacity} listening={false} />;
 }
 
-function MaskOverlayNode({ strokes, width, height, opacity }: { strokes: StrokeData[]; width: number; height: number; opacity: number }) {
+function MaskOverlayNode({ elements, strokes, width, height, opacity }: { elements?: MaskElement[]; strokes: StrokeData[]; width: number; height: number; opacity: number }) {
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   useEffect(() => {
-    const next = document.createElement('canvas');
-    next.width = Math.max(1, Math.round(width));
-    next.height = Math.max(1, Math.round(height));
-    const ctx = next.getContext('2d');
-    if (!ctx) return;
-    for (const stroke of strokes) {
-      if (stroke.points.length < 2) continue;
-      ctx.save();
-      ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
-      ctx.strokeStyle = 'rgb(255, 128, 0)';
-      ctx.globalAlpha = stroke.opacity;
-      ctx.lineWidth = Math.max(1, stroke.size * height);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      stroke.points.forEach((value, index) => {
-        if (index % 2 !== 0) return;
-        const x = value * width;
-        const y = stroke.points[index + 1] * height;
-        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
-      ctx.restore();
-    }
-    setCanvas(next);
-  }, [strokes, width, height]);
+    let cancelled = false;
+    void (async () => {
+      const next = document.createElement('canvas');
+      next.width = Math.max(1, Math.round(width)); next.height = Math.max(1, Math.round(height));
+      const ctx = next.getContext('2d'); if (!ctx) return;
+      const items = elements?.length ? elements : strokes.map(stroke => ({ type: 'brush', stroke }) as MaskElement);
+      for (const element of items) {
+        ctx.save(); ctx.fillStyle = ctx.strokeStyle = 'rgb(255, 128, 0)';
+        if (element.type === 'brush') {
+          const stroke = element.stroke; ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
+          ctx.globalAlpha = stroke.opacity; ctx.lineWidth = Math.max(1, stroke.size * height); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
+          for (let index = 0; index < stroke.points.length; index += 2) { const x = stroke.points[index] * width, y = stroke.points[index + 1] * height; if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.stroke();
+        } else if (element.type === 'polygon') {
+          ctx.beginPath(); for (let index = 0; index < element.points.length; index += 2) { const x = element.points[index] * width, y = element.points[index + 1] * height; if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.closePath(); ctx.fill();
+        } else {
+          const bitmap = new window.Image(); bitmap.crossOrigin = 'anonymous'; await new Promise<void>((resolve, reject) => { bitmap.onload = () => resolve(); bitmap.onerror = reject; bitmap.src = element.src; });
+          const tinted = document.createElement('canvas'); tinted.width = next.width; tinted.height = next.height; const tintedCtx = tinted.getContext('2d')!;
+          tintedCtx.drawImage(bitmap, 0, 0, next.width, next.height); tintedCtx.globalCompositeOperation = 'source-in'; tintedCtx.fillStyle = 'rgb(255, 128, 0)'; tintedCtx.fillRect(0, 0, next.width, next.height); ctx.drawImage(tinted, 0, 0);
+        }
+        ctx.restore();
+      }
+      if (!cancelled) setCanvas(next);
+    })();
+    return () => { cancelled = true; };
+  }, [elements, strokes, width, height]);
   return canvas ? <KonvaImage image={canvas} width={width} height={height} opacity={opacity} listening={false} /> : null;
 }
 
@@ -517,7 +517,7 @@ export function CanvasArea() {
   const {
     documents, activeDocIndex, setActiveDoc,
     activeTool, cleanupSettings,
-    addStroke, addMaskStroke, updateWatermark, updateText, updateShape,
+    addStroke, addMaskStroke, addMaskElement, updateWatermark, updateText, updateShape,
     selectedObject, setSelectedObject,
     layerVisibility,
     viewport, setViewport,
@@ -534,6 +534,9 @@ export function CanvasArea() {
   // Live stroke rendered imperatively (no React re-renders while drawing)
   const liveLineRef = useRef<Konva.Line>(null);
   const livePoints = useRef<number[]>([]);
+  const isLassoing = useRef(false);
+  const lassoPoints = useRef<number[]>([]);
+  const liveLassoRef = useRef<Konva.Line>(null);
   // Brush cursor updated imperatively via DOM
   const cursorRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
@@ -543,6 +546,7 @@ export function CanvasArea() {
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const baseImg = useImage(activeDoc?.originalSrc);
   const cleanupImg = useImage(activeDoc?.cleanup.committed);
+  const baseReplaced = activeDoc?.aiLayers.some(layer => layer.visible && layer.replacesBase) ?? false;
 
   // Resize observer
   useEffect(() => {
@@ -612,6 +616,22 @@ export function CanvasArea() {
       panVpStart.current = { x: viewport.x, y: viewport.y };
       return;
     }
+    if ((activeTool === 'lasso' || activeTool === 'wand') && activeDoc) {
+      const stage = stageRef.current; const pos = stage?.getPointerPosition();
+      if (!pos) return;
+      const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (!imagePoint?.inside) return;
+      if (activeTool === 'wand') {
+        void createFloodMask(activeDoc, imagePoint.x, imagePoint.y, cleanupSettings.magicThreshold).then(({ src, coverage }) => {
+          addMaskElement({ type: 'bitmap', src });
+          if (coverage > 0.7) window.alert('Выделено больше 70% изображения. Уменьшите порог волшебного бабла, если это не ожидаемый результат.');
+        }).catch(() => window.alert('Не удалось прочитать пиксели композиции.'));
+        return;
+      }
+      isLassoing.current = true; lassoPoints.current = [imagePoint.x, imagePoint.y];
+      const line = liveLassoRef.current; if (line) { line.points([imagePoint.x * imgW, imagePoint.y * imgH]); line.visible(true); line.getLayer()?.batchDraw(); }
+      return;
+    }
     if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && activeDoc) {
       const stage = stageRef.current;
       if (!stage) return;
@@ -650,6 +670,15 @@ export function CanvasArea() {
       return;
     }
 
+    if (activeTool === 'lasso' && isLassoing.current && pos) {
+      const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (imagePoint?.inside) {
+        const points = lassoPoints.current; const lastX = points.at(-2) ?? imagePoint.x, lastY = points.at(-1) ?? imagePoint.y;
+        if (Math.hypot(imagePoint.x - lastX, imagePoint.y - lastY) > 0.002) points.push(imagePoint.x, imagePoint.y);
+        const line = liveLassoRef.current; if (line) { line.points(points.flatMap((value, index) => index % 2 === 0 ? value * imgW : value * imgH)); line.getLayer()?.batchDraw(); }
+      }
+      return;
+    }
     if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && pos) {
       const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
       const imgX = (imagePoint?.x ?? 0) * imgW;
@@ -687,6 +716,12 @@ export function CanvasArea() {
 
   const handleMouseUp = () => {
     isPanning.current = false;
+    if (isLassoing.current) {
+      const points = [...lassoPoints.current];
+      if (points.length >= 6) addMaskElement({ type: 'polygon', points });
+      isLassoing.current = false; lassoPoints.current = [];
+      const line = liveLassoRef.current; if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+    }
     if (isPainting.current && activeDoc) {
       const pts = [...currentStroke.current];
       if (pts.length >= 2) {
@@ -749,12 +784,17 @@ export function CanvasArea() {
       const { cleanupSettings: cs, updateCleanupSettings: ucs } = useStore.getState();
       if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
-      if (e.key === 'Escape' && isPainting.current) {
-        isPainting.current = false;
-        currentStroke.current = [];
-        livePoints.current = [];
-        const line = liveLineRef.current;
-        if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+      if (e.key === 'Escape') {
+        if (isPainting.current) {
+          isPainting.current = false; currentStroke.current = []; livePoints.current = [];
+          const line = liveLineRef.current;
+          if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+        }
+        if (isLassoing.current) {
+          isLassoing.current = false; lassoPoints.current = [];
+          const line = liveLassoRef.current;
+          if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+        }
       }
     };
     window.addEventListener('keydown', handler);
@@ -917,7 +957,7 @@ export function CanvasArea() {
             scaleY={viewport.scale}
           >
             {/* Image background */}
-            {layerVisibility.base && baseImg && (
+            {layerVisibility.base && !baseReplaced && baseImg && (
               <KonvaImage name="base-image" image={baseImg} width={imgW} height={imgH} />
             )}
 
@@ -954,8 +994,11 @@ export function CanvasArea() {
 
             {/* Persistent editor-only mask overlays */}
             {(activeDoc.masks ?? []).filter(mask => mask.visible).map(mask => (
-              <MaskOverlayNode key={mask.id} strokes={mask.strokes} width={imgW} height={imgH} opacity={mask.opacity} />
+              <MaskOverlayNode key={mask.id} elements={mask.elements} strokes={mask.strokes} width={imgW} height={imgH} opacity={mask.opacity} />
             ))}
+
+            {/* Live lasso contour */}
+            <Line ref={liveLassoRef} points={[]} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} closed fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
 
             {/* Live stroke while drawing (updated imperatively) */}
             <Line

@@ -131,7 +131,6 @@ const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selec
 const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 
 const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
-{ key: 'base', label: 'Оригинал', icon: '□' },
 { key: 'cleanup', label: 'Очистка', icon: '✦' },
 { key: 'watermarks', label: 'Вотерки', icon: 'W' },
 { key: 'texts', label: 'Тексты', icon: 'T' },
@@ -220,6 +219,14 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
           ))}
         </>
       )}
+
+      <div className="section-label" style={{ padding: '12px 2px 6px' }}>Исходник</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: 6, borderRadius: 6, background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)' }}>
+        <img src={activeDoc.thumbnail || activeDoc.originalSrc} alt="Миниатюра оригинала" width={30} height={30} style={{ width: 30, height: 30, objectFit: 'cover', borderRadius: 4 }} />
+        <span title={`Оригинал — ${activeDoc.name}`} style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{`Оригинал — ${activeDoc.name}`}</span>
+        <button type="button" aria-label={layerVisibility.base ? 'Скрыть оригинал' : 'Показать оригинал'} onClick={() => toggleLayerVisibility('base')} style={{ border: 0, background: 'none', color: layerVisibility.base ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}>{layerVisibility.base ? '◉' : '○'}</button>
+        <span aria-label="Слой заблокирован" title="Слой заблокирован" style={{ color: 'var(--text-muted)', fontSize: 13 }}>▣</span>
+      </div>
 
       {/* Objects */}
       {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0 || (activeDoc.shapes ?? []).length > 0) && (

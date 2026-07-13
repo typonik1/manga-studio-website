@@ -81,10 +81,16 @@ export interface CleanupLayerState {
   strokes: StrokeData[];
 }
 
+export type MaskElement =
+  | { type: 'brush'; stroke: StrokeData }
+  | { type: 'polygon'; points: number[] }
+  | { type: 'bitmap'; src: string };
+
 export interface MaskLayer {
   id: string;
   name: string;
-  strokes: StrokeData[];
+  strokes: StrokeData[]; // legacy mirror for existing documents
+  elements: MaskElement[];
   visible: boolean;
   opacity: number;
   resultLayerId?: string;
@@ -97,6 +103,7 @@ export interface AiRasterLayer {
   visible: boolean;
   opacity: number;
   operation: 'cleanup' | 'remove-background';
+  replacesBase?: boolean;
   maskId?: string;
 }
 

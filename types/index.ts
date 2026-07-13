@@ -83,8 +83,36 @@ export interface CleanupLayerState {
 
 export type MaskElement =
   | { type: 'brush'; stroke: StrokeData }
-  | { type: 'polygon'; points: number[] }
-  | { type: 'bitmap'; src: string };
+  | { type: 'polygon'; points: number[]; mode?: 'add' | 'erase' }
+  | { type: 'bitmap'; src: string; mode?: 'add' | 'erase' };
+
+export interface BaseLayerAdjustments {
+  brightness: number; // 1 = neutral
+  contrast: number;   // 1 = neutral
+  saturation: number; // 1 = neutral
+}
+
+export interface BaseLayerState {
+  id: string;
+  visible: boolean;
+  locked: boolean;
+  opacity: number;
+  eraseElements: MaskElement[];
+  adjustments: BaseLayerAdjustments;
+}
+
+export const DEFAULT_BASE_ADJUSTMENTS: BaseLayerAdjustments = { brightness: 1, contrast: 1, saturation: 1 };
+
+export function createBaseLayerState(documentId: string): BaseLayerState {
+  return {
+    id: `base-${documentId}`,
+    visible: true,
+    locked: true,
+    opacity: 1,
+    eraseElements: [],
+    adjustments: { ...DEFAULT_BASE_ADJUSTMENTS },
+  };
+}
 
 export interface MaskLayer {
   id: string;
@@ -102,15 +130,17 @@ export interface AiRasterLayer {
   src: string;
   visible: boolean;
   opacity: number;
-  operation: 'cleanup' | 'remove-background';
+  operation: 'cleanup' | 'remove-background' | 'duplicate' | 'local-cutout';
   replacesBase?: boolean;
   maskId?: string;
+  eraseElements?: MaskElement[];
 }
 
-export type SelectedLayer = { id: string; type: 'mask' | 'ai' };
+export type SelectedLayer = { id: string; type: 'base' | 'mask' | 'ai' };
 
 export interface HistorySnapshot {
   cleanup: CleanupLayerState;
+  baseLayer: BaseLayerState;
   masks: MaskLayer[];
   aiLayers: AiRasterLayer[];
   activeMaskId: string | null;
@@ -129,6 +159,7 @@ export interface ImageDocument {
   height: number;
   name: string;
   cleanup: CleanupLayerState;
+  baseLayer: BaseLayerState;
   masks: MaskLayer[];
   aiLayers: AiRasterLayer[];
   activeMaskId: string | null;
@@ -142,7 +173,9 @@ export interface ImageDocument {
 }
 
 export type CleanupMethod = 'auto' | 'white' | 'background' | 'inpaint';
-export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'text' | 'watermark' | 'wand' | 'crop';
+export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'rectSelect' | 'text' | 'watermark' | 'wand' | 'crop';
+
+export type SelectionMode = 'replace' | 'add' | 'subtract';
 export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform';
 
 export interface SelectedObject {
@@ -189,6 +222,10 @@ export interface CleanupSettings {
   mode: 'brush' | 'inpaint' | 'magic';
   cleanupMethod: CleanupMethod;
   magicThreshold: number;
+  selectionMode: SelectionMode;
+  wandContiguous: boolean;
+  /** Keep the active selection after applying an action (erase/fill/inpaint). */
+  keepSelectionAfterAction: boolean;
 }
 
 export interface TextSettings {

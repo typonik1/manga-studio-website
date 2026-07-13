@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { useStore } from '@/store/useStore';
-import type { LayerVisibility } from '@/types';
+import type { ImageDocument, LayerVisibility } from '@/types';
+import { LayerContextMenu } from './LayerContextMenu';
 
 type RightTab = 'layers' | 'gallery';
 
@@ -129,6 +130,7 @@ function GalleryPanel() {
 function LayersPanel() {
 const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, deleteWatermark, deleteText, deleteShape } = useStore();
 const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
+const [aiMenu, setAiMenu] = useState<{ x: number; y: number; id: string } | null>(null);
 
 const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
 { key: 'cleanup', label: 'Очистка', icon: '✦' },
@@ -201,6 +203,7 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
               onVisibility={() => updateAiLayer(layer.id, { visible: !layer.visible })}
               onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
               onDelete={() => deleteAiLayer(layer.id)}
+              onContextMenu={e => { e.preventDefault(); setAiMenu({ x: e.clientX, y: e.clientY, id: layer.id }); }}
             />
           ))}
           {[...(activeDoc.masks ?? [])].reverse().map(mask => (
@@ -270,22 +273,87 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
       )}
 
       <div className="section-label" style={{ padding: '12px 2px 6px' }}>Исходник</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: 6, borderRadius: 6, background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)' }}>
-        <img src={activeDoc.thumbnail || activeDoc.originalSrc} alt="Миниатюра оригинала" width={30} height={30} style={{ width: 30, height: 30, objectFit: 'cover', borderRadius: 4 }} />
-        <span title={`Оригинал — ${activeDoc.name}`} style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{`Оригинал — ${activeDoc.name}`}</span>
-        <button type="button" aria-label={layerVisibility.base ? 'Скрыть оригинал' : 'Показать оригинал'} onClick={() => toggleLayerVisibility('base')} style={{ border: 0, background: 'none', color: layerVisibility.base ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}>{layerVisibility.base ? '◉' : '○'}</button>
-        <span aria-label="Слой заблокирован" title="Слой заблокирован" style={{ color: 'var(--text-muted)', fontSize: 13 }}>▣</span>
-      </div>
+      <BaseLayerRow activeDoc={activeDoc} />
+
+      {aiMenu && <LayerContextMenu menu={{ x: aiMenu.x, y: aiMenu.y, target: { id: aiMenu.id, type: 'ai' } }} onClose={() => setAiMenu(null)} />}
     </div>
   );
 }
 
-function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisibility, onOpacity, onDelete }: {
+function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
+  const { selectLayer, updateBaseLayer, duplicateBaseLayer, clearEraseElements } = useStore();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const base = activeDoc.baseLayer;
+  const baseId = base?.id ?? `base-${activeDoc.id}`;
+  const selected = activeDoc.selectedLayer?.type === 'base';
+  const visible = base?.visible !== false;
+  const locked = base?.locked !== false;
+  const adjustments = base?.adjustments ?? { brightness: 1, contrast: 1, saturation: 1 };
+  const eraseCount = base?.eraseElements.length ?? 0;
+
+  return (
+    <>
+      <div
+        onClick={() => selectLayer({ id: baseId, type: 'base' })}
+        onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}
+        style={{
+          padding: 6, borderRadius: 6, cursor: 'pointer',
+          background: selected ? 'var(--accent-dim)' : 'var(--bg-panel-raised)',
+          border: selected ? '1px solid var(--accent)' : '1px solid var(--border-default)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <img src={activeDoc.thumbnail || activeDoc.originalSrc} alt="Миниатюра оригинала" width={30} height={30} style={{ width: 30, height: 30, objectFit: 'cover', borderRadius: 4 }} />
+          <span title={`Оригинал — ${activeDoc.name}`} style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {`Оригинал — ${activeDoc.name}`}
+            {eraseCount > 0 && <span title={`Стёрто областей: ${eraseCount}`} style={{ marginLeft: 4, fontSize: 9, color: 'var(--accent)' }}>{`✂${eraseCount}`}</span>}
+          </span>
+          <button type="button" aria-label={visible ? 'Скрыть оригинал' : 'Показать оригинал'} onClick={e => { e.stopPropagation(); updateBaseLayer({ visible: !visible }); }} style={{ border: 0, background: 'none', color: visible ? 'var(--accent)' : 'var(--text-muted)', cursor: 'pointer' }}>{visible ? '◉' : '○'}</button>
+          <button
+            type="button"
+            aria-label={locked ? 'Разблокировать слой' : 'Заблокировать слой'}
+            title={locked ? 'Слой заблокирован — нажмите, чтобы разблокировать' : 'Слой разблокирован'}
+            onClick={e => { e.stopPropagation(); updateBaseLayer({ locked: !locked }); }}
+            style={{ border: 0, background: 'none', color: locked ? 'var(--text-muted)' : 'var(--accent)', cursor: 'pointer', fontSize: 13 }}
+          >
+            {locked ? '▣' : '▢'}
+          </button>
+        </div>
+        {selected && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 6 }} onClick={e => e.stopPropagation()}>
+            {([
+              { key: 'opacity', label: 'Прозрачность', value: base?.opacity ?? 1, min: 0, max: 100, apply: (v: number) => updateBaseLayer({ opacity: v / 100 }) },
+              { key: 'brightness', label: 'Яркость', value: adjustments.brightness, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, brightness: v / 100 } }) },
+              { key: 'contrast', label: 'Контраст', value: adjustments.contrast, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, contrast: v / 100 } }) },
+              { key: 'saturation', label: 'Насыщенность', value: adjustments.saturation, min: 0, max: 200, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, saturation: v / 100 } }) },
+            ] as const).map(slider => (
+              <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>
+                <input aria-label={slider.label} type="range" min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={e => slider.apply(Number(e.target.value))} style={{ flex: 1 }} />
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 30 }}>{Math.round(slider.value * 100)}%</span>
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 5, paddingTop: 2 }}>
+              <button type="button" onClick={() => duplicateBaseLayer()} style={{ flex: 1, padding: '4px 6px', fontSize: 10, borderRadius: 5, border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)', cursor: 'pointer' }}>Дублировать</button>
+              {eraseCount > 0 && (
+                <button type="button" onClick={() => clearEraseElements({ type: 'base' })} style={{ flex: 1, padding: '4px 6px', fontSize: 10, borderRadius: 5, border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)', cursor: 'pointer' }}>Восстановить стёртое</button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+      {menu && <LayerContextMenu menu={{ x: menu.x, y: menu.y, target: { id: baseId, type: 'base' } }} onClose={() => setMenu(null)} />}
+    </>
+  );
+}
+
+function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisibility, onOpacity, onDelete, onContextMenu }: {
   label: string; prefix: string; selected: boolean; visible: boolean; opacity: number;
   onSelect: () => void; onVisibility: () => void; onOpacity: (value: number) => void; onDelete: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   return (
-    <div onClick={onSelect} style={{ padding: 6, borderRadius: 6, marginBottom: 3, background: selected ? 'var(--accent-dim)' : 'var(--bg-panel-raised)', border: selected ? '1px solid var(--accent)' : '1px solid transparent' }}>
+    <div onClick={onSelect} onContextMenu={onContextMenu} style={{ padding: 6, borderRadius: 6, marginBottom: 3, background: selected ? 'var(--accent-dim)' : 'var(--bg-panel-raised)', border: selected ? '1px solid var(--accent)' : '1px solid transparent' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ width: 22, fontSize: 9, fontWeight: 700, color: selected ? 'var(--accent)' : 'var(--text-muted)' }}>{prefix}</span>
         <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>

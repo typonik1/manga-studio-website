@@ -1,3 +1,4 @@
+import { createBaseLayerState } from '../types';
 import type { ImageDocument } from '../types';
 
 export function uid(): string {
@@ -32,8 +33,9 @@ export function loadImageFromFile(file: File): Promise<ImageDocument> {
     const objectUrl = URL.createObjectURL(file);
     const img = new window.Image();
     img.onload = () => {
+      const id = uid();
       resolve({
-        id: uid(),
+        id,
         file,
         originalSrc: objectUrl,
         thumbnail: createThumbnail(img, 160),
@@ -41,6 +43,7 @@ export function loadImageFromFile(file: File): Promise<ImageDocument> {
         height: img.naturalHeight,
         name: file.name,
         cleanup: { committed: null, strokes: [] },
+        baseLayer: createBaseLayerState(id),
         masks: [],
         aiLayers: [],
         activeMaskId: null,
@@ -227,6 +230,8 @@ export async function cropDocument(
     height: pxH,
     thumbnail: createThumbnail(thumbImg, 160),
     cleanup: { committed, strokes },
+    // Erase-mask coordinates no longer align after crop, so drop them.
+    baseLayer: { ...doc.baseLayer, eraseElements: [] },
     watermarks,
     texts,
     shapes,

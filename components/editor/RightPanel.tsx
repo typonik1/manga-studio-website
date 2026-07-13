@@ -301,47 +301,94 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
         <>
           <div className="section-label" style={{ padding: '12px 2px 6px' }}>Объекты</div>
 
-          {activeDoc.watermarks.map(wm => (
-            <ObjectRow
-              key={wm.id}
-              label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : '��ого'}
-              prefix="W"
-              isSelected={selectedObject?.id === wm.id}
-              visible={wm.visible}
-              onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
-              onDelete={() => deleteWatermark(wm.id)}
-              isBatch={wm.isBatch}
-            />
-          ))}
-
-          {activeDoc.texts.map(txt => (
-            <ObjectRow
-              key={txt.id}
-              label={txt.text.slice(0, 18)}
-              prefix="T"
-              isSelected={selectedObject?.id === txt.id}
-              visible={txt.visible}
-              onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
-              onDelete={() => deleteText(txt.id)}
-            />
-          ))}
-
-          {(activeDoc.shapes ?? []).map(shape => (
-            <ObjectRow
-              key={shape.id}
-              label={
-                shape.kind === 'rect' ? 'Прямоугольник' :
-                shape.kind === 'ellipse' ? 'Эллипс' :
-                shape.kind === 'line' ? 'Линия' :
-                shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
+          {/* Unified object stack: top object first, drag to reorder (same
+              global order the canvas renders, so panel = picture). */}
+          {[...resolveLayerOrder(activeDoc)]
+            .map((ref, orderIndex) => ({ ref, orderIndex }))
+            .filter(({ ref }) => ref.type === 'watermark' || ref.type === 'text' || ref.type === 'shape')
+            .reverse()
+            .map(({ ref, orderIndex }) => {
+              const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
+              const wrapperProps = {
+                draggable: true,
+                onDragStart: (e: React.DragEvent) => {
+                  if ((e.target as HTMLElement).closest('input, button, select, textarea, [data-nodrag]')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                  }
+                  dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
+                },
+                onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropIndex(orderIndex); },
+                onDragLeave: () => setDropIndex(current => (current === orderIndex ? null : current)),
+                onDrop: (e: React.DragEvent) => {
+                  e.preventDefault();
+                  const from = dragIndexRef.current;
+                  if (from !== null && from !== orderIndex) reorderLayer(from, orderIndex);
+                  dragIndexRef.current = null; setDragIndex(null); setDropIndex(null);
+                },
+                onDragEnd: () => { dragIndexRef.current = null; setDragIndex(null); setDropIndex(null); },
+                style: {
+                  opacity: dragIndex === orderIndex ? 0.45 : 1,
+                  outline: isDropTarget ? '2px solid var(--accent)' : 'none',
+                  outlineOffset: -1,
+                  borderRadius: 6,
+                  cursor: 'grab',
+                } as React.CSSProperties,
+              };
+              if (ref.type === 'watermark') {
+                const wm = activeDoc.watermarks.find(item => item.id === ref.id);
+                if (!wm) return null;
+                return (
+                  <div key={wm.id} {...wrapperProps}>
+                    <ObjectRow
+                      label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : 'Лого'}
+                      prefix="W"
+                      isSelected={selectedObject?.id === wm.id}
+                      visible={wm.visible}
+                      onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
+                      onDelete={() => deleteWatermark(wm.id)}
+                      isBatch={wm.isBatch}
+                    />
+                  </div>
+                );
               }
-              prefix="S"
-              isSelected={selectedObject?.id === shape.id}
-              visible={shape.visible}
-              onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
-              onDelete={() => deleteShape(shape.id)}
-            />
-          ))}
+              if (ref.type === 'text') {
+                const txt = activeDoc.texts.find(item => item.id === ref.id);
+                if (!txt) return null;
+                return (
+                  <div key={txt.id} {...wrapperProps}>
+                    <ObjectRow
+                      label={txt.text.slice(0, 18)}
+                      prefix="T"
+                      isSelected={selectedObject?.id === txt.id}
+                      visible={txt.visible}
+                      onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
+                      onDelete={() => deleteText(txt.id)}
+                    />
+                  </div>
+                );
+              }
+              const shape = (activeDoc.shapes ?? []).find(item => item.id === ref.id);
+              if (!shape) return null;
+              return (
+                <div key={shape.id} {...wrapperProps}>
+                  <ObjectRow
+                    label={
+                      shape.kind === 'rect' ? 'Прямоугольник' :
+                      shape.kind === 'ellipse' ? 'Эллипс' :
+                      shape.kind === 'line' ? 'Линия' :
+                      shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
+                    }
+                    prefix="S"
+                    isSelected={selectedObject?.id === shape.id}
+                    visible={shape.visible}
+                    onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+                    onDelete={() => deleteShape(shape.id)}
+                  />
+                </div>
+              );
+            })}
         </>
       )}
 

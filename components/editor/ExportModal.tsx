@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import { useStore } from '@/store/useStore';
 import type { ImageDocument } from '@/types';
 import { buildCleanupSourceCanvas } from '@/utils/cleanupRaster';
+import { resolveLayerOrder } from '@/utils/layerOrder';
 
 async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   // Make sure web fonts are loaded before drawing text to canvas
@@ -38,9 +39,10 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.globalAlpha = 1;
   }
 
-  // Watermarks
-  for (const wm of doc.watermarks) {
-    if (!wm.visible) continue;
+  // Watermarks, texts and shapes drawn bottom → top following the unified
+  // layer order, so the exported file matches the canvas exactly.
+  const drawWatermark = async (wm: (typeof doc.watermarks)[number]) => {
+    if (!wm.visible) return;
     ctx.save();
     ctx.globalAlpha = wm.opacity;
     const x = wm.x * doc.width;
@@ -71,11 +73,10 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
       ctx.drawImage(wmImg, 0, 0, w, h);
     }
     ctx.restore();
-  }
+  };
 
-  // Texts
-  for (const txt of doc.texts) {
-    if (!txt.visible) continue;
+  const drawText = (txt: (typeof doc.texts)[number]) => {
+    if (!txt.visible) return;
     ctx.save();
     ctx.globalAlpha = 1;
     const x = txt.x * doc.width;
@@ -102,11 +103,10 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
       ctx.fillText(lines[li], 0, lineY);
     }
     ctx.restore();
-  }
+  };
 
-  // Shapes
-  for (const shape of doc.shapes ?? []) {
-    if (!shape.visible) continue;
+  const drawShape = (shape: NonNullable<typeof doc.shapes>[number]) => {
+    if (!shape.visible) return;
     ctx.save();
     ctx.globalAlpha = shape.opacity;
     const cx = shape.x * doc.width;
@@ -164,6 +164,19 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
       if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.stroke(); }
     }
     ctx.restore();
+  };
+
+  for (const ref of resolveLayerOrder(doc)) {
+    if (ref.type === 'watermark') {
+      const wm = doc.watermarks.find(item => item.id === ref.id);
+      if (wm) await drawWatermark(wm);
+    } else if (ref.type === 'text') {
+      const txt = doc.texts.find(item => item.id === ref.id);
+      if (txt) drawText(txt);
+    } else if (ref.type === 'shape') {
+      const shape = (doc.shapes ?? []).find(item => item.id === ref.id);
+      if (shape) drawShape(shape);
+    }
   }
 
   return canvas;

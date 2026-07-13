@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { sanitizeImageDocument, sanitizeShape, sanitizeText, sanitizeWatermark } from '@/utils/coordinates';
+import { createBaseLayerState } from '../types';
 import type {
+  BaseLayerState,
   ImageDocument,
   WatermarkObject,
   TextObject,
@@ -81,9 +83,22 @@ const defaultShapeSettings: ShapeSettings = {
   cornerRadius: 0,
 };
 
+function cloneElements(elements: MaskElement[] | undefined): MaskElement[] {
+  return (elements ?? []).map(element =>
+    element.type === 'brush'
+      ? { ...element, stroke: { ...element.stroke, points: [...element.stroke.points] } }
+      : element.type === 'polygon'
+        ? { ...element, points: [...element.points] }
+        : { ...element }
+  );
+}
+
 function snap(doc: ImageDocument): HistorySnapshot {
   return {
     cleanup: { committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
+    baseLayer: doc.baseLayer
+      ? { ...doc.baseLayer, eraseElements: cloneElements(doc.baseLayer.eraseElements), adjustments: { ...doc.baseLayer.adjustments } }
+      : createBaseLayerState(doc.id),
     masks: (doc.masks ?? []).map(mask => ({
       ...mask,
       strokes: mask.strokes.map(stroke => ({ ...stroke, points: [...stroke.points] })),
@@ -91,7 +106,7 @@ function snap(doc: ImageDocument): HistorySnapshot {
         element.type === 'brush' ? { ...element, stroke: { ...element.stroke, points: [...element.stroke.points] } } : element.type === 'polygon' ? { ...element, points: [...element.points] } : { ...element }
       ),
     })),
-    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer })),
+    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer, eraseElements: cloneElements(layer.eraseElements) })),
     activeMaskId: doc.activeMaskId ?? null,
     selectedLayer: doc.selectedLayer ? { ...doc.selectedLayer } : null,
     watermarks: doc.watermarks.map(w => ({ ...w })),
@@ -140,13 +155,18 @@ export interface AppState {
   createMask: () => string | null;
   selectLayer: (layer: SelectedLayer | null) => void;
   addMaskStroke: (stroke: StrokeData) => void;
-  addMaskElement: (element: MaskElement) => void;
+  addMaskElement: (element: MaskElement, options?: { replace?: boolean }) => void;
   clearActiveMask: () => void;
   updateMask: (id: string, updates: Partial<Pick<MaskLayer, 'name' | 'visible' | 'opacity'>>) => void;
   deleteMask: (id: string) => void;
   addAiLayer: (documentId: string, layer: AiRasterLayer) => void;
   updateAiLayer: (id: string, updates: Partial<Pick<AiRasterLayer, 'name' | 'visible' | 'opacity'>>) => void;
   deleteAiLayer: (id: string) => void;
+  duplicateAiLayer: (id: string) => void;
+  duplicateBaseLayer: () => string | null;
+  updateBaseLayer: (updates: Partial<Pick<BaseLayerState, 'visible' | 'locked' | 'opacity'>> & { adjustments?: Partial<BaseLayerState['adjustments']> }) => void;
+  addEraseElement: (target: SelectedLayer | { type: 'base' }, element: MaskElement) => void;
+  clearEraseElements: (target: SelectedLayer | { type: 'base' }) => void;
   clearMaskStrokes: () => void;
   applyTranslationBatch: (cleanupDataUrl: string, texts: TextObject[]) => void;
   addWatermark: (wm: WatermarkObject) => void;
@@ -333,7 +353,7 @@ export const useStore = create<AppState>((set, get) => ({
     return { documents: docs, selectedObject: null };
   }),
 
-  addMaskElement: (element) => set(state => {
+  addMaskElement: (element, options) => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
     let doc = docs[state.activeDocIndex];
@@ -345,7 +365,13 @@ export const useStore = create<AppState>((set, get) => ({
     const withH = withHistory(doc);
     docs[state.activeDocIndex] = {
       ...withH,
-      masks: withH.masks.map(mask => mask.id === maskId ? { ...mask, elements: [...(mask.elements ?? []), element] } : mask),
+      masks: withH.masks.map(mask => mask.id === maskId
+        ? {
+            ...mask,
+            strokes: options?.replace ? [] : mask.strokes,
+            elements: options?.replace ? [element] : [...(mask.elements ?? []), element],
+          }
+        : mask),
       activeMaskId: maskId,
       selectedLayer: { id: maskId, type: 'mask' },
     };
@@ -418,6 +444,101 @@ export const useStore = create<AppState>((set, get) => ({
       masks: doc.masks.map(mask => mask.resultLayerId === id ? { ...mask, resultLayerId: undefined } : mask),
       selectedLayer: doc.selectedLayer?.id === id ? null : doc.selectedLayer,
     };
+    return { documents: docs };
+  }),
+
+  duplicateAiLayer: (id) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    const source = doc.aiLayers.find(layer => layer.id === id);
+    if (!source) return {};
+    const copyId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const copy: AiRasterLayer = {
+      ...source,
+      id: copyId,
+      name: `${source.name} (копия)`,
+      maskId: undefined,
+      eraseElements: cloneElements(source.eraseElements),
+    };
+    const index = doc.aiLayers.findIndex(layer => layer.id === id);
+    const aiLayers = [...doc.aiLayers];
+    aiLayers.splice(index + 1, 0, copy);
+    docs[state.activeDocIndex] = { ...doc, aiLayers, selectedLayer: { id: copyId, type: 'ai' } };
+    return { documents: docs };
+  }),
+
+  duplicateBaseLayer: () => {
+    const state = get();
+    if (state.activeDocIndex < 0) return null;
+    const id = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    set(current => {
+      const docs = [...current.documents];
+      const doc = withHistory(docs[current.activeDocIndex]);
+      const copy: AiRasterLayer = {
+        id,
+        name: `Копия — ${doc.name}`,
+        src: doc.cleanup.committed ?? doc.originalSrc,
+        visible: true,
+        opacity: 1,
+        operation: 'duplicate',
+        eraseElements: [],
+      };
+      docs[current.activeDocIndex] = { ...doc, aiLayers: [copy, ...doc.aiLayers], selectedLayer: { id, type: 'ai' } };
+      return { documents: docs };
+    });
+    return id;
+  },
+
+  updateBaseLayer: (updates) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
+    docs[state.activeDocIndex] = {
+      ...doc,
+      baseLayer: {
+        ...baseLayer,
+        ...updates,
+        adjustments: updates.adjustments ? { ...baseLayer.adjustments, ...updates.adjustments } : baseLayer.adjustments,
+      },
+    };
+    return { documents: docs };
+  }),
+
+  addEraseElement: (target, element) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    if (target.type === 'base') {
+      const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
+      docs[state.activeDocIndex] = { ...doc, baseLayer: { ...baseLayer, eraseElements: [...baseLayer.eraseElements, element] } };
+    } else if (target.type === 'ai' && 'id' in target) {
+      docs[state.activeDocIndex] = {
+        ...doc,
+        aiLayers: doc.aiLayers.map(layer => layer.id === target.id ? { ...layer, eraseElements: [...(layer.eraseElements ?? []), element] } : layer),
+      };
+    } else {
+      return {};
+    }
+    return { documents: docs };
+  }),
+
+  clearEraseElements: (target) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    if (target.type === 'base') {
+      const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
+      docs[state.activeDocIndex] = { ...doc, baseLayer: { ...baseLayer, eraseElements: [] } };
+    } else if (target.type === 'ai' && 'id' in target) {
+      docs[state.activeDocIndex] = {
+        ...doc,
+        aiLayers: doc.aiLayers.map(layer => layer.id === target.id ? { ...layer, eraseElements: [] } : layer),
+      };
+    } else {
+      return {};
+    }
     return { documents: docs };
   }),
 
@@ -698,6 +819,7 @@ export const useStore = create<AppState>((set, get) => ({
       docs[state.activeDocIndex] = {
         ...withH,
         cleanup: { committed: null, strokes: [] },
+        baseLayer: createBaseLayerState(doc.id),
         masks: [],
         aiLayers: [],
         activeMaskId: null,

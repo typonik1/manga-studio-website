@@ -5,9 +5,10 @@ import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import type { MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
-import { createFloodMask } from '@/utils/cleanupRaster';
+import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
+import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
+import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
 import { ToolOptionsBar } from './ToolOptionsBar';
 import { screenToImage } from '@/utils/coordinates';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
@@ -31,10 +32,95 @@ function useImage(src: string | null | undefined) {
   return img;
 }
 
-function RasterLayerNode({ src, width, height, opacity }: { src: string; width: number; height: number; opacity: number }) {
-  const image = useImage(src);
+function makeCheckerPattern(): HTMLCanvasElement {
+  const tile = document.createElement('canvas');
+  tile.width = tile.height = 16;
+  const ctx = tile.getContext('2d')!;
+  ctx.fillStyle = '#3a3a42';
+  ctx.fillRect(0, 0, 16, 16);
+  ctx.fillStyle = '#2a2a30';
+  ctx.fillRect(0, 0, 8, 8);
+  ctx.fillRect(8, 8, 8, 8);
+  return tile;
+}
+
+function RasterLayerNode({ layer, width, height, onSelect, onContextMenu }: {
+  layer: AiRasterLayer;
+  width: number;
+  height: number;
+  onSelect: () => void;
+  onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
+}) {
+  const plainImage = useImage(layer.eraseElements?.length ? null : layer.src);
+  const [erased, setErased] = useState<HTMLCanvasElement | null>(null);
+  const eraseCount = layer.eraseElements?.length ?? 0;
+
+  useEffect(() => {
+    if (!eraseCount) { setErased(null); return; }
+    let cancelled = false;
+    void buildRasterLayerCanvas(layer, Math.max(1, Math.round(width)), Math.max(1, Math.round(height)))
+      .then(canvas => { if (!cancelled) setErased(canvas); })
+      .catch(() => { if (!cancelled) setErased(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layer.src, layer.eraseElements, width, height]);
+
+  const image = eraseCount ? erased : plainImage;
   if (!image) return null;
-  return <KonvaImage name="ai-raster-layer" image={image} width={width} height={height} opacity={opacity} listening={false} />;
+  return (
+    <KonvaImage
+      name={`ai-raster-layer ${layer.id}`}
+      image={image}
+      width={width}
+      height={height}
+      opacity={layer.opacity}
+      onClick={onSelect}
+      onTap={onSelect}
+      onContextMenu={onContextMenu}
+    />
+  );
+}
+
+function BaseLayerNode({ doc, width, height, onSelect, onContextMenu }: {
+  doc: ImageDocument;
+  width: number;
+  height: number;
+  onSelect: () => void;
+  onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
+}) {
+  const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+  const adjustments = doc.baseLayer?.adjustments;
+  const eraseElements = doc.baseLayer?.eraseElements;
+  const needsProcessing = Boolean(
+    (eraseElements?.length ?? 0) > 0 ||
+    (adjustments && (adjustments.brightness !== 1 || adjustments.contrast !== 1 || adjustments.saturation !== 1))
+  );
+  const plainImage = useImage(needsProcessing ? null : (doc.cleanup.committed ?? doc.originalSrc));
+
+  useEffect(() => {
+    if (!needsProcessing) { setCanvas(null); return; }
+    let cancelled = false;
+    void buildBaseCanvas(doc)
+      .then(result => { if (!cancelled) setCanvas(result); })
+      .catch(() => { if (!cancelled) setCanvas(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.originalSrc, doc.cleanup.committed, adjustments, eraseElements, needsProcessing]);
+
+  const image = needsProcessing ? canvas : plainImage;
+  if (!image) return null;
+  return (
+    <KonvaImage
+      name="base-image"
+      image={image}
+      width={width}
+      height={height}
+      opacity={doc.baseLayer?.opacity ?? 1}
+      onClick={onSelect}
+      onTap={onSelect}
+      onContextMenu={onContextMenu}
+    />
+  );
 }
 
 function MaskOverlayNode({ elements, strokes, width, height, opacity }: { elements?: MaskElement[]; strokes: StrokeData[]; width: number; height: number; opacity: number }) {
@@ -518,6 +604,7 @@ export function CanvasArea() {
     documents, activeDocIndex, setActiveDoc,
     activeTool, cleanupSettings,
     addStroke, addMaskStroke, addMaskElement, updateWatermark, updateText, updateShape,
+    selectLayer, updateCleanupSettings,
     selectedObject, setSelectedObject,
     layerVisibility,
     viewport, setViewport,
@@ -537,11 +624,28 @@ export function CanvasArea() {
   const isLassoing = useRef(false);
   const lassoPoints = useRef<number[]>([]);
   const liveLassoRef = useRef<Konva.Line>(null);
+  // Rectangular selection (rectSelect)
+  const isRectSelecting = useRef(false);
+  const rectStart = useRef({ x: 0, y: 0 });
+  const rectCurrent = useRef({ x: 0, y: 0 });
+  const liveRectRef = useRef<Konva.Rect>(null);
   // Brush cursor updated imperatively via DOM
   const cursorRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
+  const [wandPending, setWandPending] = useState<{ src: string; coverage: number } | null>(null);
+  const [wandInfo, setWandInfo] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const checkerPattern = useRef<HTMLCanvasElement | null>(null);
+  if (typeof document !== 'undefined' && !checkerPattern.current) checkerPattern.current = makeCheckerPattern();
+
+  // Auto-hide the coverage info chip
+  useEffect(() => {
+    if (!wandInfo) return;
+    const timer = window.setTimeout(() => setWandInfo(null), 2500);
+    return () => window.clearTimeout(timer);
+  }, [wandInfo]);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const baseImg = useImage(activeDoc?.originalSrc);

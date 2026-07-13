@@ -272,6 +272,99 @@ export async function buildCleanupMask(doc: ImageDocument): Promise<{ blob: Blob
   return { blob: await canvasToPngBlob(output), isEmpty, canvas };
 }
 
+/** Clipdrop Cleanup rejects images above ~16 megapixels; RBG allows ~25. */
+export const CLIPDROP_CLEANUP_MAX_PIXELS = 16_000_000;
+export const CLIPDROP_RBG_MAX_PIXELS = 25_000_000;
+
+export interface ClipdropCropPlan {
+  image: Blob;
+  mask: Blob;
+  /** Crop rectangle in document pixels. */
+  crop: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * Prepares Clipdrop cleanup input that always fits the 16 MP API limit:
+ * crops the source and mask to the selection's bounding box (plus context
+ * padding), and downsizes the crop if it is still too large. The result is
+ * pasted back at full document resolution, so quality outside the patch
+ * never degrades.
+ */
+export async function prepareClipdropCleanupInput(
+  doc: ImageDocument,
+  maskCanvas: HTMLCanvasElement,
+): Promise<ClipdropCropPlan> {
+  const { width, height } = maskCanvas;
+  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true })!;
+  const alpha = maskCtx.getImageData(0, 0, width, height).data;
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (alpha[(y * width + x) * 4 + 3] > 8) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) throw new Error('Выделение пустое.');
+
+  // Generous context padding helps the model reconstruct the background.
+  const pad = Math.max(96, Math.round(Math.max(maxX - minX, maxY - minY) * 0.6));
+  const cropX = Math.max(0, minX - pad);
+  const cropY = Math.max(0, minY - pad);
+  const cropW = Math.min(width, maxX + pad + 1) - cropX;
+  const cropH = Math.min(height, maxY + pad + 1) - cropY;
+
+  // Downscale the crop if even the cropped region exceeds the API limit.
+  const scale = cropW * cropH > CLIPDROP_CLEANUP_MAX_PIXELS
+    ? Math.sqrt(CLIPDROP_CLEANUP_MAX_PIXELS / (cropW * cropH))
+    : 1;
+  const outW = Math.max(1, Math.floor(cropW * scale));
+  const outH = Math.max(1, Math.floor(cropH * scale));
+
+  const source = await buildCleanupSourceCanvas(doc);
+  const imageCrop = document.createElement('canvas');
+  imageCrop.width = outW; imageCrop.height = outH;
+  imageCrop.getContext('2d')!.drawImage(source, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+
+  const maskCrop = document.createElement('canvas');
+  maskCrop.width = outW; maskCrop.height = outH;
+  const maskCropCtx = maskCrop.getContext('2d')!;
+  maskCropCtx.fillStyle = 'black';
+  maskCropCtx.fillRect(0, 0, outW, outH);
+  maskCropCtx.drawImage(maskCanvas, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+
+  return {
+    image: await canvasToPngBlob(imageCrop),
+    mask: await canvasToPngBlob(maskCrop),
+    crop: { x: cropX, y: cropY, width: cropW, height: cropH },
+  };
+}
+
+/**
+ * Downscales an image blob to fit a megapixel budget. Returns the original
+ * blob when it already fits. Used for whole-image Clipdrop operations
+ * (remove background), where the result is stretched back to document size.
+ */
+export async function fitBlobToPixelLimit(blob: Blob, maxPixels: number): Promise<Blob> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = await loadCleanupImage(url);
+    const pixels = image.naturalWidth * image.naturalHeight;
+    if (pixels <= maxPixels) return blob;
+    const scale = Math.sqrt(maxPixels / pixels);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.floor(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.floor(image.naturalHeight * scale));
+    canvas.getContext('2d')!.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvasToPngBlob(canvas);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export async function createColorPatch(maskCanvas: HTMLCanvasElement, width: number, height: number, color: string): Promise<string> {
   const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
   const ctx = canvas.getContext('2d')!;

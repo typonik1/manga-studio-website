@@ -1,6 +1,6 @@
-import type { ImageDocument, StrokeData } from '@/types';
+import type { ImageDocument, MaskElement, StrokeData } from '@/types';
 
-function loadImage(src: string): Promise<HTMLImageElement> {
+export function loadCleanupImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.crossOrigin = 'anonymous';
@@ -10,7 +10,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+export function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Не удалось создать PNG.')), 'image/png');
   });
@@ -18,60 +18,140 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 
 function drawStroke(ctx: CanvasRenderingContext2D, stroke: StrokeData, width: number, height: number) {
   if (stroke.points.length < 2) return;
+  ctx.save();
   ctx.beginPath();
-  ctx.strokeStyle = stroke.mode === 'erase' ? 'black' : 'white';
+  ctx.strokeStyle = 'white';
   ctx.lineWidth = Math.max(1, stroke.size * height);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
   for (let index = 0; index < stroke.points.length; index += 2) {
     const x = stroke.points[index] * width;
     const y = stroke.points[index + 1] * height;
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
+  ctx.restore();
 }
 
-export async function buildCleanupSource(doc: ImageDocument): Promise<Blob> {
+async function drawElement(ctx: CanvasRenderingContext2D, element: MaskElement, width: number, height: number) {
+  if (element.type === 'brush') return drawStroke(ctx, element.stroke, width, height);
+  if (element.type === 'polygon') {
+    if (element.points.length < 6) return;
+    ctx.save();
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    for (let index = 0; index < element.points.length; index += 2) {
+      const x = element.points[index] * width;
+      const y = element.points[index + 1] * height;
+      if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+  const bitmap = await loadCleanupImage(element.src);
+  ctx.drawImage(bitmap, 0, 0, width, height);
+}
+
+export async function buildCleanupSourceCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   canvas.width = doc.width;
   canvas.height = doc.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas недоступен.');
-  const source = await loadImage(doc.cleanup.committed ?? doc.originalSrc);
-  ctx.clearRect(0, 0, doc.width, doc.height);
-  ctx.drawImage(source, 0, 0, doc.width, doc.height);
+  const replacing = [...(doc.aiLayers ?? [])].reverse().find(layer => layer.visible && layer.replacesBase);
+  if (!replacing) {
+    const source = await loadCleanupImage(doc.cleanup.committed ?? doc.originalSrc);
+    ctx.drawImage(source, 0, 0, doc.width, doc.height);
+  }
   for (const layer of doc.aiLayers ?? []) {
     if (!layer.visible) continue;
     try {
-      const image = await loadImage(layer.src);
+      const image = await loadCleanupImage(layer.src);
       ctx.save();
       ctx.globalAlpha = layer.opacity;
       ctx.drawImage(image, 0, 0, doc.width, doc.height);
       ctx.restore();
-    } catch {
-      // A broken optional layer must not prevent processing the remaining composition.
-    }
+    } catch { /* ignore broken optional layers */ }
   }
-  return canvasToBlob(canvas);
+  return canvas;
 }
 
-export async function buildCleanupMask(doc: ImageDocument): Promise<{ blob: Blob; isEmpty: boolean }> {
+export async function buildCleanupSource(doc: ImageDocument): Promise<Blob> {
+  return canvasToPngBlob(await buildCleanupSourceCanvas(doc));
+}
+
+export async function buildCleanupMaskCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   canvas.width = doc.width;
   canvas.height = doc.height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('Canvas недоступен.');
-  ctx.fillStyle = 'black';
-  ctx.fillRect(0, 0, doc.width, doc.height);
   const activeMask = (doc.masks ?? []).find(mask => mask.id === doc.activeMaskId);
-  const strokes = activeMask?.strokes ?? [];
-  for (const stroke of strokes) drawStroke(ctx, stroke, doc.width, doc.height);
+  const elements = activeMask?.elements?.length
+    ? activeMask.elements
+    : (activeMask?.strokes ?? []).map(stroke => ({ type: 'brush', stroke }) as MaskElement);
+  for (const element of elements) await drawElement(ctx, element, doc.width, doc.height);
+  return canvas;
+}
+
+export async function buildCleanupMask(doc: ImageDocument): Promise<{ blob: Blob; isEmpty: boolean; canvas: HTMLCanvasElement }> {
+  const canvas = await buildCleanupMaskCanvas(doc);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('Canvas недоступен.');
   const pixels = ctx.getImageData(0, 0, doc.width, doc.height).data;
   let isEmpty = true;
-  for (let i = 0; i < pixels.length; i += 4) {
-    if (pixels[i] > 127) { isEmpty = false; break; }
+  for (let index = 3; index < pixels.length; index += 4) {
+    if (pixels[index] > 8) { isEmpty = false; break; }
   }
-  return { blob: await canvasToBlob(canvas), isEmpty };
+  const output = document.createElement('canvas');
+  output.width = doc.width; output.height = doc.height;
+  const outputCtx = output.getContext('2d')!;
+  outputCtx.fillStyle = 'black'; outputCtx.fillRect(0, 0, doc.width, doc.height);
+  outputCtx.drawImage(canvas, 0, 0);
+  return { blob: await canvasToPngBlob(output), isEmpty, canvas };
+}
+
+export async function createCleanupPatch(resultSrc: string, maskCanvas: HTMLCanvasElement, width: number, height: number): Promise<string> {
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  const result = await loadCleanupImage(resultSrc);
+  ctx.drawImage(result, 0, 0, width, height);
+  const feather = document.createElement('canvas'); feather.width = width; feather.height = height;
+  const featherCtx = feather.getContext('2d')!;
+  featherCtx.filter = 'blur(3px)'; featherCtx.drawImage(maskCanvas, 0, 0);
+  ctx.globalCompositeOperation = 'destination-in'; ctx.drawImage(feather, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+export async function createFloodMask(doc: ImageDocument, normalizedX: number, normalizedY: number, threshold: number) {
+  const source = await buildCleanupSourceCanvas(doc);
+  const ctx = source.getContext('2d', { willReadFrequently: true })!;
+  const { width, height } = source;
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const sx = Math.min(width - 1, Math.max(0, Math.floor(normalizedX * width)));
+  const sy = Math.min(height - 1, Math.max(0, Math.floor(normalizedY * height)));
+  const seed = (sy * width + sx) * 4;
+  const visited = new Uint8Array(width * height);
+  const selected = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0, tail = 0, count = 0; queue[tail++] = sy * width + sx;
+  const limit = Math.max(4, threshold * 2.55);
+  while (head < tail) {
+    const pixel = queue[head++]; if (visited[pixel]) continue; visited[pixel] = 1;
+    const offset = pixel * 4;
+    const distance = Math.max(Math.abs(data[offset] - data[seed]), Math.abs(data[offset + 1] - data[seed + 1]), Math.abs(data[offset + 2] - data[seed + 2]), Math.abs(data[offset + 3] - data[seed + 3]));
+    if (distance > limit) continue;
+    selected[pixel] = 1; count++;
+    const x = pixel % width, y = Math.floor(pixel / width);
+    if (x > 0) queue[tail++] = pixel - 1; if (x + 1 < width) queue[tail++] = pixel + 1;
+    if (y > 0) queue[tail++] = pixel - width; if (y + 1 < height) queue[tail++] = pixel + width;
+  }
+  const mask = document.createElement('canvas'); mask.width = width; mask.height = height;
+  const maskCtx = mask.getContext('2d')!; const image = maskCtx.createImageData(width, height);
+  for (let pixel = 0; pixel < selected.length; pixel++) if (selected[pixel]) { const offset = pixel * 4; image.data[offset] = image.data[offset + 1] = image.data[offset + 2] = image.data[offset + 3] = 255; }
+  maskCtx.putImageData(image, 0, 0);
+  return { src: mask.toDataURL('image/png'), coverage: count / (width * height) };
 }

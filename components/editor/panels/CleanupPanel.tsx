@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
 import { simpleInpaint } from '@/utils/imageUtils';
-import { buildCleanupMask, buildCleanupSource } from '@/utils/cleanupRaster';
+import { buildCleanupMask, buildCleanupSource, buildCleanupSourceCanvas, createCleanupPatch } from '@/utils/cleanupRaster';
 import { cleanupWithClipdrop, removeBackgroundWithClipdrop } from '@/lib/clipdrop/client';
 
 const primaryButtonStyle = {
@@ -32,7 +32,7 @@ export function CleanupPanel() {
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const activeMask = activeDoc?.masks.find(mask => mask.id === activeDoc.activeMaskId) ?? null;
-  const hasMask = activeMask?.strokes.some(stroke => stroke.mode !== 'erase') ?? false;
+  const hasMask = Boolean(activeMask && ((activeMask.elements?.length ?? 0) > 0 || activeMask.strokes.some(stroke => stroke.mode !== 'erase')));
 
   async function handleClipdrop(operation: 'cleanup' | 'background') {
     if (!activeDoc || aiOperation) return;
@@ -46,8 +46,9 @@ export function CleanupPanel() {
       let result: string;
       if (operation === 'cleanup') {
         const mask = await buildCleanupMask(activeDoc);
-        if (mask.isEmpty) throw new Error('Сначала закрасьте объект кистью маски.');
-        result = await cleanupWithClipdrop(image, mask.blob, controller.signal);
+        if (mask.isEmpty) throw new Error('Сначала создайте маску кистью, лассо или волшебным баблом.');
+        const fullResult = await cleanupWithClipdrop(image, mask.blob, controller.signal);
+        result = await createCleanupPatch(fullResult, mask.canvas, activeDoc.width, activeDoc.height);
       } else {
         result = await removeBackgroundWithClipdrop(image, controller.signal);
       }
@@ -60,6 +61,7 @@ export function CleanupPanel() {
         visible: true,
         opacity: 1,
         operation: operation === 'cleanup' ? 'cleanup' : 'remove-background',
+        replacesBase: operation === 'background',
         maskId: operation === 'cleanup' ? activeMask?.id : undefined,
       });
     } catch (error) {
@@ -79,63 +81,15 @@ export function CleanupPanel() {
       await new Promise(r => setTimeout(r, 30));
       setInpaintRunning(true, 15);
 
-      // Build the full-res canvas with base + cleanup strokes
-      const img = new window.Image();
-      img.crossOrigin = 'anonymous';
-      await new Promise<void>((res, rej) => {
-        img.onload = () => res();
-        img.onerror = rej;
-        img.src = activeDoc.originalSrc;
-      });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = activeDoc.width;
-      canvas.height = activeDoc.height;
+      const canvas = await buildCleanupSourceCanvas(activeDoc);
       const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(img, 0, 0);
-
-      if (activeDoc.cleanup.committed) {
-        const cleanImg = new window.Image();
-        cleanImg.crossOrigin = 'anonymous';
-        await new Promise<void>((res, rej) => {
-          cleanImg.onload = () => res();
-          cleanImg.onerror = rej;
-          cleanImg.src = activeDoc.cleanup.committed!;
-        });
-        ctx.drawImage(cleanImg, 0, 0);
-      }
-
       setInpaintRunning(true, 40);
-
-      // Draw white strokes to build mask
-      const maskCanvas = document.createElement('canvas');
-      maskCanvas.width = activeDoc.width;
-      maskCanvas.height = activeDoc.height;
-      const maskCtx = maskCanvas.getContext('2d')!;
-      maskCtx.fillStyle = 'black';
-      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
-
-      for (const stroke of activeDoc.cleanup.strokes) {
-        if (stroke.mode === 'erase') continue;
-        maskCtx.beginPath();
-        maskCtx.strokeStyle = 'white';
-        maskCtx.lineWidth = stroke.size * activeDoc.height;
-        maskCtx.lineCap = 'round';
-        maskCtx.lineJoin = 'round';
-        const pts = stroke.points;
-        for (let i = 0; i < pts.length; i += 2) {
-          const px = pts[i] * activeDoc.width;
-          const py = pts[i + 1] * activeDoc.height;
-          if (i === 0) maskCtx.moveTo(px, py);
-          else maskCtx.lineTo(px, py);
-        }
-        maskCtx.stroke();
-      }
-
+      const mask = await buildCleanupMask(activeDoc);
+      if (mask.isEmpty) throw new Error('Пустая маска');
       setInpaintRunning(true, 60);
-
+      const maskCtx = mask.canvas.getContext('2d', { willReadFrequently: true })!;
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+      const maskData = maskCtx.getImageData(0, 0, mask.canvas.width, mask.canvas.height);
       const result = simpleInpaint(imageData, maskData, cleanupSettings.inpaintRadius * 3);
 
       setInpaintRunning(true, 85);

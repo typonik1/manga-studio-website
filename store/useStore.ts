@@ -19,6 +19,7 @@ import type {
   LeftTab,
   CropRect,
   MaskLayer,
+  MaskElement,
   AiRasterLayer,
   SelectedLayer,
 } from '../types';
@@ -80,7 +81,13 @@ const defaultShapeSettings: ShapeSettings = {
 function snap(doc: ImageDocument): HistorySnapshot {
   return {
     cleanup: { committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
-    masks: (doc.masks ?? []).map(mask => ({ ...mask, strokes: mask.strokes.map(stroke => ({ ...stroke, points: [...stroke.points] })) })),
+    masks: (doc.masks ?? []).map(mask => ({
+      ...mask,
+      strokes: mask.strokes.map(stroke => ({ ...stroke, points: [...stroke.points] })),
+      elements: (mask.elements ?? mask.strokes.map(stroke => ({ type: 'brush', stroke }) as MaskElement)).map(element =>
+        element.type === 'brush' ? { ...element, stroke: { ...element.stroke, points: [...element.stroke.points] } } : element.type === 'polygon' ? { ...element, points: [...element.points] } : { ...element }
+      ),
+    })),
     aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer })),
     activeMaskId: doc.activeMaskId ?? null,
     selectedLayer: doc.selectedLayer ? { ...doc.selectedLayer } : null,
@@ -130,6 +137,7 @@ export interface AppState {
   createMask: () => string | null;
   selectLayer: (layer: SelectedLayer | null) => void;
   addMaskStroke: (stroke: StrokeData) => void;
+  addMaskElement: (element: MaskElement) => void;
   clearActiveMask: () => void;
   updateMask: (id: string, updates: Partial<Pick<MaskLayer, 'name' | 'visible' | 'opacity'>>) => void;
   deleteMask: (id: string) => void;
@@ -284,7 +292,7 @@ export const useStore = create<AppState>((set, get) => ({
     set(current => {
       const docs = [...current.documents];
       const doc = withHistory(docs[current.activeDocIndex]);
-      const mask: MaskLayer = { id, name: `Маска ${(doc.masks?.length ?? 0) + 1}`, strokes: [], visible: true, opacity: 0.55 };
+      const mask: MaskLayer = { id, name: `Маска ${(doc.masks?.length ?? 0) + 1}`, strokes: [], elements: [], visible: true, opacity: 0.55 };
       docs[current.activeDocIndex] = { ...doc, masks: [...(doc.masks ?? []), mask], activeMaskId: id, selectedLayer: { id, type: 'mask' } };
       return { documents: docs };
     });
@@ -306,12 +314,35 @@ export const useStore = create<AppState>((set, get) => ({
     let maskId = doc.activeMaskId;
     if (!maskId || !(doc.masks ?? []).some(mask => mask.id === maskId)) {
       maskId = `mask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      doc = { ...doc, masks: [...(doc.masks ?? []), { id: maskId, name: `Маска ${(doc.masks?.length ?? 0) + 1}`, strokes: [], visible: true, opacity: 0.55 }] };
+      doc = { ...doc, masks: [...(doc.masks ?? []), { id: maskId, name: `Маска ${(doc.masks?.length ?? 0) + 1}`, strokes: [], elements: [], visible: true, opacity: 0.55 }] };
     }
     const withH = withHistory(doc);
     docs[state.activeDocIndex] = {
       ...withH,
-      masks: withH.masks.map(mask => mask.id === maskId ? { ...mask, strokes: [...mask.strokes, { ...stroke, purpose: 'mask' }] } : mask),
+      masks: withH.masks.map(mask => mask.id === maskId ? {
+        ...mask,
+        strokes: [...mask.strokes, { ...stroke, purpose: 'mask' }],
+        elements: [...(mask.elements ?? mask.strokes.map(item => ({ type: 'brush', stroke: item }) as MaskElement)), { type: 'brush', stroke: { ...stroke, purpose: 'mask' } }],
+      } : mask),
+      activeMaskId: maskId,
+      selectedLayer: { id: maskId, type: 'mask' },
+    };
+    return { documents: docs, selectedObject: null };
+  }),
+
+  addMaskElement: (element) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    let doc = docs[state.activeDocIndex];
+    let maskId = doc.activeMaskId;
+    if (!maskId || !doc.masks.some(mask => mask.id === maskId)) {
+      maskId = `mask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      doc = { ...doc, masks: [...doc.masks, { id: maskId, name: `Маска ${doc.masks.length + 1}`, strokes: [], elements: [], visible: true, opacity: 0.55 }] };
+    }
+    const withH = withHistory(doc);
+    docs[state.activeDocIndex] = {
+      ...withH,
+      masks: withH.masks.map(mask => mask.id === maskId ? { ...mask, elements: [...(mask.elements ?? []), element] } : mask),
       activeMaskId: maskId,
       selectedLayer: { id: maskId, type: 'mask' },
     };
@@ -324,9 +355,9 @@ export const useStore = create<AppState>((set, get) => ({
     const current = docs[state.activeDocIndex];
     if (!current.activeMaskId) return {};
     const mask = current.masks.find(item => item.id === current.activeMaskId);
-    if (!mask?.strokes.length) return {};
+    if (!mask || (!mask.strokes.length && !(mask.elements?.length))) return {};
     const doc = withHistory(current);
-    docs[state.activeDocIndex] = { ...doc, masks: doc.masks.map(item => item.id === doc.activeMaskId ? { ...item, strokes: [] } : item) };
+    docs[state.activeDocIndex] = { ...doc, masks: doc.masks.map(item => item.id === doc.activeMaskId ? { ...item, strokes: [], elements: [] } : item) };
     return { documents: docs };
   }),
 

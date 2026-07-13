@@ -63,6 +63,11 @@ export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
       visible: mask.visible !== false,
       opacity: clamp01(Number.isFinite(mask.opacity) ? mask.opacity : 0.55),
       strokes: (mask.strokes ?? []).map(sanitizeStroke).filter((item): item is StrokeData => Boolean(item)),
+      elements: (mask.elements ?? (mask.strokes ?? []).map(stroke => ({ type: 'brush' as const, stroke }))).map(element => {
+        if (element.type === 'brush') { const stroke = sanitizeStroke(element.stroke); return stroke ? { type: 'brush' as const, stroke } : null; }
+        if (element.type === 'polygon') return element.points.length >= 6 ? { ...element, points: element.points.map(clamp01) } : null;
+        return element.src ? element : null;
+      }).filter((element): element is NonNullable<typeof element> => Boolean(element)),
     })),
     aiLayers: (document.aiLayers ?? []).map(layer => ({
       ...layer,

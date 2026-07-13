@@ -45,6 +45,51 @@ function makeCheckerPattern(): HTMLCanvasElement {
   return tile;
 }
 
+/**
+ * Renders committed cleanup brush strokes to an offscreen canvas so that
+ * erase-mode strokes (destination-out) only affect the strokes themselves
+ * and never punch holes through the layers rendered below.
+ */
+function CleanupStrokesNode({ strokes, width, height, lineScale }: {
+  strokes: StrokeData[];
+  width: number;
+  height: number;
+  lineScale: number;
+}) {
+  const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!strokes.length) { setCanvas(null); return; }
+    const next = document.createElement('canvas');
+    next.width = Math.max(1, Math.round(width));
+    next.height = Math.max(1, Math.round(height));
+    const ctx = next.getContext('2d');
+    if (!ctx) return;
+    for (const stroke of strokes) {
+      if (stroke.points.length < 2) continue;
+      ctx.save();
+      ctx.strokeStyle = stroke.color;
+      ctx.globalAlpha = stroke.opacity;
+      ctx.lineWidth = Math.max(1, stroke.size * lineScale);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
+      ctx.beginPath();
+      for (let index = 0; index < stroke.points.length; index += 2) {
+        const x = stroke.points[index] * width;
+        const y = stroke.points[index + 1] * height;
+        if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    setCanvas(next);
+  }, [strokes, width, height, lineScale]);
+
+  if (!canvas) return null;
+  return <KonvaImage image={canvas} listening={false} />;
+}
+
 /** Shared placement/transform values for a raster layer node. */
 interface RasterNodePlacement {
   x?: number;
@@ -725,7 +770,7 @@ export function CanvasArea() {
   const {
     documents, activeDocIndex, setActiveDoc,
     activeTool, cleanupSettings,
-    addStroke, addMaskStroke, addMaskElement, updateWatermark, updateText, updateShape,
+        addStroke, addMaskStroke, addMaskElement, addEraseElement, updateWatermark, updateText, updateShape,
     selectLayer, updateCleanupSettings,
     selectedObject, setSelectedObject,
     layerVisibility,
@@ -888,8 +933,10 @@ export function CanvasArea() {
       const line = liveLineRef.current;
       if (line) {
         line.points(livePoints.current);
-        line.stroke(activeTool === 'eraser' ? '#000000' : activeTool === 'maskBrush' ? 'rgba(255,128,0,0.6)' : cleanupSettings.brushColor);
-        line.globalCompositeOperation(activeTool === 'eraser' ? 'destination-out' : 'source-over');
+        // Eraser preview is a translucent marker — destination-out would visually
+        // punch through the whole composite while drawing.
+        line.stroke(activeTool === 'eraser' ? 'rgba(140,140,150,0.55)' : activeTool === 'maskBrush' ? 'rgba(255,128,0,0.6)' : cleanupSettings.brushColor);
+        line.globalCompositeOperation('source-over');
         line.strokeWidth(cleanupSettings.brushSize * activeDoc.height * previewScale);
         line.visible(true);
         line.getLayer()?.batchDraw();
@@ -1007,8 +1054,22 @@ export function CanvasArea() {
           purpose: activeTool === 'maskBrush' ? 'mask' : 'paint',
         };
         const editsMask = activeTool === 'maskBrush' || (activeTool === 'eraser' && activeDoc.selectedLayer?.type === 'mask');
-        if (editsMask) addMaskStroke(stroke);
-        else addStroke(stroke);
+        if (editsMask) {
+          addMaskStroke(stroke);
+        } else if (activeTool === 'eraser') {
+          // The eraser is per-layer: it punches pixels out of the selected raster
+          // layer (base by default) instead of drawing a global destination-out
+          // stroke that would visually erase the whole composite.
+          const selected = activeDoc.selectedLayer;
+          const target = selected?.type === 'ai'
+            ? { id: selected.id, type: 'ai' as const }
+            : { type: 'base' as const };
+          // Inside the erase mask the stroke must ADD coverage (paint mode);
+          // applyEraseElements then punches the covered area out of the layer.
+          addEraseElement(target, { type: 'brush', stroke: { ...stroke, mode: 'paint' } });
+        } else {
+          addStroke(stroke);
+        }
         window.requestAnimationFrame(() => {
           const stage = stageRef.current;
           if (!stage) return;
@@ -1289,25 +1350,16 @@ export function CanvasArea() {
 
             <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
 
-            {/* Live brush strokes */}
-            {layerVisibility.cleanup && activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask').map(stroke => {
-              const pts = stroke.points.flatMap((v, i) =>
-                i % 2 === 0 ? v * imgW : v * imgH
-              );
-              return (
-                <Line
-                  key={stroke.id}
-                  points={pts}
-                  stroke={stroke.purpose === 'mask' ? 'rgba(255,128,0,0.6)' : stroke.color}
-                  strokeWidth={stroke.size * activeDoc.height * previewScale}
-                  lineCap="round"
-                  lineJoin="round"
-                  opacity={stroke.opacity}
-                  tension={0.3}
-                  globalCompositeOperation={stroke.mode === 'erase' ? 'destination-out' : 'source-over'}
-                />
-              );
-            })}
+            {/* Committed brush strokes — rendered offscreen so erase-mode strokes
+                only affect the strokes themselves, never the layers below. */}
+            {layerVisibility.cleanup && (
+              <CleanupStrokesNode
+                strokes={activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask')}
+                width={imgW}
+                height={imgH}
+                lineScale={activeDoc.height * previewScale}
+              />
+            )}
 
             {/* Persistent editor-only mask overlays */}
             {(activeDoc.masks ?? []).filter(mask => mask.visible).map(mask => (

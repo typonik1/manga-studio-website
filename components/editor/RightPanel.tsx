@@ -201,7 +201,15 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
           const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
           const wrapperProps = {
             draggable: true,
-            onDragStart: (e: React.DragEvent) => { dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move'; },
+            onDragStart: (e: React.DragEvent) => {
+              // Sliders and buttons inside the row must not start a row drag —
+              // otherwise moving a slider drags a ghost of the whole row.
+              if ((e.target as HTMLElement).closest('input, button, select, textarea')) {
+                e.preventDefault();
+                return;
+              }
+              dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
+            },
             onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropIndex(orderIndex); },
             onDragLeave: () => setDropIndex(current => (current === orderIndex ? null : current)),
             onDrop: (e: React.DragEvent) => {

@@ -25,6 +25,8 @@ import type {
   AiRasterLayer,
   SelectedLayer,
   LayerReference,
+  BubbleObject,
+  BubbleKind,
 } from '../types';
 import { DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
 import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
@@ -115,6 +117,7 @@ function snap(doc: ImageDocument): HistorySnapshot {
     watermarks: doc.watermarks.map(w => ({ ...w })),
     texts: doc.texts.map(t => ({ ...t })),
     shapes: (doc.shapes ?? []).map(s => ({ ...s })),
+    bubbles: (doc.bubbles ?? []).map(b => ({ ...b, text: { ...b.text }, tail: b.tail ? { ...b.tail } : null })),
     layerOrder: (doc.layerOrder ?? []).map(ref => ({ ...ref })),
   };
 }
@@ -198,6 +201,10 @@ export interface AppState {
   updateShape: (id: string, updates: Partial<ShapeObject>) => void;
   deleteShape: (id: string) => void;
   updateShapeSettings: (updates: Partial<ShapeSettings>) => void;
+  addBubble: (bubble: BubbleObject) => void;
+  updateBubble: (id: string, updates: Partial<BubbleObject>) => void;
+  deleteBubble: (id: string) => void;
+  duplicateBubble: (id: string) => void;
   addCustomFont: (name: string) => void;
   setCustomFonts: (names: string[]) => void;
   bumpFontsVersion: () => void;
@@ -301,6 +308,14 @@ export const useStore = create<AppState>((set, get) => ({
       const source = doc.watermarks.find(item => item.id === selected.id);
       if (!source) return {};
       doc.watermarks = [...doc.watermarks, { ...source, id, x: Math.min(.95, source.x + .025), y: Math.min(.95, source.y + .025), isBatch: false }];
+    } else if (selected.type === 'bubble') {
+      const source = (doc.bubbles ?? []).find(item => item.id === selected.id);
+      if (!source) return {};
+      const newBubble = { ...source, id, x: Math.min(.95, source.x + .025), y: Math.min(.95, source.y + .025), text: { ...source.text }, tail: source.tail ? { ...source.tail } : null };
+      doc.bubbles = [...(doc.bubbles ?? []), newBubble];
+      const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id }];
+      docs[state.activeDocIndex] = { ...doc, layerOrder: newLayerOrder };
+      return { documents: docs, selectedObject: { ...selected, id } };
     } else {
       const source = doc.shapes.find(item => item.id === selected.id);
       if (!source) return {};
@@ -316,6 +331,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (!selected) return;
     if (selected.type === 'text') state.deleteText(selected.id);
     else if (selected.type === 'watermark') state.deleteWatermark(selected.id);
+    else if (selected.type === 'bubble') state.deleteBubble(selected.id);
     else state.deleteShape(selected.id);
   },
 
@@ -324,7 +340,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (!selected || state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
     const doc = withHistory(docs[state.activeDocIndex]);
-    const key = selected.type === 'text' ? 'texts' : selected.type === 'watermark' ? 'watermarks' : 'shapes';
+    const key = selected.type === 'text' ? 'texts' : selected.type === 'watermark' ? 'watermarks' : selected.type === 'bubble' ? 'bubbles' : 'shapes';
     const items = [...doc[key]] as Array<{ id: string }>;
     const index = items.findIndex(item => item.id === selected.id);
     const target = direction === 'forward' ? index + 1 : index - 1;
@@ -857,6 +873,50 @@ export const useStore = create<AppState>((set, get) => ({
     }),
 
   updateShapeSettings: (u) => set(s => ({ shapeSettings: { ...s.shapeSettings, ...u } })),
+
+  addBubble: (bubble) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const doc = withHistory(docs[state.activeDocIndex]);
+      const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id: bubble.id }];
+      docs[state.activeDocIndex] = { ...doc, bubbles: [...(doc.bubbles ?? []), bubble], layerOrder: newLayerOrder };
+      return { documents: docs, selectedObject: { id: bubble.id, type: 'bubble' as const } };
+    }),
+
+  updateBubble: (id, updates) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const doc = withHistory(docs[state.activeDocIndex]);
+      docs[state.activeDocIndex] = { ...doc, bubbles: (doc.bubbles ?? []).map(b => b.id === id ? { ...b, ...updates } : b) };
+      return { documents: docs };
+    }),
+
+  deleteBubble: (id) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const doc = withHistory(docs[state.activeDocIndex]);
+      const layerOrder = (doc.layerOrder ?? []).filter(ref => !(ref.type === 'bubble' && ref.id === id));
+      docs[state.activeDocIndex] = { ...doc, bubbles: (doc.bubbles ?? []).filter(b => b.id !== id), layerOrder };
+      return { documents: docs, selectedObject: null };
+    }),
+
+  duplicateBubble: (id) =>
+    set(state => {
+      if (state.activeDocIndex < 0) return {};
+      const docs = [...state.documents];
+      const doc = withHistory(docs[state.activeDocIndex]);
+      const source = (doc.bubbles ?? []).find(b => b.id === id);
+      if (!source) return {};
+      const newId = `bubble-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const newBubble = { ...source, id: newId, x: Math.min(0.95, source.x + 0.05), y: Math.min(0.95, source.y + 0.05) };
+      const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id: newId }];
+      docs[state.activeDocIndex] = { ...doc, bubbles: [...(doc.bubbles ?? []), newBubble], layerOrder: newLayerOrder };
+      return { documents: docs, selectedObject: { id: newId, type: 'bubble' as const } };
+    }),
+
   addCustomFont: (name) => set(s => ({ customFonts: s.customFonts.includes(name) ? s.customFonts : [...s.customFonts, name] })),
   setCustomFonts: (names) => set({ customFonts: names }),
   bumpFontsVersion: () => set(s => ({ fontsVersion: s.fontsVersion + 1 })),

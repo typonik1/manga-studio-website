@@ -5,6 +5,7 @@ import { useStore } from '@/store/useStore';
 import type { ImageDocument } from '@/types';
 import { buildCleanupSourceCanvas } from '@/utils/cleanupRaster';
 import { resolveLayerOrder } from '@/utils/layerOrder';
+import { getBubblePath } from '@/utils/bubbleGeometry';
 
 async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   // Make sure web fonts are loaded before drawing text to canvas
@@ -166,6 +167,64 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.restore();
   };
 
+  const drawBubble = (bubble: NonNullable<typeof doc.bubbles>[number]) => {
+    if (!bubble.visible) return;
+    ctx.save();
+    ctx.globalAlpha = 1;
+    const cx = bubble.x * doc.width;
+    const cy = bubble.y * doc.height;
+    const w = bubble.width * doc.width;
+    const h = bubble.height * doc.height;
+    ctx.translate(cx, cy);
+    ctx.rotate((bubble.rotation * Math.PI) / 180);
+
+    // Get bubble path and draw it
+    const pathData = getBubblePath(bubble.kind, {
+      x: 0,
+      y: 0,
+      width: bubble.width,
+      height: bubble.height,
+      rotation: 0,
+      tipX: bubble.tail?.tipX ?? 0,
+      tipY: bubble.tail?.tipY ?? 0,
+      tailWidth: bubble.tail?.width ?? 0.2,
+    });
+
+    try {
+      const path = new Path2D(pathData);
+      ctx.scale(w / bubble.width, h / bubble.height);
+      if (bubble.fill) { ctx.fillStyle = bubble.fill; ctx.fill(path); }
+      if (bubble.stroke && bubble.strokeWidth > 0) {
+        ctx.strokeStyle = bubble.stroke;
+        ctx.lineWidth = bubble.strokeWidth / Math.max(w / bubble.width, h / bubble.height);
+        if (bubble.kind === 'whisper') {
+          ctx.setLineDash([3, 2]);
+        }
+        ctx.stroke(path);
+        ctx.setLineDash([]);
+      }
+    } catch { /* Path2D not supported, skip bubble */ }
+
+    // Draw text inside bubble
+    ctx.resetTransform();
+    ctx.translate(cx, cy);
+    ctx.rotate((bubble.rotation * Math.PI) / 180);
+    const fontSize = bubble.text.fontSize;
+    ctx.font = `${fontSize}px "${bubble.text.fontFamily}"`;
+    ctx.fillStyle = bubble.text.fill;
+    ctx.textAlign = bubble.text.align;
+    ctx.textBaseline = 'middle';
+    const lines = bubble.text.content.split('\n');
+    const lineH = fontSize * bubble.text.lineHeight;
+    const totalH = lineH * lines.length;
+    for (let i = 0; i < lines.length; i++) {
+      const y = (i - lines.length / 2 + 0.5) * lineH;
+      ctx.fillText(lines[i], 0, y);
+    }
+
+    ctx.restore();
+  };
+
   for (const ref of resolveLayerOrder(doc)) {
     if (ref.type === 'watermark') {
       const wm = doc.watermarks.find(item => item.id === ref.id);
@@ -176,6 +235,9 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     } else if (ref.type === 'shape') {
       const shape = (doc.shapes ?? []).find(item => item.id === ref.id);
       if (shape) drawShape(shape);
+    } else if (ref.type === 'bubble') {
+      const bubble = (doc.bubbles ?? []).find(item => item.id === ref.id);
+      if (bubble) drawBubble(bubble);
     }
   }
 

@@ -5,7 +5,7 @@ import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect } from '@/types';
+import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject } from '@/types';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask, bakeStrokeIntoLayerSrc } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
@@ -13,6 +13,7 @@ import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
 import { ToolOptionsBar } from './ToolOptionsBar';
 import { screenToImage } from '@/utils/coordinates';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
+import { BubbleNode } from './BubbleNode';
 
 const MAX_PREVIEW_SIDE = 1800;
 
@@ -770,7 +771,7 @@ export function CanvasArea() {
   const {
     documents, activeDocIndex, setActiveDoc,
     activeTool, cleanupSettings,
-        addStroke, addMaskStroke, addMaskElement, addEraseElement, updateWatermark, updateText, updateShape,
+        addStroke, addMaskStroke, addMaskElement, addEraseElement, updateWatermark, updateText, updateShape, updateBubble,
     selectLayer, updateCleanupSettings,
     selectedObject, setSelectedObject,
     layerVisibility,
@@ -1475,6 +1476,27 @@ export function CanvasArea() {
                     onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
                     onChange={updates => updateShape(shape.id, updates)}
                     onBeforeChange={pushHistory}
+                  />
+                );
+              }
+              if (ref.type === 'bubble') {
+                const bubble = (activeDoc.bubbles ?? []).find(item => item.id === ref.id);
+                if (!bubble || !layerVisibility.shapes) return null;
+                return (
+                  <BubbleNode
+                    key={bubble.id}
+                    bubble={bubble}
+                    docWidth={activeDoc.width}
+                    docHeight={activeDoc.height}
+                    previewScale={previewScale}
+                    isSelected={selectedObject?.id === bubble.id}
+                    onSelect={() => setSelectedObject({ id: bubble.id, type: 'bubble' })}
+                    onChange={updates => updateBubble(bubble.id, updates)}
+                    onBeforeChange={pushHistory}
+                    onEditRequest={() => {
+                      setSelectedObject({ id: bubble.id, type: 'bubble' });
+                      setLeftTab('text');
+                    }}
                   />
                 );
               }

@@ -20,6 +20,7 @@ export function resolveLayerOrder(doc: ImageDocument): LayerReference[] {
   const textIds = new Set(doc.texts.map(item => item.id));
   const wmIds = new Set(doc.watermarks.map(item => item.id));
   const shapeIds = new Set((doc.shapes ?? []).map(item => item.id));
+  const bubbleIds = new Set((doc.bubbles ?? []).map(item => item.id));
 
   const exists = (ref: LayerReference): boolean => {
     switch (ref.type) {
@@ -28,6 +29,8 @@ export function resolveLayerOrder(doc: ImageDocument): LayerReference[] {
       case 'text': return textIds.has(ref.id);
       case 'watermark': return wmIds.has(ref.id);
       case 'shape': return shapeIds.has(ref.id);
+      case 'bubble': return bubbleIds.has(ref.id);
+      default: return false;
     }
   };
 
@@ -49,6 +52,7 @@ export function resolveLayerOrder(doc: ImageDocument): LayerReference[] {
   for (const wm of doc.watermarks) append({ type: 'watermark', id: wm.id });
   for (const txt of doc.texts) append({ type: 'text', id: txt.id });
   for (const shape of doc.shapes ?? []) append({ type: 'shape', id: shape.id });
+  for (const bubble of doc.bubbles ?? []) append({ type: 'bubble', id: bubble.id });
 
   return order;
 }

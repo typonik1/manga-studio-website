@@ -178,27 +178,31 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.translate(cx, cy);
     ctx.rotate((bubble.rotation * Math.PI) / 180);
 
-    // Get bubble path and draw it
+    // Tail tip in local pixel coords relative to bubble center.
+    const hasTail = !!bubble.tail?.enabled;
+    const tipLocalX = hasTail ? (bubble.tail!.tipX - bubble.x) * doc.width : 0;
+    const tipLocalY = hasTail ? (bubble.tail!.tipY - bubble.y) * doc.height : 0;
+
+    // Get bubble path in local pixel space (centered at 0,0).
     const pathData = getBubblePath(bubble.kind, {
       x: 0,
       y: 0,
-      width: bubble.width,
-      height: bubble.height,
+      width: w,
+      height: h,
       rotation: 0,
-      tipX: bubble.tail?.tipX ?? 0,
-      tipY: bubble.tail?.tipY ?? 0,
+      tipX: tipLocalX,
+      tipY: tipLocalY,
       tailWidth: bubble.tail?.width ?? 0.2,
     });
 
     try {
       const path = new Path2D(pathData);
-      ctx.scale(w / bubble.width, h / bubble.height);
       if (bubble.fill) { ctx.fillStyle = bubble.fill; ctx.fill(path); }
       if (bubble.stroke && bubble.strokeWidth > 0) {
         ctx.strokeStyle = bubble.stroke;
-        ctx.lineWidth = bubble.strokeWidth / Math.max(w / bubble.width, h / bubble.height);
+        ctx.lineWidth = bubble.strokeWidth;
         if (bubble.kind === 'whisper') {
-          ctx.setLineDash([3, 2]);
+          ctx.setLineDash([6, 4]);
         }
         ctx.stroke(path);
         ctx.setLineDash([]);
@@ -206,9 +210,6 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     } catch { /* Path2D not supported, skip bubble */ }
 
     // Draw text inside bubble
-    ctx.resetTransform();
-    ctx.translate(cx, cy);
-    ctx.rotate((bubble.rotation * Math.PI) / 180);
     const fontSize = bubble.text.fontSize;
     ctx.font = `${fontSize}px "${bubble.text.fontFamily}"`;
     ctx.fillStyle = bubble.text.fill;
@@ -216,7 +217,6 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.textBaseline = 'middle';
     const lines = bubble.text.content.split('\n');
     const lineH = fontSize * bubble.text.lineHeight;
-    const totalH = lineH * lines.length;
     for (let i = 0; i < lines.length; i++) {
       const y = (i - lines.length / 2 + 0.5) * lineH;
       ctx.fillText(lines[i], 0, y);

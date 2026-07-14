@@ -50,15 +50,20 @@ export function BubbleNode({
   const bodyW = bubble.width * pW;
   const bodyH = bubble.height * pH;
 
-  // Compute geometry parameters
+  // Tail tip expressed in local pixel coordinates relative to the group center.
+  const hasTail = !!bubble.tail?.enabled;
+  const tipLocalX = hasTail ? (bubble.tail!.tipX - bubble.x) * pW : 0;
+  const tipLocalY = hasTail ? (bubble.tail!.tipY - bubble.y) * pH : 0;
+
+  // Compute geometry parameters directly in local pixel space (centered at 0,0).
   const geomParams = {
-    x: 0, // relative to group
+    x: 0, // group center
     y: 0,
-    width: bodyW / pW,
-    height: bodyH / pH,
+    width: bodyW,
+    height: bodyH,
     rotation: bubble.rotation,
-    tipX: bubble.tail?.tipX ?? 0,
-    tipY: bubble.tail?.tipY ?? 0,
+    tipX: tipLocalX,
+    tipY: tipLocalY,
     tailWidth: bubble.tail?.width ?? 0.2,
   };
 
@@ -115,8 +120,6 @@ export function BubbleNode({
           stroke={bubble.stroke}
           strokeWidth={bubble.strokeWidth * previewScale}
           strokeDasharray={isDashed ? [6 * previewScale, 4 * previewScale] : undefined}
-          scaleX={bodyW / pW}
-          scaleY={bodyH / pH}
         />
 
         {/* Text inside bubble */}

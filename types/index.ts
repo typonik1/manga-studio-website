@@ -76,6 +76,39 @@ export interface ShapeObject {
   visible: boolean;
 }
 
+export type BubbleKind = 'speech' | 'thought' | 'scream' | 'narration' | 'whisper';
+
+export interface BubbleTail {
+  enabled: boolean;
+  tipX: number;      // normalized, tip of tail
+  tipY: number;      // normalized
+  width: number;     // thickness at base, fraction of body width
+}
+
+export interface BubbleObject {
+  id: string;
+  kind: BubbleKind;
+  visible: boolean;
+  x: number;         // normalized center x of body
+  y: number;         // normalized center y of body
+  width: number;     // normalized fraction of image width
+  height: number;    // normalized fraction of image height
+  rotation: number;
+  autoSize: boolean; // grows with text by default
+  tail: BubbleTail | null; // narration created with null
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+  text: {
+    content: string;
+    fontFamily: string;
+    fontSize: number;
+    fill: string;
+    align: 'left' | 'center' | 'right';
+    lineHeight: number;
+  };
+}
+
 export interface CleanupLayerState {
   committed: string | null; // legacy dataURL kept for older documents
   strokes: StrokeData[];
@@ -173,7 +206,8 @@ export type LayerReference =
   | { type: 'ai'; id: string }
   | { type: 'text'; id: string }
   | { type: 'watermark'; id: string }
-  | { type: 'shape'; id: string };
+  | { type: 'shape'; id: string }
+  | { type: 'bubble'; id: string };
 
 export interface HistorySnapshot {
   cleanup: CleanupLayerState;
@@ -185,6 +219,7 @@ export interface HistorySnapshot {
   watermarks: WatermarkObject[];
   texts: TextObject[];
   shapes: ShapeObject[];
+  bubbles: BubbleObject[];
   layerOrder: LayerReference[];
 }
 
@@ -205,6 +240,7 @@ export interface ImageDocument {
   watermarks: WatermarkObject[];
   texts: TextObject[];
   shapes: ShapeObject[];
+  bubbles: BubbleObject[];
   /** Unified z-order stack (bottom → top). Missing refs are appended on top at resolve time. */
   layerOrder?: LayerReference[];
   past: HistorySnapshot[];
@@ -216,11 +252,11 @@ export type CleanupMethod = 'auto' | 'white' | 'background' | 'inpaint';
 export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'rectSelect' | 'text' | 'watermark' | 'wand' | 'crop';
 
 export type SelectionMode = 'replace' | 'add' | 'subtract';
-export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform';
+export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform' | 'bubble';
 
 export interface SelectedObject {
   id: string;
-  type: 'watermark' | 'text' | 'shape';
+  type: 'watermark' | 'text' | 'shape' | 'bubble';
 }
 
 export interface CropRect {

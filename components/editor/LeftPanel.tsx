@@ -7,11 +7,13 @@ import { CleanupPanel } from './panels/CleanupPanel';
 import { TextPanel } from './panels/TextPanel';
 import { InsertPanel } from './panels/InsertPanel';
 import { TransformPanel } from './panels/TransformPanel';
+import { BubblePanel } from './panels/BubblePanel';
 
 const TABS: { key: LeftTab; label: string; hotkey: string }[] = [
   { key: 'watermark', label: 'Вотерка', hotkey: '1' },
   { key: 'cleanup', label: 'Очистка', hotkey: '2' },
   { key: 'text', label: 'Текст', hotkey: '3' },
+  { key: 'bubble', label: 'Баблы', hotkey: 'B' },
   { key: 'insert', label: 'Вставка', hotkey: '4' },
   { key: 'transform', label: 'Размер', hotkey: '5' },
 ];
@@ -65,6 +67,7 @@ export function LeftPanel() {
             {leftTab === 'watermark' && <WatermarkPanel />}
             {leftTab === 'cleanup' && <CleanupPanel />}
             {leftTab === 'text' && <TextPanel />}
+            {leftTab === 'bubble' && <BubblePanel />}
             {leftTab === 'insert' && <InsertPanel />}
             {leftTab === 'transform' && <TransformPanel />}
           </>

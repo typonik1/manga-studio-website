@@ -1,5 +1,5 @@
 import { createBaseLayerState, DEFAULT_BASE_ADJUSTMENTS } from '@/types';
-import type { ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject } from '@/types';
+import type { ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject, BubbleObject } from '@/types';
 
 export interface CoordinateSpace {
   viewport: { x: number; y: number; scale: number };
@@ -46,6 +46,25 @@ export function sanitizeShape(shape: ShapeObject): ShapeObject | null {
   return { ...shape, x: clamp01(shape.x), y: clamp01(shape.y), width: Math.max(0.005, Math.min(1, Math.abs(shape.width))), height: Math.max(0.005, Math.min(1, Math.abs(shape.height))) };
 }
 
+export function sanitizeBubble(bubble: BubbleObject): BubbleObject | null {
+  if (![bubble.x, bubble.y, bubble.width, bubble.height].every(validPosition)) return null;
+  const sanitized: BubbleObject = {
+    ...bubble,
+    x: clamp01(bubble.x),
+    y: clamp01(bubble.y),
+    width: Math.max(0.005, Math.min(1, Math.abs(bubble.width))),
+    height: Math.max(0.005, Math.min(1, Math.abs(bubble.height))),
+    text: { ...bubble.text },
+    tail: bubble.tail ? {
+      ...bubble.tail,
+      tipX: clamp01(bubble.tail.tipX),
+      tipY: clamp01(bubble.tail.tipY),
+      width: Math.max(0.01, Math.min(1, Math.abs(bubble.tail.width))),
+    } : null,
+  };
+  return sanitized;
+}
+
 export function sanitizeStroke(stroke: StrokeData): StrokeData | null {
   if (stroke.points.length < 2 || stroke.points.some(value => !finite(value) || Math.abs(value) > 2)) return null;
   const points = stroke.points.map(clamp01);
@@ -58,6 +77,7 @@ export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
     texts: document.texts.map(sanitizeText).filter((item): item is TextObject => Boolean(item)),
     watermarks: document.watermarks.map(sanitizeWatermark).filter((item): item is WatermarkObject => Boolean(item)),
     shapes: (document.shapes ?? []).map(sanitizeShape).filter((item): item is ShapeObject => Boolean(item)),
+    bubbles: (document.bubbles ?? []).map(sanitizeBubble).filter((item): item is BubbleObject => Boolean(item)),
     cleanup: { ...document.cleanup, strokes: document.cleanup.strokes.map(sanitizeStroke).filter((item): item is StrokeData => Boolean(item)) },
     masks: (document.masks ?? []).map(mask => ({
       ...mask,

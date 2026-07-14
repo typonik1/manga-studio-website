@@ -128,7 +128,7 @@ function GalleryPanel() {
 }
 
 function LayersPanel() {
-const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, duplicateAiLayer, deleteWatermark, deleteText, deleteShape, reorderLayer } = useStore();
+const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, duplicateAiLayer, deleteWatermark, deleteText, deleteShape, deleteBubble, duplicateBubble, reorderLayer } = useStore();
 const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 const [aiMenu, setAiMenu] = useState<{ x: number; y: number; id: string } | null>(null);
 const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -297,7 +297,7 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
       )}
 
       {/* Objects */}
-      {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0 || (activeDoc.shapes ?? []).length > 0) && (
+      {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0 || (activeDoc.shapes ?? []).length > 0 || (activeDoc.bubbles ?? []).length > 0) && (
         <>
           <div className="section-label" style={{ padding: '12px 2px 6px' }}>Объекты</div>
 
@@ -305,7 +305,7 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
               global order the canvas renders, so panel = picture). */}
           {[...resolveLayerOrder(activeDoc)]
             .map((ref, orderIndex) => ({ ref, orderIndex }))
-            .filter(({ ref }) => ref.type === 'watermark' || ref.type === 'text' || ref.type === 'shape')
+            .filter(({ ref }) => ref.type === 'watermark' || ref.type === 'text' || ref.type === 'shape' || ref.type === 'bubble')
             .reverse()
             .map(({ ref, orderIndex }) => {
               const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
@@ -370,24 +370,41 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                 );
               }
               const shape = (activeDoc.shapes ?? []).find(item => item.id === ref.id);
-              if (!shape) return null;
-              return (
-                <div key={shape.id} {...wrapperProps}>
-                  <ObjectRow
-                    label={
-                      shape.kind === 'rect' ? 'Прямоугольник' :
-                      shape.kind === 'ellipse' ? 'Эллипс' :
-                      shape.kind === 'line' ? 'Линия' :
-                      shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
-                    }
-                    prefix="S"
-                    isSelected={selectedObject?.id === shape.id}
-                    visible={shape.visible}
-                    onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
-                    onDelete={() => deleteShape(shape.id)}
-                  />
-                </div>
-              );
+              if (shape) {
+                return (
+                  <div key={shape.id} {...wrapperProps}>
+                    <ObjectRow
+                      label={
+                        shape.kind === 'rect' ? 'Прямоугольник' :
+                        shape.kind === 'ellipse' ? 'Эллипс' :
+                        shape.kind === 'line' ? 'Линия' :
+                        shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
+                      }
+                      prefix="S"
+                      isSelected={selectedObject?.id === shape.id}
+                      visible={shape.visible}
+                      onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+                      onDelete={() => deleteShape(shape.id)}
+                    />
+                  </div>
+                );
+              }
+              const bubble = (activeDoc.bubbles ?? []).find(item => item.id === ref.id);
+              if (bubble) {
+                return (
+                  <div key={bubble.id} {...wrapperProps}>
+                    <ObjectRow
+                      label={bubble.text.content.slice(0, 18)}
+                      prefix="B"
+                      isSelected={selectedObject?.id === bubble.id}
+                      visible={bubble.visible}
+                      onSelect={() => setSelectedObject({ id: bubble.id, type: 'bubble' })}
+                      onDelete={() => deleteBubble(bubble.id)}
+                    />
+                  </div>
+                );
+              }
+              return null;
             })}
         </>
       )}

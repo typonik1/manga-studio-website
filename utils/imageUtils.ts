@@ -51,6 +51,7 @@ export function loadImageFromFile(file: File): Promise<ImageDocument> {
         watermarks: [],
         texts: [],
         shapes: [],
+        bubbles: [],
         past: [],
         future: [],
         hasChanges: false,

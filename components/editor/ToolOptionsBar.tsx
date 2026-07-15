@@ -66,7 +66,21 @@ export function ToolOptionsBar() {
             onChange={v => updateCleanupSettings({ brushHardness: v / 100 })}
             style={{ width: 90 }}
           />
-          <span>{Math.round(cleanupSettings.brushHardness * 100)}%</span>
+          <input
+            className="tool-number"
+            aria-label="Жёсткость инструмента"
+            type="number"
+            min="0"
+            max="100"
+            value={Math.round(cleanupSettings.brushHardness * 100)}
+            onChange={event => {
+              const value = Number(event.target.value);
+              if (Number.isFinite(value)) {
+                updateCleanupSettings({ brushHardness: Math.max(0, Math.min(100, value)) / 100 });
+              }
+            }}
+          />
+          <span>%</span>
         </label>
         {activeTool === 'brush' && <input aria-label="Цвет кисти" title="Цвет кисти" type="color" value={cleanupSettings.brushColor} onChange={event => updateCleanupSettings({ brushColor: event.target.value })} onMouseDown={event => event.stopPropagation()} style={{ width: 30, height: 26, cursor: 'pointer', pointerEvents: 'auto' }} />}
       </>}

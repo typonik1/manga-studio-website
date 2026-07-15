@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
 import { aiCleanupMaskedArea, inpaintMaskedArea, removeBackgroundFromLayer } from '@/utils/layerActions';
@@ -26,11 +26,24 @@ export function CleanupPanel() {
   } = useStore();
   const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
   const [aiError, setAiError] = useState('');
+  const [brushHex, setBrushHex] = useState(cleanupSettings.brushColor.toUpperCase());
   const abortRef = useRef<AbortController | null>(null);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const activeMask = activeDoc?.masks.find(mask => mask.id === activeDoc.activeMaskId) ?? null;
   const hasMask = Boolean(activeMask && ((activeMask.elements?.length ?? 0) > 0 || activeMask.strokes.some(stroke => stroke.mode !== 'erase')));
+
+  useEffect(() => setBrushHex(cleanupSettings.brushColor.toUpperCase()), [cleanupSettings.brushColor]);
+
+  function commitBrushHex() {
+    const normalized = brushHex.trim().toUpperCase();
+    if (/^#[0-9A-F]{6}$/.test(normalized)) {
+      updateCleanupSettings({ brushColor: normalized.toLowerCase() });
+      setBrushHex(normalized);
+    } else {
+      setBrushHex(cleanupSettings.brushColor.toUpperCase());
+    }
+  }
 
   async function handleClipdrop(operation: 'cleanup' | 'background') {
     if (!activeDoc || aiOperation) return;
@@ -103,9 +116,21 @@ export function CleanupPanel() {
           <PanelRow label="Цвет кисти">
             <input
               type="color"
+              aria-label="Палитра кисти"
               value={cleanupSettings.brushColor}
               onChange={e => updateCleanupSettings({ brushColor: e.target.value })}
               style={{ width: 36, height: 28 }}
+            />
+            <input
+              type="text"
+              aria-label="HEX цвет кисти"
+              value={brushHex}
+              maxLength={7}
+              spellCheck={false}
+              onChange={event => setBrushHex(event.target.value)}
+              onBlur={commitBrushHex}
+              onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+              style={{ width: 76, height: 28, padding: '2px 6px', fontSize: 11, fontFamily: 'monospace', textTransform: 'uppercase', borderRadius: 5, border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)', color: 'var(--text-primary)' }}
             />
             <button
               onClick={() => updateCleanupSettings({ brushColor: '#ffffff' })}

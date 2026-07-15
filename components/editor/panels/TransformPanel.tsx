@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useStore } from '@/store/useStore';
 import { resizeDocument, cropDocument } from '@/utils/imageUtils';
 import { PanelLabel, PanelSection, PanelButton } from './PanelComponents';
+import { affineToPerspective } from '@/utils/perspective';
 
 export function TransformPanel() {
   const {
@@ -12,6 +13,7 @@ export function TransformPanel() {
     cropRect, setCropRect,
     applyDocumentTransform,
     layerCropTarget, applyLayerCrop, cancelLayerCrop,
+    updateBasePerspective, updateAiLayerPerspective, updateBaseLayer, updateAiLayer,
   } = useStore();
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
@@ -104,6 +106,33 @@ export function TransformPanel() {
   }
 
   const isCropping = activeTool === 'crop' && cropRect;
+  const selectedLayer = activeDoc.selectedLayer;
+  const selectedRaster = selectedLayer?.type === 'base'
+    ? activeDoc.baseLayer
+    : selectedLayer?.type === 'ai'
+      ? activeDoc.aiLayers.find(layer => layer.id === selectedLayer.id) ?? null
+      : null;
+  const perspectiveEnabled = Boolean(selectedRaster?.perspective);
+
+  function enablePerspective() {
+    if (!selectedLayer || !selectedRaster) return;
+    const quad = affineToPerspective(activeDoc!.width, activeDoc!.height, selectedRaster);
+    if (selectedLayer.type === 'base') {
+      updateBasePerspective(quad);
+      if (selectedRaster.locked) updateBaseLayer({ locked: false }, { history: false });
+    } else if (selectedLayer.type === 'ai') {
+      updateAiLayerPerspective(selectedLayer.id, quad);
+      if (selectedRaster.locked) updateAiLayer(selectedLayer.id, { locked: false }, { history: false });
+    }
+    setActiveTool('select');
+  }
+
+  function resetPerspective() {
+    if (!selectedLayer) return;
+    if (selectedLayer.type === 'base') updateBasePerspective(null);
+    if (selectedLayer.type === 'ai') updateAiLayerPerspective(selectedLayer.id, null);
+    setActiveTool('select');
+  }
 
   const inputStyle: React.CSSProperties = {
     width: '100%',
@@ -122,6 +151,37 @@ export function TransformPanel() {
       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
         Текущий размер: {activeDoc.width}×{activeDoc.height}px
       </div>
+
+      <PanelSection title="Деформация слоя">
+        {selectedRaster ? (
+          <>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              {selectedLayer?.type === 'base'
+                ? 'Оригинал'
+                : activeDoc.aiLayers.find(layer => layer.id === selectedLayer?.id)?.name ?? 'Растровый слой'}. В режиме перспективы потяните любой из четырёх углов на холсте.
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <PanelButton variant={perspectiveEnabled ? 'secondary' : 'primary'} fullWidth onClick={resetPerspective} disabled={!perspectiveEnabled}>
+                Обычная
+              </PanelButton>
+              <PanelButton variant={perspectiveEnabled ? 'primary' : 'secondary'} fullWidth onClick={enablePerspective} disabled={perspectiveEnabled}>
+                Перспектива
+              </PanelButton>
+            </div>
+            {perspectiveEnabled && (
+              <PanelButton variant="secondary" fullWidth onClick={resetPerspective}>
+                Сбросить перспективу
+              </PanelButton>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            Выберите базовое изображение или растровый слой в панели «Слои».
+          </div>
+        )}
+      </PanelSection>
+
+      <div className="divider" />
 
       {/* Resize */}
       <PanelSection title="Изменить размер">

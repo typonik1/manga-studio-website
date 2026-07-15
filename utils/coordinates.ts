@@ -1,5 +1,6 @@
 import { createBaseLayerState, DEFAULT_BASE_ADJUSTMENTS } from '@/types';
 import type { ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject, BubbleObject } from '@/types';
+import { sanitizePerspectiveQuad } from '@/utils/perspective';
 
 export interface CoordinateSpace {
   viewport: { x: number; y: number; scale: number };
@@ -68,7 +69,12 @@ export function sanitizeBubble(bubble: BubbleObject): BubbleObject | null {
 export function sanitizeStroke(stroke: StrokeData): StrokeData | null {
   if (stroke.points.length < 2 || stroke.points.some(value => !finite(value) || Math.abs(value) > 2)) return null;
   const points = stroke.points.map(clamp01);
-  return { ...stroke, points, size: Math.max(0.001, Math.min(0.5, Math.abs(stroke.size))) };
+  return {
+    ...stroke,
+    points,
+    size: Math.max(0.001, Math.min(0.5, Math.abs(stroke.size))),
+    hardness: Math.max(0, Math.min(1, Number.isFinite(stroke.hardness) ? stroke.hardness! : 1)),
+  };
 }
 
 export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
@@ -95,6 +101,7 @@ export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
       visible: layer.visible !== false,
       opacity: clamp01(Number.isFinite(layer.opacity) ? layer.opacity : 1),
       eraseElements: layer.eraseElements ?? [],
+      perspective: sanitizePerspectiveQuad(layer.perspective),
     })),
     baseLayer: document.baseLayer
       ? {
@@ -102,6 +109,7 @@ export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
           opacity: clamp01(Number.isFinite(document.baseLayer.opacity) ? document.baseLayer.opacity : 1),
           eraseElements: document.baseLayer.eraseElements ?? [],
           adjustments: { ...DEFAULT_BASE_ADJUSTMENTS, ...document.baseLayer.adjustments },
+          perspective: sanitizePerspectiveQuad(document.baseLayer.perspective),
         }
       : createBaseLayerState(document.id),
     activeMaskId: document.activeMaskId ?? null,

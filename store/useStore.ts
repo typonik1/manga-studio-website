@@ -27,9 +27,11 @@ import type {
   LayerReference,
   BubbleObject,
   BubbleKind,
+  PerspectiveQuad,
 } from '../types';
 import { DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
 import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
+import { clonePerspectiveQuad } from '@/utils/perspective';
 
 const MAX_HISTORY = 40;
 
@@ -103,7 +105,7 @@ function snap(doc: ImageDocument): HistorySnapshot {
   return {
     cleanup: { committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
     baseLayer: doc.baseLayer
-      ? { ...doc.baseLayer, eraseElements: cloneElements(doc.baseLayer.eraseElements), adjustments: { ...doc.baseLayer.adjustments } }
+      ? { ...doc.baseLayer, eraseElements: cloneElements(doc.baseLayer.eraseElements), adjustments: { ...doc.baseLayer.adjustments }, perspective: clonePerspectiveQuad(doc.baseLayer.perspective) }
       : createBaseLayerState(doc.id),
     masks: (doc.masks ?? []).map(mask => ({
       ...mask,
@@ -112,7 +114,7 @@ function snap(doc: ImageDocument): HistorySnapshot {
         element.type === 'brush' ? { ...element, stroke: { ...element.stroke, points: [...element.stroke.points] } } : element.type === 'polygon' ? { ...element, points: [...element.points] } : { ...element }
       ),
     })),
-    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer, eraseElements: cloneElements(layer.eraseElements) })),
+    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer, eraseElements: cloneElements(layer.eraseElements), perspective: clonePerspectiveQuad(layer.perspective) })),
     activeMaskId: doc.activeMaskId ?? null,
     selectedLayer: doc.selectedLayer ? { ...doc.selectedLayer } : null,
     watermarks: doc.watermarks.map(w => ({ ...w })),
@@ -179,10 +181,12 @@ export interface AppState {
   deleteMask: (id: string) => void;
   addAiLayer: (documentId: string, layer: AiRasterLayer) => void;
   updateAiLayer: (id: string, updates: Partial<Omit<AiRasterLayer, 'id' | 'operation'>>, options?: { history?: boolean }) => void;
+  updateAiLayerPerspective: (id: string, quad: PerspectiveQuad | null, options?: { history?: boolean }) => void;
   deleteAiLayer: (id: string) => void;
   duplicateAiLayer: (id: string) => void;
   duplicateBaseLayer: () => string | null;
   updateBaseLayer: (updates: Partial<Omit<BaseLayerState, 'id' | 'eraseElements' | 'adjustments'>> & { adjustments?: Partial<BaseLayerState['adjustments']> }, options?: { history?: boolean }) => void;
+  updateBasePerspective: (quad: PerspectiveQuad | null, options?: { history?: boolean }) => void;
   resetBaseLayerSettings: () => void;
   reorderLayer: (sourceIndex: number, destinationIndex: number) => void;
   moveLayerForward: (layer: LayerReference) => void;
@@ -500,6 +504,10 @@ export const useStore = create<AppState>((set, get) => ({
     return { documents: docs };
   }),
 
+  updateAiLayerPerspective: (id, quad, options) => {
+    get().updateAiLayer(id, { perspective: clonePerspectiveQuad(quad) }, options);
+  },
+
   deleteAiLayer: (id) => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
@@ -563,6 +571,7 @@ export const useStore = create<AppState>((set, get) => ({
         scaleX: base?.scaleX ?? 1,
         scaleY: base?.scaleY ?? 1,
         rotation: base?.rotation ?? 0,
+        perspective: clonePerspectiveQuad(base?.perspective),
       };
       const order = resolveLayerOrder(doc);
       const baseIndex = order.findIndex(ref => ref.type === 'base');
@@ -589,6 +598,10 @@ export const useStore = create<AppState>((set, get) => ({
     return { documents: docs };
   }),
 
+  updateBasePerspective: (quad, options) => {
+    get().updateBaseLayer({ perspective: clonePerspectiveQuad(quad) }, options);
+  },
+
   resetBaseLayerSettings: () => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
@@ -602,6 +615,7 @@ export const useStore = create<AppState>((set, get) => ({
         visible: true,
         adjustments: { ...DEFAULT_BASE_ADJUSTMENTS },
         crop: null,
+        perspective: null,
         ...DEFAULT_LAYER_TRANSFORM,
         // eraseElements are intentionally preserved — use «Восстановить стёртое».
       },

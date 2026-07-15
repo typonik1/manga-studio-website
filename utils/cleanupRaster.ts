@@ -1,5 +1,7 @@
-import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData } from '@/types';
+import type { AiRasterLayer, ImageDocument, MaskElement, PerspectiveQuad, StrokeData } from '@/types';
 import { resolveLayerOrder } from './layerOrder';
+import { drawBrushStroke } from './brushRaster';
+import { drawPerspectiveImage, isValidPerspectiveQuad, mapDocumentPointToLayerPoint } from './perspective';
 
 export function loadCleanupImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -18,21 +20,7 @@ export function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 function drawStroke(ctx: CanvasRenderingContext2D, stroke: StrokeData, width: number, height: number) {
-  if (stroke.points.length < 2) return;
-  ctx.save();
-  ctx.beginPath();
-  ctx.strokeStyle = 'white';
-  ctx.lineWidth = Math.max(1, stroke.size * height);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
-  for (let index = 0; index < stroke.points.length; index += 2) {
-    const x = stroke.points[index] * width;
-    const y = stroke.points[index + 1] * height;
-    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-  ctx.restore();
+  drawBrushStroke(ctx, stroke, width, height, { color: 'white' });
 }
 
 async function drawElement(ctx: CanvasRenderingContext2D, element: MaskElement, width: number, height: number) {
@@ -138,27 +126,28 @@ export async function bakeStrokeIntoLayerSrc(
   const image = await loadCleanupImage(layer.src);
   ctx.drawImage(image, 0, 0, docWidth, docHeight);
 
-  const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0 } = layer;
-  ctx.save();
-  // Inverse of drawPlacedLayer's transform: layer-local = S^-1 · R^-1 · T^-1 · doc.
-  ctx.scale(1 / (scaleX || 1), 1 / (scaleY || 1));
-  ctx.rotate((-rotation * Math.PI) / 180);
-  ctx.translate(-x * docWidth, -y * docHeight);
-
-  ctx.strokeStyle = stroke.color;
-  ctx.globalAlpha = stroke.opacity;
-  ctx.lineWidth = Math.max(1, stroke.size * docHeight);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
-  ctx.beginPath();
-  for (let index = 0; index < stroke.points.length; index += 2) {
-    const px = stroke.points[index] * docWidth;
-    const py = stroke.points[index + 1] * docHeight;
-    if (!index) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  if (layer.perspective && isValidPerspectiveQuad(layer.perspective)) {
+    const points: number[] = [];
+    for (let index = 0; index < stroke.points.length; index += 2) {
+      const mapped = mapDocumentPointToLayerPoint(
+        { x: stroke.points[index], y: stroke.points[index + 1] },
+        layer.perspective,
+        docWidth,
+        docHeight,
+      );
+      if (mapped) points.push(mapped.x, mapped.y);
+    }
+    if (points.length >= 2) drawBrushStroke(ctx, { ...stroke, points }, docWidth, docHeight);
+  } else {
+    const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0 } = layer;
+    ctx.save();
+    // Inverse of drawPlacedLayer's transform: layer-local = S^-1 · R^-1 · T^-1 · doc.
+    ctx.scale(1 / (scaleX || 1), 1 / (scaleY || 1));
+    ctx.rotate((-rotation * Math.PI) / 180);
+    ctx.translate(-x * docWidth, -y * docHeight);
+    drawBrushStroke(ctx, stroke, docWidth, docHeight);
+    ctx.restore();
   }
-  ctx.stroke();
-  ctx.restore();
   return canvas.toDataURL('image/png');
 }
 
@@ -170,6 +159,7 @@ export interface RasterPlacement {
   rotation?: number;
   crop?: { x: number; y: number; width: number; height: number } | null;
   opacity?: number;
+  perspective?: PerspectiveQuad | null;
 }
 
 /**
@@ -184,7 +174,11 @@ export function drawPlacedLayer(
   width: number,
   height: number,
 ) {
-  const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0, crop, opacity = 1 } = placement;
+  const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0, crop, opacity = 1, perspective } = placement;
+  if (perspective && isValidPerspectiveQuad(perspective)) {
+    drawPerspectiveImage(ctx, source, perspective, width, height, { crop, opacity, subdivisions: 18 });
+    return;
+  }
   ctx.save();
   ctx.globalAlpha = opacity;
   ctx.translate(x * width, y * height);
@@ -219,7 +213,7 @@ export async function buildCleanupSourceCanvas(doc: ImageDocument): Promise<HTML
       const state = doc.baseLayer;
       drawPlacedLayer(ctx, base, {
         x: state?.x, y: state?.y, scaleX: state?.scaleX, scaleY: state?.scaleY, rotation: state?.rotation,
-        crop: state?.crop, opacity: state?.opacity ?? 1,
+        crop: state?.crop, opacity: state?.opacity ?? 1, perspective: state?.perspective,
       }, doc.width, doc.height);
     } else if (ref.type === 'ai') {
       const layer = (doc.aiLayers ?? []).find(item => item.id === ref.id);
@@ -228,7 +222,7 @@ export async function buildCleanupSourceCanvas(doc: ImageDocument): Promise<HTML
         const image = await buildRasterLayerCanvas(layer, doc.width, doc.height);
         drawPlacedLayer(ctx, image, {
           x: layer.x, y: layer.y, scaleX: layer.scaleX, scaleY: layer.scaleY, rotation: layer.rotation,
-          crop: layer.crop, opacity: layer.opacity,
+          crop: layer.crop, opacity: layer.opacity, perspective: layer.perspective,
         }, doc.width, doc.height);
       } catch { /* ignore broken optional layers */ }
     }

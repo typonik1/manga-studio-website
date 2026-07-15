@@ -6,6 +6,7 @@ import type { ImageDocument } from '@/types';
 import { buildCleanupSourceCanvas } from '@/utils/cleanupRaster';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { getBubblePath, tailTipPixels } from '@/utils/bubbleGeometry';
+import { drawBrushStroke } from '@/utils/brushRaster';
 
 async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   // Make sure web fonts are loaded before drawing text to canvas
@@ -20,24 +21,9 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
   const raster = await buildCleanupSourceCanvas(doc);
   ctx.drawImage(raster, 0, 0, doc.width, doc.height);
 
-  // Brush strokes (white paint on top)
+  // Brush strokes use the same color/hardness rasterizer as the editor preview.
   for (const stroke of doc.cleanup.strokes.filter(item => item.purpose !== 'mask')) {
-    const pts = stroke.points;
-    if (pts.length < 2) continue;
-    ctx.beginPath();
-    ctx.strokeStyle = stroke.color;
-    ctx.lineWidth = stroke.size * doc.height;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.globalAlpha = stroke.opacity;
-    for (let i = 0; i < pts.length; i += 2) {
-      const px = pts[i] * doc.width;
-      const py = pts[i + 1] * doc.height;
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+    drawBrushStroke(ctx, stroke, doc.width, doc.height);
   }
 
   // Watermarks, texts and shapes drawn bottom → top following the unified

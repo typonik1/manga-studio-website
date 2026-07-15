@@ -15,7 +15,7 @@ const TABS: { key: LeftTab; label: string; hotkey: string }[] = [
   { key: 'text', label: 'Текст', hotkey: '3' },
   { key: 'bubble', label: 'Баблы', hotkey: 'B' },
   { key: 'insert', label: 'Вставка', hotkey: '4' },
-  { key: 'transform', label: 'Размер', hotkey: '5' },
+  { key: 'transform', label: 'Трансформ.', hotkey: '5' },
 ];
 
 export function LeftPanel() {

@@ -4,6 +4,8 @@ export interface StrokeData {
   size: number;     // fraction of image height
   color: string;
   opacity: number;
+  /** 0 = fully soft edge, 1 = hard edge. Missing on legacy strokes means 1. */
+  hardness?: number;
   /** Paint is the default for documents created before eraser support. */
   mode?: 'paint' | 'erase';
   purpose?: 'paint' | 'mask';
@@ -135,6 +137,19 @@ export interface BaseLayerAdjustments {
   saturation: number; // 1 = neutral
 }
 
+export interface NormalizedPoint {
+  x: number;
+  y: number;
+}
+
+/** Four document-normalized corners of a projectively transformed raster layer. */
+export interface PerspectiveQuad {
+  topLeft: NormalizedPoint;
+  topRight: NormalizedPoint;
+  bottomRight: NormalizedPoint;
+  bottomLeft: NormalizedPoint;
+}
+
 /** Non-destructive transform shared by raster layers (base + AI). x/y are normalized to doc size. */
 export interface LayerTransform {
   x: number;
@@ -142,6 +157,8 @@ export interface LayerTransform {
   scaleX: number;
   scaleY: number;
   rotation: number; // degrees
+  /** When present, replaces the affine transform for rendering. */
+  perspective?: PerspectiveQuad | null;
 }
 
 export const DEFAULT_LAYER_TRANSFORM: LayerTransform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
@@ -160,6 +177,7 @@ export interface BaseLayerState {
   scaleX: number;
   scaleY: number;
   rotation: number;
+  perspective?: PerspectiveQuad | null;
 }
 
 export const DEFAULT_BASE_ADJUSTMENTS: BaseLayerAdjustments = { brightness: 1, contrast: 1, saturation: 1 };
@@ -206,6 +224,7 @@ export interface AiRasterLayer {
   scaleX?: number;
   scaleY?: number;
   rotation?: number;
+  perspective?: PerspectiveQuad | null;
 }
 
 export type SelectedLayer = { id: string; type: 'base' | 'mask' | 'ai' };

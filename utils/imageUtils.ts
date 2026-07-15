@@ -1,5 +1,5 @@
 import { createBaseLayerState } from '../types';
-import type { ImageDocument } from '../types';
+import type { ImageDocument, PerspectiveQuad } from '../types';
 
 export function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -189,6 +189,12 @@ export async function cropDocument(
   // Remap normalized coordinates into the new (cropped) space
   const mapX = (x: number) => (x - cx) / cw;
   const mapY = (y: number) => (y - cy) / ch;
+  const remapPerspective = (quad: PerspectiveQuad | null | undefined): PerspectiveQuad | null => quad ? ({
+    topLeft: { x: mapX(quad.topLeft.x), y: mapY(quad.topLeft.y) },
+    topRight: { x: mapX(quad.topRight.x), y: mapY(quad.topRight.y) },
+    bottomRight: { x: mapX(quad.bottomRight.x), y: mapY(quad.bottomRight.y) },
+    bottomLeft: { x: mapX(quad.bottomLeft.x), y: mapY(quad.bottomLeft.y) },
+  }) : null;
 
   const watermarks = doc.watermarks.map(w => ({
     ...w,
@@ -232,7 +238,8 @@ export async function cropDocument(
     thumbnail: createThumbnail(thumbImg, 160),
     cleanup: { committed, strokes },
     // Erase-mask coordinates no longer align after crop, so drop them.
-    baseLayer: { ...doc.baseLayer, eraseElements: [] },
+    baseLayer: { ...doc.baseLayer, eraseElements: [], perspective: remapPerspective(doc.baseLayer.perspective) },
+    aiLayers: doc.aiLayers.map(layer => ({ ...layer, perspective: remapPerspective(layer.perspective) })),
     watermarks,
     texts,
     shapes,

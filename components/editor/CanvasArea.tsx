@@ -1,11 +1,11 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Ellipse, Arrow, Star } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Ellipse, Arrow, Star, Circle } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject } from '@/types';
+import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject, PerspectiveQuad } from '@/types';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask, bakeStrokeIntoLayerSrc } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
@@ -16,6 +16,8 @@ import { loadImagesFromFiles } from '@/utils/imageUtils';
 import { createLayerFromSelection, hasActiveSelection } from '@/utils/layerActions';
 import { BubbleNode } from './BubbleNode';
 import { InlineTextEditor } from './InlineTextEditor';
+import { drawBrushStroke } from '@/utils/brushRaster';
+import { clonePerspectiveQuad, drawPerspectiveImage, isValidPerspectiveQuad } from '@/utils/perspective';
 
 const MAX_PREVIEW_SIDE = 1800;
 
@@ -69,22 +71,7 @@ function CleanupStrokesNode({ strokes, width, height, lineScale }: {
     const ctx = next.getContext('2d');
     if (!ctx) return;
     for (const stroke of strokes) {
-      if (stroke.points.length < 2) continue;
-      ctx.save();
-      ctx.strokeStyle = stroke.color;
-      ctx.globalAlpha = stroke.opacity;
-      ctx.lineWidth = Math.max(1, stroke.size * lineScale);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
-      ctx.beginPath();
-      for (let index = 0; index < stroke.points.length; index += 2) {
-        const x = stroke.points[index] * width;
-        const y = stroke.points[index + 1] * height;
-        if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-      ctx.restore();
+      drawBrushStroke(ctx, { ...stroke, size: stroke.size * lineScale / height }, width, height);
     }
     setCanvas(next);
   }, [strokes, width, height, lineScale]);
@@ -101,6 +88,76 @@ interface RasterNodePlacement {
   scaleY?: number;
   rotation?: number;
   crop?: CropRect | null;
+  perspective?: PerspectiveQuad | null;
+}
+
+const PERSPECTIVE_KEYS = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'] as const;
+
+function PerspectiveHandles({ quad, width, height, onBeforeChange, onChange }: {
+  quad: PerspectiveQuad;
+  width: number;
+  height: number;
+  onBeforeChange: () => void;
+  onChange: (quad: PerspectiveQuad) => void;
+}) {
+  const frameRef = useRef<number | null>(null);
+  const pendingRef = useRef<PerspectiveQuad | null>(null);
+  useEffect(() => () => {
+    if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+  }, []);
+
+  const flush = () => {
+    frameRef.current = null;
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    if (pending) onChange(pending);
+  };
+  const schedule = (next: PerspectiveQuad) => {
+    pendingRef.current = next;
+    if (frameRef.current === null) frameRef.current = window.requestAnimationFrame(flush);
+  };
+  const linePoints = PERSPECTIVE_KEYS.flatMap(key => [quad[key].x * width, quad[key].y * height]);
+
+  return (
+    <>
+      <Line points={linePoints} closed stroke="#5e9fe8" strokeWidth={2} dash={[7, 4]} listening={false} />
+      {PERSPECTIVE_KEYS.map(key => {
+        const point = quad[key];
+        return (
+          <Circle
+            key={key}
+            x={point.x * width}
+            y={point.y * height}
+            radius={7}
+            fill="#ffffff"
+            stroke="#5e9fe8"
+            strokeWidth={2}
+            draggable
+            onDragStart={onBeforeChange}
+            onDragMove={event => {
+              const next = clonePerspectiveQuad(quad)!;
+              next[key] = { x: event.target.x() / width, y: event.target.y() / height };
+              if (!isValidPerspectiveQuad(next)) {
+                event.target.position({ x: point.x * width, y: point.y * height });
+                return;
+              }
+              schedule(next);
+            }}
+            onDragEnd={event => {
+              const next = clonePerspectiveQuad(quad)!;
+              next[key] = { x: event.target.x() / width, y: event.target.y() / height };
+              if (isValidPerspectiveQuad(next)) {
+                if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+                frameRef.current = null;
+                pendingRef.current = null;
+                onChange(next);
+              }
+            }}
+          />
+        );
+      })}
+    </>
+  );
 }
 
 /**
@@ -119,10 +176,11 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
   onSelect: () => void;
   onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
   onBeforeChange: () => void;
-  onChange: (updates: { x?: number; y?: number; scaleX?: number; scaleY?: number; rotation?: number }) => void;
+  onChange: (updates: { x?: number; y?: number; scaleX?: number; scaleY?: number; rotation?: number; perspective?: PerspectiveQuad | null }) => void;
 }) {
   const groupRef = useRef<Konva.Group>(null);
   const trRef = useRef<Konva.Transformer>(null);
+  const [perspectiveCanvas, setPerspectiveCanvas] = useState<HTMLCanvasElement | null>(null);
   const draggable = interactive && isSelected;
 
   useEffect(() => {
@@ -133,8 +191,47 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
   }, [draggable]);
 
   const crop = placement.crop ?? null;
+  const perspective = placement.perspective && isValidPerspectiveQuad(placement.perspective) ? placement.perspective : null;
   const naturalW = (image as HTMLImageElement).naturalWidth || (image as HTMLCanvasElement).width || width;
   const naturalH = (image as HTMLImageElement).naturalHeight || (image as HTMLCanvasElement).height || height;
+
+  useEffect(() => {
+    if (!perspective) { setPerspectiveCanvas(null); return; }
+    const next = document.createElement('canvas');
+    next.width = Math.max(1, Math.round(width));
+    next.height = Math.max(1, Math.round(height));
+    const ctx = next.getContext('2d');
+    if (!ctx) return;
+    drawPerspectiveImage(ctx, image, perspective, next.width, next.height, { crop, opacity, subdivisions: 12 });
+    setPerspectiveCanvas(next);
+  }, [image, width, height, opacity, crop, perspective]);
+
+  if (perspective) {
+    return (
+      <>
+        {perspectiveCanvas && (
+          <KonvaImage
+            name={nodeName}
+            image={perspectiveCanvas}
+            width={width}
+            height={height}
+            onClick={onSelect}
+            onTap={onSelect}
+            onContextMenu={onContextMenu}
+          />
+        )}
+        {draggable && (
+          <PerspectiveHandles
+            quad={perspective}
+            width={width}
+            height={height}
+            onBeforeChange={onBeforeChange}
+            onChange={next => onChange({ perspective: next })}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <>
@@ -300,9 +397,7 @@ function MaskOverlayNode({ elements, strokes, width, height, opacity }: { elemen
       for (const element of items) {
         ctx.save(); ctx.fillStyle = ctx.strokeStyle = 'rgb(255, 128, 0)';
         if (element.type === 'brush') {
-          const stroke = element.stroke; ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over';
-          ctx.globalAlpha = stroke.opacity; ctx.lineWidth = Math.max(1, stroke.size * height); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
-          for (let index = 0; index < stroke.points.length; index += 2) { const x = stroke.points[index] * width, y = stroke.points[index + 1] * height; if (!index) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.stroke();
+          drawBrushStroke(ctx, element.stroke, width, height, { color: 'rgb(255, 128, 0)' });
         } else if (element.type === 'polygon') {
           // 'erase' polygons must punch holes in the orange preview, matching buildCleanupMask.
           ctx.globalCompositeOperation = element.mode === 'erase' ? 'destination-out' : 'source-over';
@@ -794,6 +889,10 @@ export function CanvasArea() {
   // Live stroke rendered imperatively (no React re-renders while drawing)
   const liveLineRef = useRef<Konva.Line>(null);
   const livePoints = useRef<number[]>([]);
+  const pendingBrushPoints = useRef<number[]>([]);
+  const brushFrameRef = useRef<number | null>(null);
+  const lastBrushPointRef = useRef<{ x: number; y: number } | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
   const isLassoing = useRef(false);
   const lassoPoints = useRef<number[]>([]);
   const liveLassoRef = useRef<Konva.Line>(null);
@@ -860,6 +959,10 @@ export function CanvasArea() {
   // Auto-fit on document change
   useEffect(() => { fitToScreen(); }, [activeDocIndex]);
 
+  useEffect(() => () => {
+    if (brushFrameRef.current !== null) window.cancelAnimationFrame(brushFrameRef.current);
+  }, []);
+
   // ── Native pointermove for zero-lag brush cursor circle ──────────────────
   // Runs at the native pointer rate, never through React state or Konva.
   useEffect(() => {
@@ -923,7 +1026,41 @@ export function CanvasArea() {
   const panStart = useRef({ x: 0, y: 0 });
   const panVpStart = useRef({ x: 0, y: 0 });
 
-  const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const flushBrushPreview = () => {
+    brushFrameRef.current = null;
+    const pending = pendingBrushPoints.current;
+    if (!pending.length) return;
+    for (let index = 0; index < pending.length; index += 2) {
+      const x = pending[index];
+      const y = pending[index + 1];
+      currentStroke.current.push(x, y);
+      livePoints.current.push(x * imgW, y * imgH);
+    }
+    pendingBrushPoints.current = [];
+    const line = liveLineRef.current;
+    if (line) {
+      line.points(livePoints.current);
+      line.getLayer()?.batchDraw();
+    }
+  };
+
+  const queueBrushPoint = (point: { x: number; y: number }) => {
+    const last = lastBrushPointRef.current;
+    if (last) {
+      const distancePx = Math.hypot(
+        (point.x - last.x) * imgW * viewport.scale,
+        (point.y - last.y) * imgH * viewport.scale,
+      );
+      if (distancePx < 1.25) return;
+    }
+    lastBrushPointRef.current = point;
+    pendingBrushPoints.current.push(point.x, point.y);
+    if (brushFrameRef.current === null) {
+      brushFrameRef.current = window.requestAnimationFrame(flushBrushPreview);
+    }
+  };
+
+  const handleMouseDown = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (activeTool === 'pan' || e.evt.button === 1) {
       isPanning.current = true;
       panStart.current = { x: e.evt.clientX, y: e.evt.clientY };
@@ -970,8 +1107,12 @@ export function CanvasArea() {
       const imgX = imagePoint.x * imgW;
       const imgY = imagePoint.y * imgH;
       isPainting.current = true;
+      activePointerIdRef.current = e.evt.pointerId;
+      try { stage.container().setPointerCapture(e.evt.pointerId); } catch { /* capture is best-effort */ }
       strokeId.current = uid();
       currentStroke.current = [imagePoint.x, imagePoint.y];
+      pendingBrushPoints.current = [];
+      lastBrushPointRef.current = { x: imagePoint.x, y: imagePoint.y };
       // Start the live preview line
       livePoints.current = [imgX, imgY];
       const line = liveLineRef.current;
@@ -981,14 +1122,18 @@ export function CanvasArea() {
         // punch through the whole composite while drawing.
         line.stroke(activeTool === 'eraser' ? 'rgba(140,140,150,0.55)' : activeTool === 'maskBrush' ? 'rgba(255,128,0,0.6)' : cleanupSettings.brushColor);
         line.globalCompositeOperation('source-over');
-        line.strokeWidth(cleanupSettings.brushSize * activeDoc.height * previewScale);
+        const previewDiameter = cleanupSettings.brushSize * activeDoc.height * previewScale;
+        line.strokeWidth(activeTool === 'brush' ? previewDiameter * (0.3 + cleanupSettings.brushHardness * 0.7) : previewDiameter);
+        line.shadowColor(activeTool === 'brush' ? cleanupSettings.brushColor : 'transparent');
+        line.shadowBlur(activeTool === 'brush' ? (1 - cleanupSettings.brushHardness) * previewDiameter * 0.55 : 0);
+        line.shadowOpacity(activeTool === 'brush' ? 0.75 : 0);
         line.visible(true);
         line.getLayer()?.batchDraw();
       }
     }
   };
 
-  const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleMouseMove = (e: Konva.KonvaEventObject<PointerEvent>) => {
     const stage = stageRef.current;
     if (!stage) return;
     const pos = stage.getPointerPosition();
@@ -1024,32 +1169,22 @@ export function CanvasArea() {
     }
     if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && pos) {
       const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
-      const imgX = (imagePoint?.x ?? 0) * imgW;
-      const imgY = (imagePoint?.y ?? 0) * imgH;
       if (!imagePoint?.inside) {
         if (cursorRef.current) cursorRef.current.style.display = 'none';
         return;
       }
 
-      // Update the cursor circle directly via DOM (no React re-render)
-      const cursor = cursorRef.current;
-      if (cursor) {
-        const rad = (cleanupSettings.brushSize * (activeDoc?.height ?? 1000) * previewScale * viewport.scale) / 2;
-        const d = rad * 2;
-        cursor.style.display = 'block';
-        cursor.style.width = `${d}px`;
-        cursor.style.height = `${d}px`;
-        cursor.style.transform = `translate3d(${pos.x - rad}px, ${pos.y - rad}px, 0)`;
-      }
-
       if (isPainting.current) {
-        currentStroke.current.push(imagePoint.x, imagePoint.y);
-        // Update the live line imperatively for instant feedback
-        livePoints.current.push(imgX, imgY);
-        const line = liveLineRef.current;
-        if (line) {
-          line.points(livePoints.current);
-          line.getLayer()?.batchDraw();
+        const coalescedEvents = typeof e.evt.getCoalescedEvents === 'function' ? e.evt.getCoalescedEvents() : [];
+        const nativeEvents = coalescedEvents.length ? coalescedEvents : [e.evt];
+        const bounds = stage.container().getBoundingClientRect();
+        for (const nativeEvent of nativeEvents) {
+          const nativePoint = {
+            x: (nativeEvent.clientX - bounds.left) * stage.width() / Math.max(1, bounds.width),
+            y: (nativeEvent.clientY - bounds.top) * stage.height() / Math.max(1, bounds.height),
+          };
+          const coalescedPoint = screenToImage(nativePoint, { viewport, imageWidth: imgW, imageHeight: imgH });
+          if (coalescedPoint?.inside) queueBrushPoint(coalescedPoint);
         }
       }
     } else if (cursorRef.current) {
@@ -1057,8 +1192,16 @@ export function CanvasArea() {
     }
   };
 
-  const handleMouseUp = (e?: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleMouseUp = (e?: Konva.KonvaEventObject<PointerEvent>) => {
     isPanning.current = false;
+    if (brushFrameRef.current !== null) {
+      window.cancelAnimationFrame(brushFrameRef.current);
+      flushBrushPreview();
+    }
+    if (activePointerIdRef.current !== null) {
+      try { stageRef.current?.container().releasePointerCapture(activePointerIdRef.current); } catch { /* already released */ }
+      activePointerIdRef.current = null;
+    }
     const selMode: 'replace' | 'add' | 'subtract' = e?.evt?.altKey ? 'subtract' : e?.evt?.shiftKey ? 'add' : cleanupSettings.selectionMode;
     if (isRectSelecting.current) {
       isRectSelecting.current = false;
@@ -1094,6 +1237,7 @@ export function CanvasArea() {
           size: cleanupSettings.brushSize,
           color: cleanupSettings.brushColor,
           opacity: 1,
+          hardness: cleanupSettings.brushHardness,
           mode: activeTool === 'eraser' ? 'erase' : 'paint',
           purpose: activeTool === 'maskBrush' ? 'mask' : 'paint',
         };
@@ -1142,6 +1286,8 @@ export function CanvasArea() {
       }
       isPainting.current = false;
       currentStroke.current = [];
+      pendingBrushPoints.current = [];
+      lastBrushPointRef.current = null;
       // Hide the live preview line (the committed stroke takes over)
       livePoints.current = [];
       const line = liveLineRef.current;
@@ -1442,13 +1588,15 @@ export function CanvasArea() {
           width={containerSize.w}
           height={containerSize.h}
           onWheel={handleWheel}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
+          onPointerDown={handleMouseDown}
+          onPointerMove={handleMouseMove}
+          onPointerUp={handleMouseUp}
+          onPointerCancel={handleMouseUp}
           onClick={handleStageClick}
-          onMouseLeave={() => { if (cursorRef.current) cursorRef.current.style.display = 'none'; }}
+          onPointerLeave={() => { if (!isPainting.current && cursorRef.current) cursorRef.current.style.display = 'none'; }}
           style={{
             display: 'block',
+            touchAction: 'none',
             cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect') ? 'crosshair' : activeTool === 'text' ? 'text' : 'default',
           }}
         >
@@ -1548,6 +1696,7 @@ export function CanvasArea() {
               lineCap="round"
               lineJoin="round"
               tension={0.3}
+              perfectDrawEnabled={false}
               listening={false}
               visible={false}
             />

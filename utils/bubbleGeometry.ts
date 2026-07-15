@@ -1,229 +1,349 @@
-import { BubbleKind } from '@/types';
+import type { BubbleKind, BubbleTail } from '@/types';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Public geometry params – pixel-space, centered at (0,0)
+// ─────────────────────────────────────────────────────────────────────────────
 export interface BubbleGeometryParams {
-  x: number;           // normalized center x
-  y: number;           // normalized center y
-  width: number;       // normalized width
-  height: number;      // normalized height
-  rotation: number;    // degrees
-  tipX?: number;       // normalized tail tip x (if tail enabled)
-  tipY?: number;       // normalized tail tip y (if tail enabled)
-  tailWidth?: number;  // fraction of body width
+  x: number;           // always 0 in local space
+  y: number;           // always 0 in local space
+  width: number;       // pixel width of body
+  height: number;      // pixel height of body
+  rotation: number;    // degrees (only used by scream jitter seed)
+  tail?: BubbleTail | null;
+  // legacy support
+  tipX?: number;
+  tipY?: number;
+  tailWidth?: number;
 }
 
-// Create seeded random for deterministic jitter
-function seededRandom(seed: string): () => number {
-  let value = 0;
-  for (let i = 0; i < seed.length; i++) {
-    value = ((value << 5) - value) + seed.charCodeAt(i);
-    value = value & value; // Convert to 32bit integer
-  }
-  const x = Math.sin(value) * 10000;
-  return () => x - Math.floor(x);
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Tail constraint helpers
+// ─────────────────────────────────────────────────────────────────────────────
+const ANCHOR_MIN = 0.12;
+const ANCHOR_MAX = 0.88;
+const LENGTH_MIN = 0.08;
+const LENGTH_MAX = 0.80;
+const WIDTH_MIN  = 0.04;
+const WIDTH_MAX  = 0.25;
 
-/**
- * Draw speech bubble: smooth oval with tail as a wedge
- */
-export function getSpeechBubblePath(params: BubbleGeometryParams): string {
-  const { x, y, width, height, tipX = 0, tipY = 0, tailWidth = 0.3 } = params;
-  const w = width / 2;
-  const h = height / 2;
+function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
 
-  // Ellipse path (main bubble body)
-  const pathParts: string[] = [];
-  const segm = 72; // segments for smooth ellipse
-  let px = x + w;
-  let py = y;
-
-  pathParts.push(`M ${px} ${py}`);
-  for (let i = 1; i <= segm; i++) {
-    const angle = (i / segm) * Math.PI * 2;
-    const nx = x + w * Math.cos(angle);
-    const ny = y + h * Math.sin(angle);
-    pathParts.push(`L ${nx} ${ny}`);
+/** Migrate old tipX/tipY tail to the new structured model (pixels, centered at 0,0). */
+export function migrateTail(
+  tail: BubbleTail,
+  bodyW: number,
+  bodyH: number,
+): BubbleTail {
+  // Already migrated
+  if (tail.side && tail.anchor !== undefined && tail.length !== undefined && tail.curve !== undefined) {
+    return {
+      ...tail,
+      anchor: clamp(tail.anchor, ANCHOR_MIN, ANCHOR_MAX),
+      length: clamp(tail.length, LENGTH_MIN, LENGTH_MAX),
+      width:  clamp(tail.width,  WIDTH_MIN,  WIDTH_MAX),
+    };
   }
 
-  // Add tail if tip is outside body
-  if (Math.abs(tipX - x) > 0.001 || Math.abs(tipY - y) > 0.001) {
-    // Find intersection point: ray from center to tip
-    const dx = tipX - x;
-    const dy = tipY - y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 0.001) {
-      const ux = dx / dist;
-      const uy = dy / dist;
-      // Find point on ellipse edge
-      const edgeX = x + w * ux;
-      const edgeY = y + h * uy;
+  // Legacy: tipX/tipY are in normalized doc space relative to bubble center.
+  // At this point BubbleNode calls us with local-pixel coords:
+  //   tipLocalX = (bubble.tail.tipX - bubble.x) * pW
+  //   tipLocalY = (bubble.tail.tipY - bubble.y) * pH
+  // So we receive the pixel offset directly via tipX/tipY on the params object.
+  const tx = tail.tipX ?? 0;
+  const ty = tail.tipY ?? 0;
+  const hw = bodyW / 2;
+  const hh = bodyH / 2;
 
-      // Tail wedge points
-      const tailLen = Math.min(0.15, dist * 0.3);
-      const baseW = (tailWidth || 0.2) * w * 0.5;
-      const perpX = -uy;
-      const perpY = ux;
+  // Determine closest side from the tip direction
+  const absx = Math.abs(tx) / (hw || 1);
+  const absy = Math.abs(ty) / (hh || 1);
+  let side: BubbleTail['side'];
+  let anchor: number;
+  let length: number;
 
-      const p1x = edgeX + perpX * baseW;
-      const p1y = edgeY + perpY * baseW;
-      const p2x = edgeX - perpX * baseW;
-      const p2y = edgeY - perpY * baseW;
-      const p3x = tipX;
-      const p3y = tipY;
-
-      pathParts.push(`L ${p1x} ${p1y}`);
-      pathParts.push(`L ${p3x} ${p3y}`);
-      pathParts.push(`L ${p2x} ${p2y}`);
-      pathParts.push(`L ${edgeX} ${edgeY}`);
-    }
+  if (absx >= absy) {
+    side = tx > 0 ? 'right' : 'left';
+    anchor = clamp(0.5 + ty / (bodyH || 1), ANCHOR_MIN, ANCHOR_MAX);
+    const baseEdge = hw;
+    length = clamp((Math.abs(tx) - baseEdge) / (Math.min(bodyW, bodyH) || 1), LENGTH_MIN, LENGTH_MAX);
+  } else {
+    side = ty > 0 ? 'bottom' : 'top';
+    anchor = clamp(0.5 + tx / (bodyW || 1), ANCHOR_MIN, ANCHOR_MAX);
+    const baseEdge = hh;
+    length = clamp((Math.abs(ty) - baseEdge) / (Math.min(bodyW, bodyH) || 1), LENGTH_MIN, LENGTH_MAX);
   }
 
-  pathParts.push('Z');
-  return pathParts.join(' ');
-}
-
-/**
- * Draw thought bubble: bumpy oval outline + small circles as tail
- */
-export function getThoughtBubblePath(params: BubbleGeometryParams): string {
-  const { x, y, width, height, tipX = 0, tipY = 0 } = params;
-  const w = width / 2;
-  const h = height / 2;
-
-  const pathParts: string[] = [];
-  const bumps = 12;
-  let px = x + w;
-  let py = y;
-
-  // Draw bumpy outline
-  for (let i = 0; i <= bumps; i++) {
-    const angle = (i / bumps) * Math.PI * 2;
-    const bumpScale = 1 + 0.15 * Math.sin(angle * 3); // modulate radius
-    const nx = x + w * bumpScale * Math.cos(angle);
-    const ny = y + h * bumpScale * Math.sin(angle);
-    if (i === 0) {
-      pathParts.push(`M ${nx} ${ny}`);
-      px = nx;
-      py = ny;
-    } else {
-      const cx = (px + nx) / 2;
-      const cy = (py + ny) / 2;
-      pathParts.push(`Q ${cx} ${cy} ${nx} ${ny}`);
-      px = nx;
-      py = ny;
-    }
-  }
-  pathParts.push('Z');
-
-  return pathParts.join(' ');
-}
-
-/**
- * Draw scream bubble: jagged star with random jitter
- */
-export function getScreamBubblePath(params: BubbleGeometryParams): string {
-  const { x, y, width, height, tipX = 0, tipY = 0 } = params;
-  const w = width / 2;
-  const h = height / 2;
-  const rand = seededRandom(params.rotation?.toString() || '0');
-
-  const pathParts: string[] = [];
-  const rays = 20;
-  let px: number, py: number;
-
-  for (let i = 0; i <= rays; i++) {
-    const angle = (i / rays) * Math.PI * 2;
-    const isOuter = i % 2 === 0;
-    const radius = isOuter ? Math.max(w, h) : Math.min(w, h) * 0.5;
-    const jitter = (rand() - 0.5) * 0.1 * Math.max(w, h);
-
-    const nx = x + (radius + jitter) * Math.cos(angle);
-    const ny = y + (radius + jitter) * Math.sin(angle);
-
-    if (i === 0) {
-      pathParts.push(`M ${nx} ${ny}`);
-      px = nx;
-      py = ny;
-    } else {
-      pathParts.push(`L ${nx} ${ny}`);
-    }
-  }
-  pathParts.push('Z');
-
-  return pathParts.join(' ');
-}
-
-/**
- * Draw narration bubble: rounded rectangle
- */
-export function getNarrationBubblePath(params: BubbleGeometryParams): string {
-  const { x, y, width, height } = params;
-  const w = width / 2;
-  const h = height / 2;
-  const r = Math.min(w, h) * 0.1; // corner radius
-
-  const left = x - w;
-  const right = x + w;
-  const top = y - h;
-  const bottom = y + h;
-
-  return `M ${left + r} ${top}
-    L ${right - r} ${top}
-    Q ${right} ${top} ${right} ${top + r}
-    L ${right} ${bottom - r}
-    Q ${right} ${bottom} ${right - r} ${bottom}
-    L ${left + r} ${bottom}
-    Q ${left} ${bottom} ${left} ${bottom - r}
-    L ${left} ${top + r}
-    Q ${left} ${top} ${left + r} ${top}
-    Z`;
-}
-
-/**
- * Draw whisper bubble: dashed oval (same as speech but dashed)
- */
-export function getWhisperBubblePath(params: BubbleGeometryParams): string {
-  // Same geometry as speech, but will be rendered with stroke-dasharray
-  return getSpeechBubblePath(params);
-}
-
-/**
- * Get the path string for any bubble type
- */
-export function getBubblePath(kind: BubbleKind, params: BubbleGeometryParams): string {
-  switch (kind) {
-    case 'speech':
-      return getSpeechBubblePath(params);
-    case 'thought':
-      return getThoughtBubblePath(params);
-    case 'scream':
-      return getScreamBubblePath(params);
-    case 'narration':
-      return getNarrationBubblePath(params);
-    case 'whisper':
-      return getWhisperBubblePath(params);
-    default:
-      return getSpeechBubblePath(params);
-  }
-}
-
-/**
- * Get SVG preview for bubble buttons (small versions)
- */
-export function getBubblePreviewSvg(kind: BubbleKind): string {
-  const params: BubbleGeometryParams = {
-    x: 0.5,
-    y: 0.5,
-    width: 0.8,
-    height: 0.6,
-    rotation: 0,
-    tipX: 0.9,
-    tipY: 0.9,
+  return {
+    enabled: tail.enabled,
+    side,
+    anchor,
+    length,
+    width: clamp(tail.width ?? 0.12, WIDTH_MIN, WIDTH_MAX),
+    curve: 0.3,
   };
+}
 
-  const path = getBubblePath(kind, params);
-  const isDashed = kind === 'whisper';
+// ─────────────────────────────────────────────────────────────────────────────
+// Compute the tip point in local pixel space given structured tail params
+// ─────────────────────────────────────────────────────────────────────────────
+export function tailTipPixels(tail: BubbleTail, bodyW: number, bodyH: number): { x: number; y: number } {
+  const hw = bodyW / 2;
+  const hh = bodyH / 2;
+  const shorter = Math.min(bodyW, bodyH);
+  const length = clamp(tail.length, LENGTH_MIN, LENGTH_MAX) * shorter;
 
-  return `<svg viewBox="0 0 1 1" xmlns="http://www.w3.org/2000/svg">
-    <path d="${path}" fill="white" stroke="black" stroke-width="0.03" ${isDashed ? 'stroke-dasharray="0.05"' : ''} />
-  </svg>`;
+  switch (tail.side) {
+    case 'top':
+      return { x: (tail.anchor - 0.5) * bodyW, y: -hh - length };
+    case 'bottom':
+      return { x: (tail.anchor - 0.5) * bodyW, y:  hh + length };
+    case 'left':
+      return { x: -hw - length, y: (tail.anchor - 0.5) * bodyH };
+    case 'right':
+      return { x:  hw + length, y: (tail.anchor - 0.5) * bodyH };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compute the tail base-center on the ellipse edge
+// ─────────────────────────────────────────────────────────────────────────────
+function tailBaseCenter(tail: BubbleTail, bodyW: number, bodyH: number): { x: number; y: number } {
+  const hw = bodyW / 2;
+  const hh = bodyH / 2;
+  switch (tail.side) {
+    case 'top':    return { x: (tail.anchor - 0.5) * bodyW, y: -hh };
+    case 'bottom': return { x: (tail.anchor - 0.5) * bodyW, y:  hh };
+    case 'left':   return { x: -hw, y: (tail.anchor - 0.5) * bodyH };
+    case 'right':  return { x:  hw, y: (tail.anchor - 0.5) * bodyH };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Smooth ellipse path with a Bézier tail
+// ─────────────────────────────────────────────────────────────────────────────
+function ellipsePath(hw: number, hh: number): string {
+  // SVG ellipse via 4 cubic Bézier arcs (κ = 0.5523)
+  const k = 0.5523;
+  const kx = hw * k, ky = hh * k;
+  return [
+    `M ${hw} 0`,
+    `C ${hw} ${-ky} ${kx} ${-hh} 0 ${-hh}`,
+    `C ${-kx} ${-hh} ${-hw} ${-ky} ${-hw} 0`,
+    `C ${-hw} ${ky} ${-kx} ${hh} 0 ${hh}`,
+    `C ${kx} ${hh} ${hw} ${ky} ${hw} 0`,
+    'Z',
+  ].join(' ');
+}
+
+function speechBubblePath(params: BubbleGeometryParams, tail: BubbleTail | null): string {
+  const hw = params.width / 2;
+  const hh = params.height / 2;
+  const shorter = Math.min(params.width, params.height);
+
+  if (!tail?.enabled) return ellipsePath(hw, hh);
+
+  const t = tail;
+  const baseW = clamp(t.width, WIDTH_MIN, WIDTH_MAX) * shorter * 0.5;
+  const tip = tailTipPixels(t, params.width, params.height);
+  const bc  = tailBaseCenter(t, params.width, params.height);
+  const curve = clamp(t.curve ?? 0.3, 0, 1);
+
+  // Perpendicular direction to the tail axis at the base
+  let perpX = 0, perpY = 0;
+  switch (t.side) {
+    case 'top': case 'bottom': perpX = 1; perpY = 0; break;
+    case 'left': case 'right': perpX = 0; perpY = 1; break;
+  }
+
+  const lx = bc.x - perpX * baseW;
+  const ly = bc.y - perpY * baseW;
+  const rx = bc.x + perpX * baseW;
+  const ry = bc.y + perpY * baseW;
+
+  // Control points for curved tail sides
+  const midX = (bc.x + tip.x) / 2;
+  const midY = (bc.y + tip.y) / 2;
+  const cpOffset = curve * baseW;
+  const lcp = { x: midX + perpX * cpOffset, y: midY + perpY * cpOffset };
+  const rcp = { x: midX - perpX * cpOffset, y: midY - perpY * cpOffset };
+
+  // Build ellipse with a notch where the tail exits
+  // We parameterize the ellipse angle at the base center
+  const kappa = 0.5523;
+  const kx = hw * kappa, ky = hh * kappa;
+
+  // Angle of the base center on the ellipse
+  const baseAngle = Math.atan2(bc.y / hh, bc.x / hw);
+  // Angular half-width of the notch
+  const notchHalfAngle = Math.max(0.08, (baseW / shorter) * 0.5);
+  const a1 = baseAngle - notchHalfAngle;
+  const a2 = baseAngle + notchHalfAngle;
+
+  // Point on ellipse at angle θ
+  const ep = (a: number) => ({ x: hw * Math.cos(a), y: hh * Math.sin(a) });
+  const ep1 = ep(a1);
+  const ep2 = ep(a2);
+
+  return [
+    `M ${hw} 0`,
+    `C ${hw} ${-ky} ${kx} ${-hh} 0 ${-hh}`,
+    `C ${-kx} ${-hh} ${-hw} ${-ky} ${-hw} 0`,
+    `C ${-hw} ${ky} ${-kx} ${hh} 0 ${hh}`,
+    `C ${kx} ${hh} ${hw} ${ky} ${hw} 0`,
+    // Re-draw from start, arc to notch left point
+    `M ${ep1.x} ${ep1.y}`,
+    // Tail left side
+    `Q ${lcp.x} ${lcp.y} ${tip.x} ${tip.y}`,
+    // Tail right side
+    `Q ${rcp.x} ${rcp.y} ${ep2.x} ${ep2.y}`,
+    'Z',
+  ].join(' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Thought bubble: cloud of bumps + separate circle tail
+// ─────────────────────────────────────────────────────────────────────────────
+function thoughtBubblePath(params: BubbleGeometryParams): string {
+  const { width: W, height: H } = params;
+  const hw = W / 2, hh = H / 2;
+  const bumps = 10;
+  const parts: string[] = [];
+
+  for (let i = 0; i < bumps; i++) {
+    const a1 = (i / bumps) * Math.PI * 2;
+    const a2 = ((i + 1) / bumps) * Math.PI * 2;
+    const mid = (a1 + a2) / 2;
+    const bumpR = 1.18; // bump outward scale
+    const cx = hw * bumpR * Math.cos(mid);
+    const cy = hh * bumpR * Math.sin(mid);
+    const x1 = hw * Math.cos(a1), y1 = hh * Math.sin(a1);
+    const x2 = hw * Math.cos(a2), y2 = hh * Math.sin(a2);
+    if (i === 0) parts.push(`M ${x1} ${y1}`);
+    parts.push(`Q ${cx} ${cy} ${x2} ${y2}`);
+  }
+  parts.push('Z');
+  return parts.join(' ');
+}
+
+/** Returns the 2–3 thought-tail circles as separate SVG path circles */
+export function getThoughtTailCircles(
+  tail: BubbleTail | null,
+  bodyW: number,
+  bodyH: number,
+): Array<{ cx: number; cy: number; r: number }> {
+  if (!tail?.enabled) return [];
+  const tip = tailTipPixels(tail, bodyW, bodyH);
+  const bc  = tailBaseCenter(tail, bodyW, bodyH);
+  const shorter = Math.min(bodyW, bodyH);
+  const baseR = shorter * 0.055;
+
+  const circles = [
+    { t: 0.3, r: baseR },
+    { t: 0.6, r: baseR * 0.68 },
+    { t: 0.88, r: baseR * 0.42 },
+  ];
+
+  return circles.map(({ t, r }) => ({
+    cx: bc.x + (tip.x - bc.x) * t,
+    cy: bc.y + (tip.y - bc.y) * t,
+    r,
+  }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scream bubble: elliptical star rays
+// ─────────────────────────────────────────────────────────────────────────────
+let _screamSeed = 0;
+export function getScreamParams(params: BubbleGeometryParams): { rayCount: number; spikiness: number } {
+  void params;
+  return { rayCount: 24, spikiness: 0.35 };
+}
+
+function screamBubblePath(params: BubbleGeometryParams, opts?: { rays?: number; spikiness?: number }): string {
+  const { width: W, height: H } = params;
+  const hw = W / 2, hh = H / 2;
+  const rays = opts?.rays ?? 24;
+  const spike = opts?.spikiness ?? 0.35;
+  const innerScale = 1 - spike;
+  const parts: string[] = [];
+
+  for (let i = 0; i < rays * 2; i++) {
+    const angle = (i / (rays * 2)) * Math.PI * 2;
+    const isOuter = i % 2 === 0;
+    const rx = hw * (isOuter ? 1 : innerScale);
+    const ry = hh * (isOuter ? 1 : innerScale);
+    const x = rx * Math.cos(angle);
+    const y = ry * Math.sin(angle);
+    if (i === 0) parts.push(`M ${x} ${y}`);
+    else parts.push(`L ${x} ${y}`);
+  }
+  parts.push('Z');
+  return parts.join(' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Narration box (rounded rect)
+// ─────────────────────────────────────────────────────────────────────────────
+function narrationPath(params: BubbleGeometryParams, cornerRadius?: number): string {
+  const { width: W, height: H } = params;
+  const hw = W / 2, hh = H / 2;
+  const r = Math.min(cornerRadius ?? 8, hw * 0.2, hh * 0.2);
+  return [
+    `M ${-hw + r} ${-hh}`,
+    `L ${hw - r} ${-hh}`,
+    `Q ${hw} ${-hh} ${hw} ${-hh + r}`,
+    `L ${hw} ${hh - r}`,
+    `Q ${hw} ${hh} ${hw - r} ${hh}`,
+    `L ${-hw + r} ${hh}`,
+    `Q ${-hw} ${hh} ${-hw} ${hh - r}`,
+    `L ${-hw} ${-hh + r}`,
+    `Q ${-hw} ${-hh} ${-hw + r} ${-hh}`,
+    'Z',
+  ].join(' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main dispatch
+// ─────────────────────────────────────────────────────────────────────────────
+export function getBubblePath(kind: BubbleKind, params: BubbleGeometryParams, opts?: {
+  rays?: number;
+  spikiness?: number;
+  cornerRadius?: number;
+}): string {
+  const resolvedTail = resolveTail(params.tail, params);
+
+  switch (kind) {
+    case 'speech':    return speechBubblePath(params, resolvedTail);
+    case 'whisper':   return speechBubblePath(params, resolvedTail); // styled differently outside
+    case 'thought':   return thoughtBubblePath(params);
+    case 'scream':    return screamBubblePath(params, opts);
+    case 'narration': return narrationPath(params, opts?.cornerRadius);
+    default:          return speechBubblePath(params, resolvedTail);
+  }
+}
+
+/** Resolve and migrate tail to structured form, or return null */
+export function resolveTail(
+  tail: BubbleTail | null | undefined,
+  params: BubbleGeometryParams,
+): BubbleTail | null {
+  if (!tail || !tail.enabled) return null;
+  return migrateTail(tail, params.width, params.height);
+}
+
+// Legacy compat export
+export function getSpeechBubblePath(params: BubbleGeometryParams): string {
+  return getBubblePath('speech', params);
+}
+export function getThoughtBubblePath(params: BubbleGeometryParams): string {
+  return getBubblePath('thought', params);
+}
+export function getScreamBubblePath(params: BubbleGeometryParams): string {
+  return getBubblePath('scream', params);
+}
+export function getWhisperBubblePath(params: BubbleGeometryParams): string {
+  return getBubblePath('whisper', params);
+}
+export function getNarrationBubblePath(params: BubbleGeometryParams): string {
+  return getBubblePath('narration', params);
 }

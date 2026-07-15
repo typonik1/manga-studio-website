@@ -73,6 +73,7 @@ const defaultTextSettings: TextSettings = {
   lineHeight: 1.3,
   align: 'center',
   width: 0.35,
+  draftText: '',
 };
 
 const defaultExportSettings: ExportSettings = {
@@ -134,6 +135,8 @@ export interface AppState {
   activeTool: ActiveTool;
   leftTab: LeftTab;
   selectedObject: SelectedObject | null;
+  /** ID of the TextObject currently being edited in the inline editor, or null */
+  inlineEditingTextId: string | null;
   wmSettings: WatermarkSettings;
   cleanupSettings: CleanupSettings;
   textSettings: TextSettings;
@@ -161,6 +164,7 @@ export interface AppState {
   setActiveTool: (tool: ActiveTool) => void;
   setLeftTab: (tab: LeftTab) => void;
   setSelectedObject: (obj: SelectedObject | null) => void;
+  setInlineEditingTextId: (id: string | null) => void;
   duplicateSelectedObject: () => void;
   deleteSelectedObject: () => void;
   moveSelectedObject: (direction: 'forward' | 'backward') => void;
@@ -232,6 +236,7 @@ export const useStore = create<AppState>((set, get) => ({
   activeTool: 'select',
   leftTab: 'watermark',
   selectedObject: null,
+  inlineEditingTextId: null,
   wmSettings: defaultWmSettings,
   cleanupSettings: defaultCleanupSettings,
   textSettings: defaultTextSettings,
@@ -293,6 +298,7 @@ export const useStore = create<AppState>((set, get) => ({
   setActiveTool: (tool) => set({ activeTool: tool }),
   setLeftTab: (tab) => set({ leftTab: tab }),
   setSelectedObject: (obj) => set({ selectedObject: obj }),
+  setInlineEditingTextId: (id) => set({ inlineEditingTextId: id }),
 
   duplicateSelectedObject: () => set(state => {
     const selected = state.selectedObject;

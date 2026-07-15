@@ -1,6 +1,6 @@
 'use client';
 
-import { Brush, Eraser, Hand, Lasso, MousePointer2, SquareDashed, Type, WandSparkles, Stamp, Paintbrush } from 'lucide-react';
+import { Brush, Eraser, Hand, Lasso, MousePointer2, SquareDashed, Type, WandSparkles, Paintbrush } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import type { ActiveTool, LeftTab } from '@/types';
 
@@ -14,7 +14,6 @@ const tools: Array<{ tool: ActiveTool; label: string; hotkey: string; icon: type
   { tool: 'rectSelect', label: 'Прямоугольное выделение', hotkey: 'R', icon: SquareDashed, tab: 'cleanup', hint: 'Прямоугольная область' },
   { tool: 'wand', label: 'Волшебная палочка', hotkey: 'G', icon: WandSparkles, tab: 'cleanup', hint: 'Выделение связанной области похожего цвета' },
   { tool: 'text', label: 'Текст', hotkey: 'T', icon: Type, tab: 'text' },
-  { tool: 'watermark', label: 'Вотерка', hotkey: 'W', icon: Stamp, tab: 'watermark' },
 ];
 
 export function ToolRail() {

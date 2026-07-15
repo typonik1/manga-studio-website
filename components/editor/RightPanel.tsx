@@ -1,11 +1,40 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { GripVertical } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import type { ImageDocument, LayerVisibility, BaseLayerAdjustments } from '@/types';
 import { LayerContextMenu } from './LayerContextMenu';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { createDrawingLayer } from '@/utils/layerActions';
+
+/** Pointer-capture range slider — prevents drag-ghost when dragging inside a layer row. */
+function LayerSlider({
+  label, value, min, max, step = 1, onChange,
+}: {
+  label: string; value: number; min: number; max: number; step?: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <input
+      aria-label={label}
+      type="range"
+      min={min} max={max} step={step}
+      value={value}
+      onChange={e => onChange(Number(e.target.value))}
+      onWheel={e => {
+        e.preventDefault(); e.stopPropagation();
+        const dir = e.deltaY < 0 ? 1 : -1;
+        const mult = e.shiftKey ? 10 : 1;
+        onChange(Math.max(min, Math.min(max, value + dir * step * mult)));
+      }}
+      onPointerDown={e => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); }}
+      onPointerUp={e => { e.currentTarget.releasePointerCapture(e.pointerId); }}
+      onDragStart={e => e.preventDefault()}
+      style={{ flex: 1 }}
+    />
+  );
+}
 
 export function RightPanel() {
   const { rightTab: tab, setRightTab: setTab } = useStore();
@@ -214,19 +243,10 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
         .reverse()
         .map(({ ref, orderIndex }) => {
           const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
-          const wrapperProps = {
-            draggable: true,
-            onDragStart: (e: React.DragEvent) => {
-              // The expanded settings area (sliders, labels, buttons) must never
-              // start a row drag — otherwise moving a slider tears off a ghost
-              // of the whole panel. Row reorder starts only from the header.
-              if ((e.target as HTMLElement).closest('input, button, select, textarea, [data-nodrag]')) {
-                e.preventDefault();
-                e.stopPropagation();
-                return;
-              }
-              dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
-            },
+          const handleDragStart = (e: React.DragEvent) => {
+            dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
+          };
+          const rowProps = {
             onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropIndex(orderIndex); },
             onDragLeave: () => setDropIndex(current => (current === orderIndex ? null : current)),
             onDrop: (e: React.DragEvent) => {
@@ -237,41 +257,65 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
             },
             onDragEnd: () => { dragIndexRef.current = null; setDragIndex(null); setDropIndex(null); },
             style: {
+              display: 'flex', alignItems: 'flex-start', gap: 2,
               opacity: dragIndex === orderIndex ? 0.45 : 1,
               outline: isDropTarget ? '2px solid var(--accent)' : 'none',
               outlineOffset: -1,
               borderRadius: 6,
-              cursor: 'grab',
             } as React.CSSProperties,
           };
+          const dragHandle = (
+            <button
+              className="layer-drag-handle"
+              draggable
+              onDragStart={handleDragStart}
+              aria-label="Перетащить слой"
+              title="Перетащить для изменения порядка слоёв"
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0, width: 18, paddingTop: 10,
+                background: 'none', border: 'none',
+                cursor: 'grab', color: 'var(--text-muted)',
+                opacity: 0.5,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.opacity = '1'; }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; }}
+            >
+              <GripVertical size={12} />
+            </button>
+          );
           if (ref.type === 'base') {
             return (
-              <div key="base-row" {...wrapperProps}>
-                <BaseLayerRow activeDoc={activeDoc} />
+              <div key="base-row" {...rowProps}>
+                {dragHandle}
+                <div style={{ flex: 1, minWidth: 0 }}><BaseLayerRow activeDoc={activeDoc} /></div>
               </div>
             );
           }
           const layer = (activeDoc.aiLayers ?? []).find(item => item.id === ref.id);
           if (!layer) return null;
           return (
-            <div key={layer.id} {...wrapperProps}>
-              <LayerRow
-                label={layer.name}
-                prefix="AI"
-                selected={activeDoc.selectedLayer?.id === layer.id}
-                visible={layer.visible}
-                opacity={layer.opacity}
-                onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
-                onVisibility={() => updateAiLayer(layer.id, { visible: !layer.visible })}
-                onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
-                onDelete={() => deleteAiLayer(layer.id)}
-                onContextMenu={e => { e.preventDefault(); setAiMenu({ x: e.clientX, y: e.clientY, id: layer.id }); }}
-                locked={layer.locked === true}
-                onLock={() => updateAiLayer(layer.id, { locked: layer.locked !== true })}
-                adjustments={layer.adjustments}
-                onAdjustments={updates => updateAiLayer(layer.id, { adjustments: { brightness: 1, contrast: 1, saturation: 1, ...layer.adjustments, ...updates } })}
-                onDuplicate={() => duplicateAiLayer(layer.id)}
-              />
+            <div key={layer.id} {...rowProps}>
+              {dragHandle}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <LayerRow
+                  label={layer.name}
+                  prefix="AI"
+                  selected={activeDoc.selectedLayer?.id === layer.id}
+                  visible={layer.visible}
+                  opacity={layer.opacity}
+                  onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
+                  onVisibility={() => updateAiLayer(layer.id, { visible: !layer.visible })}
+                  onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
+                  onDelete={() => deleteAiLayer(layer.id)}
+                  onContextMenu={e => { e.preventDefault(); setAiMenu({ x: e.clientX, y: e.clientY, id: layer.id }); }}
+                  locked={layer.locked === true}
+                  onLock={() => updateAiLayer(layer.id, { locked: layer.locked !== true })}
+                  adjustments={layer.adjustments}
+                  onAdjustments={updates => updateAiLayer(layer.id, { adjustments: { brightness: 1, contrast: 1, saturation: 1, ...layer.adjustments, ...updates } })}
+                  onDuplicate={() => duplicateAiLayer(layer.id)}
+                />
+              </div>
             </div>
           );
         })}
@@ -309,16 +353,10 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
             .reverse()
             .map(({ ref, orderIndex }) => {
               const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
-              const wrapperProps = {
-                draggable: true,
-                onDragStart: (e: React.DragEvent) => {
-                  if ((e.target as HTMLElement).closest('input, button, select, textarea, [data-nodrag]')) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return;
-                  }
-                  dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
-                },
+              const objHandleDragStart = (e: React.DragEvent) => {
+                dragIndexRef.current = orderIndex; setDragIndex(orderIndex); e.dataTransfer.effectAllowed = 'move';
+              };
+              const objRowProps = {
                 onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropIndex(orderIndex); },
                 onDragLeave: () => setDropIndex(current => (current === orderIndex ? null : current)),
                 onDrop: (e: React.DragEvent) => {
@@ -329,27 +367,49 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                 },
                 onDragEnd: () => { dragIndexRef.current = null; setDragIndex(null); setDropIndex(null); },
                 style: {
+                  display: 'flex', alignItems: 'center', gap: 2,
                   opacity: dragIndex === orderIndex ? 0.45 : 1,
                   outline: isDropTarget ? '2px solid var(--accent)' : 'none',
                   outlineOffset: -1,
                   borderRadius: 6,
-                  cursor: 'grab',
                 } as React.CSSProperties,
               };
+              const objDragHandle = (
+                <button
+                  className="layer-drag-handle"
+                  draggable
+                  onDragStart={objHandleDragStart}
+                  aria-label="Перетащить объект"
+                  title="Перетащить для изменения порядка"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0, width: 18,
+                    background: 'none', border: 'none',
+                    cursor: 'grab', color: 'var(--text-muted)', opacity: 0.5,
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.opacity = '1'; }}
+                  onMouseLeave={e => { e.currentTarget.style.opacity = '0.5'; }}
+                >
+                  <GripVertical size={12} />
+                </button>
+              );
               if (ref.type === 'watermark') {
                 const wm = activeDoc.watermarks.find(item => item.id === ref.id);
                 if (!wm) return null;
                 return (
-                  <div key={wm.id} {...wrapperProps}>
-                    <ObjectRow
-                      label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : 'Лого'}
-                      prefix="W"
-                      isSelected={selectedObject?.id === wm.id}
-                      visible={wm.visible}
-                      onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
-                      onDelete={() => deleteWatermark(wm.id)}
-                      isBatch={wm.isBatch}
-                    />
+                  <div key={wm.id} {...objRowProps}>
+                    {objDragHandle}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ObjectRow
+                        label={wm.type === 'text' ? (wm.text?.slice(0, 18) ?? 'Вотерка') : 'Лого'}
+                        prefix="W"
+                        isSelected={selectedObject?.id === wm.id}
+                        visible={wm.visible}
+                        onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
+                        onDelete={() => deleteWatermark(wm.id)}
+                        isBatch={wm.isBatch}
+                      />
+                    </div>
                   </div>
                 );
               }
@@ -357,50 +417,59 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                 const txt = activeDoc.texts.find(item => item.id === ref.id);
                 if (!txt) return null;
                 return (
-                  <div key={txt.id} {...wrapperProps}>
-                    <ObjectRow
-                      label={txt.text.slice(0, 18)}
-                      prefix="T"
-                      isSelected={selectedObject?.id === txt.id}
-                      visible={txt.visible}
-                      onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
-                      onDelete={() => deleteText(txt.id)}
-                    />
+                  <div key={txt.id} {...objRowProps}>
+                    {objDragHandle}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ObjectRow
+                        label={txt.text.slice(0, 18)}
+                        prefix="T"
+                        isSelected={selectedObject?.id === txt.id}
+                        visible={txt.visible}
+                        onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
+                        onDelete={() => deleteText(txt.id)}
+                      />
+                    </div>
                   </div>
                 );
               }
               const shape = (activeDoc.shapes ?? []).find(item => item.id === ref.id);
               if (shape) {
                 return (
-                  <div key={shape.id} {...wrapperProps}>
-                    <ObjectRow
-                      label={
-                        shape.kind === 'rect' ? 'Прямоугольник' :
-                        shape.kind === 'ellipse' ? 'Эллипс' :
-                        shape.kind === 'line' ? 'Линия' :
-                        shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
-                      }
-                      prefix="S"
-                      isSelected={selectedObject?.id === shape.id}
-                      visible={shape.visible}
-                      onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
-                      onDelete={() => deleteShape(shape.id)}
-                    />
+                  <div key={shape.id} {...objRowProps}>
+                    {objDragHandle}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ObjectRow
+                        label={
+                          shape.kind === 'rect' ? 'Прямоугольник' :
+                          shape.kind === 'ellipse' ? 'Эллипс' :
+                          shape.kind === 'line' ? 'Линия' :
+                          shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
+                        }
+                        prefix="S"
+                        isSelected={selectedObject?.id === shape.id}
+                        visible={shape.visible}
+                        onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
+                        onDelete={() => deleteShape(shape.id)}
+                      />
+                    </div>
                   </div>
                 );
               }
               const bubble = (activeDoc.bubbles ?? []).find(item => item.id === ref.id);
               if (bubble) {
                 return (
-                  <div key={bubble.id} {...wrapperProps}>
-                    <ObjectRow
-                      label={bubble.text.content.slice(0, 18)}
-                      prefix="B"
-                      isSelected={selectedObject?.id === bubble.id}
-                      visible={bubble.visible}
-                      onSelect={() => setSelectedObject({ id: bubble.id, type: 'bubble' })}
-                      onDelete={() => deleteBubble(bubble.id)}
-                    />
+                  <div key={bubble.id} {...objRowProps}>
+                    {objDragHandle}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ObjectRow
+                        label={bubble.text.content.slice(0, 18)}
+                        prefix="B"
+                        isSelected={selectedObject?.id === bubble.id}
+                        visible={bubble.visible}
+                        onSelect={() => setSelectedObject({ id: bubble.id, type: 'bubble' })}
+                        onDelete={() => deleteBubble(bubble.id)}
+                      />
+                    </div>
                   </div>
                 );
               }
@@ -463,7 +532,7 @@ function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
             ] as const).map(slider => (
               <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>
-                <input aria-label={slider.label} type="range" min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={e => slider.apply(Number(e.target.value))} style={{ flex: 1 }} />
+                <LayerSlider label={slider.label} min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={v => slider.apply(v)} />
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 30 }}>{Math.round(slider.value * 100)}%</span>
               </div>
             ))}
@@ -532,7 +601,7 @@ function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisib
           ]).map(slider => (
             <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>
-              <input aria-label={slider.label} type="range" min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={event => slider.apply(Number(event.target.value))} style={{ flex: 1 }} />
+              <LayerSlider label={slider.label} min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={v => slider.apply(v)} />
               <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 30 }}>{Math.round(slider.value * 100)}%</span>
             </div>
           ))}

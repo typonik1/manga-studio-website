@@ -13,7 +13,9 @@ import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
 import { ToolOptionsBar } from './ToolOptionsBar';
 import { screenToImage } from '@/utils/coordinates';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
+import { createLayerFromSelection, hasActiveSelection } from '@/utils/layerActions';
 import { BubbleNode } from './BubbleNode';
+import { InlineTextEditor } from './InlineTextEditor';
 
 const MAX_PREVIEW_SIDE = 1800;
 
@@ -774,6 +776,8 @@ export function CanvasArea() {
         addStroke, addMaskStroke, addMaskElement, addEraseElement, updateWatermark, updateText, updateShape, updateBubble,
     selectLayer, updateCleanupSettings,
     selectedObject, setSelectedObject,
+    inlineEditingTextId, setInlineEditingTextId,
+    textSettings, addText,
     layerVisibility,
     viewport, setViewport,
     addDocuments,
@@ -798,6 +802,8 @@ export function CanvasArea() {
   const rectStart = useRef({ x: 0, y: 0 });
   const rectCurrent = useRef({ x: 0, y: 0 });
   const liveRectRef = useRef<Konva.Rect>(null);
+  // Tracks whether the currently-open inline text editor was just created (click-to-place)
+  const isNewTextRef = useRef(false);
   // Brush cursor updated imperatively via DOM
   const cursorRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
@@ -853,6 +859,43 @@ export function CanvasArea() {
 
   // Auto-fit on document change
   useEffect(() => { fitToScreen(); }, [activeDocIndex]);
+
+  // ── Native pointermove for zero-lag brush cursor circle ──────────────────
+  // Runs at the native pointer rate, never through React state or Konva.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const handler = (e: PointerEvent) => {
+      const cursor = cursorRef.current;
+      if (!cursor) return;
+      const store = useStore.getState();
+      const tool = store.activeTool;
+      if (tool !== 'brush' && tool !== 'maskBrush' && tool !== 'eraser') {
+        if (cursor.style.display !== 'none') cursor.style.display = 'none';
+        return;
+      }
+      const rect = container.getBoundingClientRect();
+      const posX = e.clientX - rect.left;
+      const posY = e.clientY - rect.top;
+      const doc = store.documents[store.activeDocIndex];
+      const vp = store.viewport;
+      const docH = doc?.height ?? 1000;
+      const ps = doc ? Math.min(1, 1800 / Math.max(doc.width, doc.height)) : 1;
+      const rad = (store.cleanupSettings.brushSize * docH * ps * vp.scale) / 2;
+      const d = rad * 2;
+      cursor.style.display = 'block';
+      cursor.style.width = `${d}px`;
+      cursor.style.height = `${d}px`;
+      cursor.style.transform = `translate3d(${posX - rad}px, ${posY - rad}px, 0)`;
+    };
+    const leave = () => { if (cursorRef.current) cursorRef.current.style.display = 'none'; };
+    container.addEventListener('pointermove', handler, { passive: true });
+    container.addEventListener('pointerleave', leave, { passive: true });
+    return () => {
+      container.removeEventListener('pointermove', handler);
+      container.removeEventListener('pointerleave', leave);
+    };
+  }, []);
 
   // Wheel zoom
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -992,11 +1035,11 @@ export function CanvasArea() {
       const cursor = cursorRef.current;
       if (cursor) {
         const rad = (cleanupSettings.brushSize * (activeDoc?.height ?? 1000) * previewScale * viewport.scale) / 2;
+        const d = rad * 2;
         cursor.style.display = 'block';
-        cursor.style.left = `${pos.x - rad}px`;
-        cursor.style.top = `${pos.y - rad}px`;
-        cursor.style.width = `${rad * 2}px`;
-        cursor.style.height = `${rad * 2}px`;
+        cursor.style.width = `${d}px`;
+        cursor.style.height = `${d}px`;
+        cursor.style.transform = `translate3d(${pos.x - rad}px, ${pos.y - rad}px, 0)`;
       }
 
       if (isPainting.current) {
@@ -1111,10 +1154,52 @@ export function CanvasArea() {
   };
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    // Deselect when clicking the empty stage OR the base image itself
-    // (the image covers the whole canvas, so it counts as "empty space")
     const target = e.target as Konva.Node;
-    if (target === (stageRef.current as unknown as Konva.Node) || target.name() === 'base-image') {
+    const onStageOrBase = target === (stageRef.current as unknown as Konva.Node) || target.name() === 'base-image';
+
+    // ── Text tool: place text at click position ──────────────────────────────
+    if (activeTool === 'text' && activeDoc && onStageOrBase) {
+      const stage = stageRef.current;
+      if (!stage) return;
+      const pos = stage.getPointerPosition();
+      if (!pos) return;
+      const imgPos = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (!imgPos || !imgPos.inside) return;
+
+      // Clamp to image bounds
+      const nx = Math.max(0, Math.min(0.95, imgPos.x));
+      const ny = Math.max(0, Math.min(0.95, imgPos.y));
+
+      pushHistory();
+      const newText = {
+        id: uid(),
+        text: textSettings.draftText || 'Текст',
+        fontFamily: textSettings.fontFamily,
+        fontSize: textSettings.fontSize,
+        fill: textSettings.fill,
+        stroke: textSettings.stroke,
+        strokeWidth: textSettings.strokeWidth,
+        shadowColor: textSettings.shadowColor,
+        shadowBlur: textSettings.shadowBlur,
+        lineHeight: textSettings.lineHeight,
+        align: textSettings.align,
+        width: textSettings.width,
+        x: nx,
+        y: ny,
+        scaleX: 1,
+        scaleY: 1,
+        rotation: 0,
+        visible: true,
+      };
+      addText(newText);
+      setSelectedObject({ id: newText.id, type: 'text' });
+      isNewTextRef.current = true;
+      setInlineEditingTextId(newText.id);
+      return;
+    }
+
+    // Deselect when clicking the empty stage OR the base image itself
+    if (onStageOrBase) {
       setSelectedObject(null);
     }
   };
@@ -1129,14 +1214,60 @@ export function CanvasArea() {
     setLoadingFiles(false);
   }
 
-  // Keyboard brush size [ ]
+  // Keyboard shortcuts: [ ] brush size, Ctrl+C/J (layer from selection), Ctrl+D (deselect)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName.toLowerCase();
-      if (tag === 'input' || tag === 'textarea') return;
+      const target = e.target as HTMLElement;
+      const tag = target.tagName.toLowerCase();
+      const isEditable = tag === 'input' || tag === 'textarea' || target.isContentEditable;
+      if (isEditable) return;
+
       const { cleanupSettings: cs, updateCleanupSettings: ucs } = useStore.getState();
       if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
+
+      // ── Ctrl+D — снять выделение ────────────────────────────────────────
+      if (e.ctrlKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        const store = useStore.getState();
+        const doc = store.documents[store.activeDocIndex];
+        if (doc) {
+          store.clearActiveMask();
+          // Cancel any in-progress selection tools
+          if (isLassoing.current) {
+            isLassoing.current = false; lassoPoints.current = [];
+            const line = liveLassoRef.current;
+            if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+          }
+          if (isRectSelecting.current) {
+            isRectSelecting.current = false;
+            const rect = liveRectRef.current;
+            if (rect) { rect.visible(false); rect.getLayer()?.batchDraw(); }
+          }
+          setWandPending(null);
+        }
+        return;
+      }
+
+      // ── Ctrl+C or Ctrl+J — создать слой из выделения ───────────────────
+      if (e.ctrlKey && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'j')) {
+        const store = useStore.getState();
+        const doc = store.documents[store.activeDocIndex];
+        if (!doc || !hasActiveSelection(doc)) {
+          // No active selection — let browser handle Ctrl+C normally (text copy)
+          if (e.key.toLowerCase() === 'j') e.preventDefault();
+          return;
+        }
+        e.preventDefault();
+        void createLayerFromSelection().then(err => {
+          if (err) {
+            // Show a brief overlay message via console (UI toast not available here)
+            console.warn('[v0] createLayerFromSelection:', err);
+          }
+        });
+        return;
+      }
+
       if (e.key === 'Enter' || e.key === 'Escape') {
         // Enter/Escape commits the current transform: deselect the layer/object
         // so the transformer disappears and the layer "stays put".
@@ -1318,7 +1449,7 @@ export function CanvasArea() {
           onMouseLeave={() => { if (cursorRef.current) cursorRef.current.style.display = 'none'; }}
           style={{
             display: 'block',
-            cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect' ? 'crosshair' : 'default',
+            cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect') ? 'crosshair' : activeTool === 'text' ? 'text' : 'default',
           }}
         >
           {/* Base image layer — key includes fontsVersion so the canvas
@@ -1457,7 +1588,8 @@ export function CanvasArea() {
                     onBeforeChange={pushHistory}
                     onEditRequest={() => {
                       setSelectedObject({ id: txt.id, type: 'text' });
-                      setLeftTab('text');
+                      isNewTextRef.current = false;
+                      setInlineEditingTextId(txt.id);
                     }}
                   />
                 );
@@ -1495,7 +1627,7 @@ export function CanvasArea() {
                     onBeforeChange={pushHistory}
                     onEditRequest={() => {
                       setSelectedObject({ id: bubble.id, type: 'bubble' });
-                      setLeftTab('text');
+                      setLeftTab('bubble');
                     }}
                   />
                 );
@@ -1589,16 +1721,51 @@ export function CanvasArea() {
       {/* Layer context menu */}
       {contextMenu && <LayerContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />}
 
+      {/* Inline text editor overlay */}
+      {inlineEditingTextId && activeDoc && (() => {
+        const editingTxt = activeDoc.texts.find(t => t.id === inlineEditingTextId);
+        if (!editingTxt) return null;
+        return (
+          <InlineTextEditor
+            key={inlineEditingTextId}
+            textObj={editingTxt}
+            docWidth={activeDoc.width * previewScale}
+            docHeight={activeDoc.height * previewScale}
+            viewport={viewport}
+            isNew={isNewTextRef.current}
+            onCommit={newText => {
+              if (newText.trim() === '' && isNewTextRef.current) {
+                // Delete the empty newly-created text
+                useStore.getState().deleteSelectedObject();
+              } else {
+                updateText(inlineEditingTextId, { text: newText });
+              }
+              setInlineEditingTextId(null);
+            }}
+            onCancel={() => {
+              if (isNewTextRef.current) {
+                useStore.getState().deleteSelectedObject();
+              }
+              setInlineEditingTextId(null);
+            }}
+          />
+        );
+      })()}
+
       {/* Brush cursor (positioned imperatively, no re-renders) */}
       {(activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && (
         <div
           ref={cursorRef}
           style={{
             position: 'absolute',
+            top: 0, left: 0,
             display: 'none',
             borderRadius: '50%',
-            border: '1px solid rgba(255,255,255,0.7)',
+            border: '1.5px solid rgba(255,255,255,0.85)',
+            outline: '1px solid rgba(0,0,0,0.4)',
             pointerEvents: 'none',
+            willChange: 'transform',
+            contain: 'layout paint',
             zIndex: 10,
           }}
         />

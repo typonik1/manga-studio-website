@@ -76,7 +76,7 @@ export function EditorShell() {
     if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) { setActiveTool('rectSelect'); setLeftTab('cleanup'); return; }
     if (e.code === 'Space') { e.preventDefault(); setActiveTool('pan'); return; }
     if (e.code === 'KeyT') { setActiveTool('text'); setLeftTab('text'); return; }
-    if (e.code === 'KeyW') { setActiveTool('watermark'); setLeftTab('watermark'); return; }
+    if (e.code === 'KeyW') { setLeftTab('watermark'); return; }  // W opens watermark panel (no dedicated tool)
     if (e.code === 'KeyM') { setActiveTool('maskBrush'); setLeftTab('cleanup'); return; }
     if (e.code === 'KeyG') { setActiveTool('wand'); setLeftTab('cleanup'); return; }
     if (e.key === '1') { setLeftTab('watermark'); return; }

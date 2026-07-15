@@ -80,9 +80,19 @@ export type BubbleKind = 'speech' | 'thought' | 'scream' | 'narration' | 'whispe
 
 export interface BubbleTail {
   enabled: boolean;
-  tipX: number;      // normalized, tip of tail
-  tipY: number;      // normalized
-  width: number;     // thickness at base, fraction of body width
+  /** Which side of the bubble body the tail exits from */
+  side: 'top' | 'right' | 'bottom' | 'left';
+  /** 0…1 along the chosen side (clamped 0.12…0.88) */
+  anchor: number;
+  /** Length relative to the shorter body dimension (clamped 0.08…0.8) */
+  length: number;
+  /** Base width fraction (clamped 0.04…0.25) */
+  width: number;
+  /** Bézier curve amount 0…1 */
+  curve: number;
+  /** Legacy absolute tip position – used only for migration, not for rendering */
+  tipX?: number;
+  tipY?: number;
 }
 
 export interface BubbleObject {
@@ -249,7 +259,7 @@ export interface ImageDocument {
 }
 
 export type CleanupMethod = 'auto' | 'white' | 'background' | 'inpaint';
-export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'rectSelect' | 'text' | 'watermark' | 'wand' | 'crop';
+export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'rectSelect' | 'text' | 'wand' | 'crop';
 
 export type SelectionMode = 'replace' | 'add' | 'subtract';
 export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform' | 'bubble';
@@ -315,6 +325,8 @@ export interface TextSettings {
   lineHeight: number;
   align: 'left' | 'center' | 'right';
   width: number;
+  /** Text that will be placed on next click when the text tool is active. */
+  draftText: string;
 }
 
 export interface ExportSettings {

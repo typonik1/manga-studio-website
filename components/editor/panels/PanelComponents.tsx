@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode, CSSProperties } from 'react';
+import { EditorSlider } from '../EditorSlider';
 
 export function PanelLabel({ children, style }: { children: ReactNode; style?: CSSProperties }) {
   return (
@@ -37,14 +38,7 @@ export function PanelSlider({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={e => onChange(Number(e.target.value))}
-      />
+      <EditorSlider label={label} min={min} max={max} step={step} value={value} onChange={onChange} />
     </div>
   );
 }

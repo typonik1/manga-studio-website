@@ -5,7 +5,7 @@ import { useStore } from '@/store/useStore';
 import type { ImageDocument } from '@/types';
 import { buildCleanupSourceCanvas } from '@/utils/cleanupRaster';
 import { resolveLayerOrder } from '@/utils/layerOrder';
-import { getBubblePath } from '@/utils/bubbleGeometry';
+import { getBubblePath, tailTipPixels } from '@/utils/bubbleGeometry';
 
 async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   // Make sure web fonts are loaded before drawing text to canvas
@@ -178,21 +178,15 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.translate(cx, cy);
     ctx.rotate((bubble.rotation * Math.PI) / 180);
 
-    // Tail tip in local pixel coords relative to bubble center.
-    const hasTail = !!bubble.tail?.enabled;
-    const tipLocalX = hasTail ? (bubble.tail!.tipX - bubble.x) * doc.width : 0;
-    const tipLocalY = hasTail ? (bubble.tail!.tipY - bubble.y) * doc.height : 0;
-
     // Get bubble path in local pixel space (centered at 0,0).
+    // Use the new tail model directly — no legacy tipX/tipY needed.
     const pathData = getBubblePath(bubble.kind, {
       x: 0,
       y: 0,
       width: w,
       height: h,
-      rotation: 0,
-      tipX: tipLocalX,
-      tipY: tipLocalY,
-      tailWidth: bubble.tail?.width ?? 0.2,
+      rotation: bubble.rotation,
+      tail: bubble.tail ?? null,
     });
 
     try {

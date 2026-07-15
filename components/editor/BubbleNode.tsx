@@ -1,11 +1,70 @@
 'use client';
 
-import { useRef, useEffect, useState } from 'react';
-import { Group, Path, Text as KonvaText, Transformer } from 'react-konva';
+import { useRef, useEffect, useCallback } from 'react';
+import { Group, Path, Circle, Text as KonvaText, Transformer } from 'react-konva';
 import Konva from 'konva';
-import { BubbleObject } from '@/types';
-import { getBubblePath } from '@/utils/bubbleGeometry';
+import type { BubbleObject, BubbleTail } from '@/types';
+import { getBubblePath, resolveTail, tailTipPixels, migrateTail, getThoughtTailCircles } from '@/utils/bubbleGeometry';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+/** Convert local-pixel tip drag position back to structured tail params */
+function tipPixelToTail(
+  tipLocalX: number,
+  tipLocalY: number,
+  bodyW: number,
+  bodyH: number,
+  prevTail: BubbleTail,
+): BubbleTail {
+  const hw = bodyW / 2;
+  const hh = bodyH / 2;
+  const shorter = Math.min(bodyW, bodyH);
+
+  // Determine closest side
+  const distTop    = Math.abs(tipLocalY + hh);
+  const distBottom = Math.abs(tipLocalY - hh);
+  const distLeft   = Math.abs(tipLocalX + hw);
+  const distRight  = Math.abs(tipLocalX - hw);
+  const minDist = Math.min(distTop, distBottom, distLeft, distRight);
+
+  let side: BubbleTail['side'];
+  let anchor: number;
+  let length: number;
+
+  if (minDist === distTop || tipLocalY < -hh) {
+    side   = 'top';
+    anchor = clamp(0.5 + tipLocalX / bodyW, 0.12, 0.88);
+    length = clamp((Math.abs(tipLocalY) - hh) / shorter, 0.08, 0.80);
+  } else if (minDist === distBottom || tipLocalY > hh) {
+    side   = 'bottom';
+    anchor = clamp(0.5 + tipLocalX / bodyW, 0.12, 0.88);
+    length = clamp((tipLocalY - hh) / shorter, 0.08, 0.80);
+  } else if (minDist === distLeft || tipLocalX < -hw) {
+    side   = 'left';
+    anchor = clamp(0.5 + tipLocalY / bodyH, 0.12, 0.88);
+    length = clamp((Math.abs(tipLocalX) - hw) / shorter, 0.08, 0.80);
+  } else {
+    side   = 'right';
+    anchor = clamp(0.5 + tipLocalY / bodyH, 0.12, 0.88);
+    length = clamp((tipLocalX - hw) / shorter, 0.08, 0.80);
+  }
+
+  return {
+    enabled: true,
+    side,
+    anchor,
+    length,
+    width: prevTail.width,
+    curve:  prevTail.curve ?? 0.3,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────────────────────────────────────
 export function BubbleNode({
   bubble,
   docWidth,
@@ -27,11 +86,10 @@ export function BubbleNode({
   onBeforeChange: () => void;
   onEditRequest: () => void;
 }) {
-  const groupRef = useRef<Konva.Group>(null);
-  const trRef = useRef<Konva.Transformer>(null);
-  const bodyRef = useRef<Konva.Path>(null);
-  const [textWidth, setTextWidth] = useState<number>(0);
-  const [textHeight, setTextHeight] = useState<number>(0);
+  const groupRef   = useRef<Konva.Group>(null);
+  const trRef      = useRef<Konva.Transformer>(null);
+  const tipRef     = useRef<Konva.Circle>(null);
+  const didPushRef = useRef(false);
 
   useEffect(() => {
     if (isSelected && trRef.current && groupRef.current) {
@@ -47,51 +105,78 @@ export function BubbleNode({
 
   const groupX = bubble.x * pW;
   const groupY = bubble.y * pH;
-  const bodyW = bubble.width * pW;
-  const bodyH = bubble.height * pH;
+  const bodyW  = bubble.width  * pW;
+  const bodyH  = bubble.height * pH;
 
-  // Tail tip expressed in local pixel coordinates relative to the group center.
-  const hasTail = !!bubble.tail?.enabled;
-  const tipLocalX = hasTail ? (bubble.tail!.tipX - bubble.x) * pW : 0;
-  const tipLocalY = hasTail ? (bubble.tail!.tipY - bubble.y) * pH : 0;
+  // Resolve tail to structured model (migrates legacy tipX/tipY if needed)
+  const resolvedTail = bubble.tail
+    ? migrateTail(bubble.tail, bodyW, bodyH)
+    : null;
 
-  // Compute geometry parameters directly in local pixel space (centered at 0,0).
+  // Geometry params for path builder
   const geomParams = {
-    x: 0, // group center
-    y: 0,
+    x: 0, y: 0,
     width: bodyW,
     height: bodyH,
     rotation: bubble.rotation,
-    tipX: tipLocalX,
-    tipY: tipLocalY,
-    tailWidth: bubble.tail?.width ?? 0.2,
+    tail: resolvedTail,
   };
 
   const pathString = getBubblePath(bubble.kind, geomParams);
 
-  // Text sizing
-  const fontSize = bubble.text.fontSize * previewScale;
-  const padding = 10 * previewScale;
-  const maxTextW = bodyW - padding * 2;
-  const maxTextH = bodyH - padding * 2;
+  // Thought tail circles
+  const thoughtCircles = bubble.kind === 'thought'
+    ? getThoughtTailCircles(resolvedTail, bodyW, bodyH)
+    : [];
 
-  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+  // Tip handle position in local pixel coords
+  const hasTail  = !!resolvedTail?.enabled;
+  const tipLocal = hasTail && resolvedTail ? tailTipPixels(resolvedTail, bodyW, bodyH) : { x: 0, y: 0 };
+
+  // Text layout
+  const fontSize = bubble.text.fontSize * previewScale;
+  const padding  = Math.max(8, bodyW * 0.08) * previewScale;
+  const isDashed = bubble.kind === 'whisper';
+
+  // ── Drag handlers ────────────────────────────────────────────────────────
+  const handleGroupDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
     onChange({ x: e.target.x() / pW, y: e.target.y() / pH });
   };
 
   const handleTransformEnd = () => {
     const node = groupRef.current;
     if (!node) return;
+    const scX = node.scaleX();
+    const scY = node.scaleY();
+    node.scaleX(1);
+    node.scaleY(1);
     onChange({
-      x: node.x() / pW,
-      y: node.y() / pH,
-      width: node.scaleX() * bubble.width,
-      height: node.scaleY() * bubble.height,
+      x:        node.x() / pW,
+      y:        node.y() / pH,
+      width:    bubble.width  * scX,
+      height:   bubble.height * scY,
       rotation: node.rotation(),
     });
   };
 
-  const isDashed = bubble.kind === 'whisper';
+  // Tip handle drag – pushHistory once at start, update live without history
+  const handleTipDragStart = () => {
+    if (!didPushRef.current) {
+      onBeforeChange();
+      didPushRef.current = true;
+    }
+  };
+
+  const handleTipDragMove = (e: Konva.KonvaEventObject<DragEvent>) => {
+    if (!resolvedTail) return;
+    const newTail = tipPixelToTail(e.target.x(), e.target.y(), bodyW, bodyH, resolvedTail);
+    // Live update without history
+    onChange({ tail: newTail });
+  };
+
+  const handleTipDragEnd = () => {
+    didPushRef.current = false;
+  };
 
   return (
     <>
@@ -109,20 +194,34 @@ export function BubbleNode({
         onDblTap={onEditRequest}
         onDragStart={onBeforeChange}
         onTransformStart={onBeforeChange}
-        onDragEnd={handleDragEnd}
+        onDragEnd={handleGroupDragEnd}
         onTransformEnd={handleTransformEnd}
       >
-        {/* Bubble body */}
+        {/* ── Body ─────────────────────────────────────────────────────── */}
         <Path
-          ref={bodyRef}
           data={pathString}
           fill={bubble.fill}
           stroke={bubble.stroke}
           strokeWidth={bubble.strokeWidth * previewScale}
-          strokeDasharray={isDashed ? [6 * previewScale, 4 * previewScale] : undefined}
+          dash={isDashed ? [6 * previewScale, 4 * previewScale] : undefined}
+          dashEnabled={isDashed}
         />
 
-        {/* Text inside bubble */}
+        {/* ── Thought tail circles ─────────────────────────────────────── */}
+        {thoughtCircles.map((c, i) => (
+          <Circle
+            key={i}
+            x={c.cx}
+            y={c.cy}
+            radius={c.r}
+            fill={bubble.fill}
+            stroke={bubble.stroke}
+            strokeWidth={bubble.strokeWidth * previewScale}
+            listening={false}
+          />
+        ))}
+
+        {/* ── Text ─────────────────────────────────────────────────────── */}
         <KonvaText
           x={-bodyW / 2}
           y={-bodyH / 2}
@@ -137,45 +236,64 @@ export function BubbleNode({
           verticalAlign="middle"
           padding={padding}
           wrap="word"
-          onClick={onSelect}
-          onTap={onSelect}
-          onDblClick={onEditRequest}
-          onDblTap={onEditRequest}
+          listening={false}
         />
 
-        {/* Tail anchor point (visible when selected) */}
-        {isSelected && bubble.tail?.enabled && (
-          <KonvaText
-            x={(bubble.tail.tipX - bubble.x) * pW}
-            y={(bubble.tail.tipY - bubble.y) * pH}
-            text="●"
-            fontSize={12 * previewScale}
+        {/* ── Tail tip handle (large, grab-friendly) ───────────────────── */}
+        {isSelected && hasTail && resolvedTail && (
+          <Circle
+            ref={tipRef}
+            x={tipLocal.x}
+            y={tipLocal.y}
+            radius={10 * previewScale}
             fill="#ff6b6b"
-            offsetX={6 * previewScale}
-            offsetY={6 * previewScale}
+            stroke="#ffffff"
+            strokeWidth={2 * previewScale}
+            hitStrokeWidth={18 * previewScale}
             draggable
-            onDragStart={onBeforeChange}
+            onMouseEnter={e => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = 'grab';
+            }}
+            onMouseLeave={e => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = '';
+            }}
+            onDragStart={e => {
+              e.cancelBubble = true;
+              handleTipDragStart();
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = 'grabbing';
+            }}
+            onDragMove={e => {
+              e.cancelBubble = true;
+              handleTipDragMove(e);
+            }}
             onDragEnd={e => {
-              const newTipX = bubble.x + (e.target.x() + 6 * previewScale) / pW;
-              const newTipY = bubble.y + (e.target.y() + 6 * previewScale) / pH;
-              onChange({
-                tail: bubble.tail ? { ...bubble.tail, tipX: newTipX, tipY: newTipY } : null,
-              });
+              e.cancelBubble = true;
+              handleTipDragEnd();
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = 'grab';
             }}
           />
         )}
       </Group>
 
+      {/* ── Transformer ──────────────────────────────────────────────────── */}
       {isSelected && (
         <Transformer
           ref={trRef}
           boundBoxFunc={(oldBox, newBox) => {
-            if (newBox.width < 5 || newBox.height < 5) return oldBox;
+            if (newBox.width < 20 || newBox.height < 20) return oldBox;
             return newBox;
           }}
           rotateEnabled
           keepRatio={false}
-          enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']}
+          enabledAnchors={[
+            'top-left', 'top-center', 'top-right',
+            'middle-left', 'middle-right',
+            'bottom-left', 'bottom-center', 'bottom-right',
+          ]}
         />
       )}
     </>

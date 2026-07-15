@@ -3,6 +3,7 @@ import {
   buildCleanupMask,
   buildCleanupSource,
   buildCleanupSourceCanvas,
+  buildElementsMaskCanvas,
   createCleanupPatch,
   createColorPatch,
   prepareClipdropCleanupInput,
@@ -180,7 +181,7 @@ export async function aiCleanupMaskedArea(signal?: AbortSignal): Promise<void> {
   const current = refreshDoc(doc.id) ?? doc;
   useStore.getState().addAiLayer(doc.id, {
     id: newLayerId(),
-    name: `Удаление объекта ${current.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
+    name: `Удален��е объекта ${current.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
     src: patch,
     visible: true,
     opacity: 1,
@@ -224,4 +225,56 @@ export async function removeBackgroundFromLayer(layer: { id: string; type: 'base
     replacesBase: layer.type === 'base',
     eraseElements: [],
   });
+}
+
+/**
+ * Ctrl+C / Ctrl+J — «Слой из выделения».
+ * Renders the active raster layer (base or ai) with all adjustments applied,
+ * then punches out everything outside the active mask, and creates a new
+ * full-document-size raster layer immediately above the source.
+ * Returns an error string on failure (so the caller can show a toast/message).
+ */
+export async function createLayerFromSelection(): Promise<string | null> {
+  const doc = getActiveDoc();
+  if (!doc) return 'Нет активного изображения.';
+
+  // ── 1. Require active selection ──────────────────────────────────────────
+  if (!hasActiveSelection(doc)) return 'Сначала создайте выделение.';
+  const mask = await buildCleanupMask(doc);
+  if (mask.isEmpty) return 'Сначала создайте выделение.';
+
+  // ── 2. Build the full-res source canvas (with all adjustments baked in) ─
+  const sourceCanvas = await buildCleanupSourceCanvas(doc);
+  const W = sourceCanvas.width;
+  const H = sourceCanvas.height;
+
+  // ── 3. Apply mask: keep only pixels inside the selection ─────────────────
+  const resultCanvas = document.createElement('canvas');
+  resultCanvas.width = W;
+  resultCanvas.height = H;
+  const ctx = resultCanvas.getContext('2d')!;
+  ctx.drawImage(sourceCanvas, 0, 0);
+
+  // Use the mask as a destination-in clip: areas where mask alpha > 0 survive.
+  const maskCanvas = mask.canvas;
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.drawImage(maskCanvas, 0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+
+  const src = resultCanvas.toDataURL('image/png');
+
+  // ── 4. Add layer ──────────────────────────────────────────────────────────
+  const count = doc.aiLayers.filter(l => l.operation === 'drawing').length;
+  useStore.getState().pushHistory();
+  useStore.getState().addAiLayer(doc.id, {
+    id: newLayerId(),
+    name: `Копия выделения ${count + 1}`,
+    src,
+    visible: true,
+    opacity: 1,
+    operation: 'drawing',
+    locked: false,
+    eraseElements: [],
+  });
+  return null; // success
 }

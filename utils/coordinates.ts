@@ -57,8 +57,8 @@ export function sanitizeBubble(bubble: BubbleObject): BubbleObject | null {
     text: { ...bubble.text },
     tail: bubble.tail ? {
       ...bubble.tail,
-      tipX: clamp01(bubble.tail.tipX),
-      tipY: clamp01(bubble.tail.tipY),
+      tipX: bubble.tail.tipX != null ? clamp01(bubble.tail.tipX) : undefined,
+      tipY: bubble.tail.tipY != null ? clamp01(bubble.tail.tipY) : undefined,
       width: Math.max(0.01, Math.min(1, Math.abs(bubble.tail.width))),
     } : null,
   };

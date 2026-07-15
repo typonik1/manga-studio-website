@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { Copy, Layers, Trash2 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { aiCleanupMaskedArea, deleteMaskedPixels, fillMaskedArea, hasActiveSelection, inpaintMaskedArea } from '@/utils/layerActions';
+import { EditorSlider } from './EditorSlider';
 import type { SelectionMode } from '@/types';
 
 const toolTitles: Record<string, string> = {
@@ -46,10 +47,27 @@ export function ToolOptionsBar() {
     <div className="tool-options" aria-label="Параметры активного инструмента" style={{ pointerEvents: 'auto', zIndex: 40 }} onMouseDown={event => event.stopPropagation()}>
       <strong>{toolTitles[activeTool] ?? 'Инструмент'}</strong>
       {isMarking && <>
-        <label>Размер <input type="range" min="3" max="200" value={Math.round(cleanupSettings.brushSize * 1000)} onChange={e => updateCleanupSettings({ brushSize: Number(e.target.value) / 1000 })} /></label>
-        <input className="tool-number" aria-label="Размер инструмента" type="number" min="3" max="200" value={Math.round(cleanupSettings.brushSize * 1000)} onChange={e => updateCleanupSettings({ brushSize: Math.max(3, Math.min(200, Number(e.target.value))) / 1000 })} />
-        <label>Жёсткость <input type="range" min="0" max="100" value={Math.round(cleanupSettings.brushHardness * 100)} onChange={e => updateCleanupSettings({ brushHardness: Number(e.target.value) / 100 })} /></label>
-        <span>{Math.round(cleanupSettings.brushHardness * 100)}%</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          Размер
+          <EditorSlider label="Размер кисти" min={3} max={200} step={1}
+            value={Math.round(cleanupSettings.brushSize * 1000)}
+            onChange={v => updateCleanupSettings({ brushSize: v / 1000 })}
+            style={{ width: 120 }}
+          />
+          <input className="tool-number" aria-label="Размер инструмента" type="number" min="3" max="200"
+            value={Math.round(cleanupSettings.brushSize * 1000)}
+            onChange={e => updateCleanupSettings({ brushSize: Math.max(3, Math.min(200, Number(e.target.value))) / 1000 })}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          Жёсткость
+          <EditorSlider label="Жёсткость кисти" min={0} max={100} step={1}
+            value={Math.round(cleanupSettings.brushHardness * 100)}
+            onChange={v => updateCleanupSettings({ brushHardness: v / 100 })}
+            style={{ width: 90 }}
+          />
+          <span>{Math.round(cleanupSettings.brushHardness * 100)}%</span>
+        </label>
         {activeTool === 'brush' && <input aria-label="Цвет кисти" title="Цвет кисти" type="color" value={cleanupSettings.brushColor} onChange={event => updateCleanupSettings({ brushColor: event.target.value })} onMouseDown={event => event.stopPropagation()} style={{ width: 30, height: 26, cursor: 'pointer', pointerEvents: 'auto' }} />}
       </>}
       {activeTool === 'pan' && <span>Перетаскивайте холст. Удерживайте Space для временного режима.</span>}
@@ -76,8 +94,15 @@ export function ToolOptionsBar() {
         </div>
 
         {activeTool === 'wand' && <>
-          <label>Порог <input type="range" min="1" max="100" value={cleanupSettings.magicThreshold} onChange={e => updateCleanupSettings({ magicThreshold: Number(e.target.value) })} /></label>
-          <span>{cleanupSettings.magicThreshold}</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            Порог
+            <EditorSlider label="Порог волшебной палочки" min={1} max={100} step={1}
+              value={cleanupSettings.magicThreshold}
+              onChange={v => updateCleanupSettings({ magicThreshold: v })}
+              style={{ width: 90 }}
+            />
+            <span>{cleanupSettings.magicThreshold}</span>
+          </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="Только связанная область вокруг точки клика">
             <input type="checkbox" checked={cleanupSettings.wandContiguous} onChange={e => updateCleanupSettings({ wandContiguous: e.target.checked })} />
             Смежные
@@ -114,7 +139,7 @@ export function ToolOptionsBar() {
         <button disabled={!selectionActive} onClick={state.clearActiveMask}>Сбросить</button>
       </>}
 
-      {(activeTool === 'text' || activeTool === 'watermark') && <button onClick={() => state.setLeftTab(activeTool === 'text' ? 'text' : 'watermark')}>Открыть настройки</button>}
+      {activeTool === 'text' && <button onClick={() => state.setLeftTab('text')}>Открыть настройки</button>}
       {activeTool === 'select' && (selectedObject ? <>
         <span>{selectedObject.type === 'text' ? 'Текст' : selectedObject.type === 'shape' ? 'Фигура' : 'Вотерка'}</span>
         <button onClick={state.duplicateSelectedObject}><Copy size={14} /> Дублировать</button>

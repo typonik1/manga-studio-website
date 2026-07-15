@@ -15,7 +15,7 @@ export function TextPanel() {
   const {
     textSettings, updateTextSettings, addText, activeDocIndex, documents,
     selectedObject, updateText, customFonts, addCustomFont, bumpFontsVersion,
-    addStroke, restorePageSourceText,
+    addStroke, restorePageSourceText, setActiveTool,
   } = useStore();
   const customFontRef = useRef<HTMLInputElement>(null);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -41,29 +41,8 @@ export function TextPanel() {
     setPageStatus('Перевод отменён · показан исходный текст так, как его распознал OCR.');
   }
 
-  function handleAddText() {
-    if (!activeDoc) return;
-    const text: TextObject = {
-      id: uid(),
-      text: 'Текст',
-      fontFamily: textSettings.fontFamily,
-      fontSize: textSettings.fontSize,
-      fill: textSettings.fill,
-      stroke: textSettings.stroke,
-      strokeWidth: textSettings.strokeWidth,
-      shadowColor: textSettings.shadowColor,
-      shadowBlur: textSettings.shadowBlur,
-      lineHeight: textSettings.lineHeight,
-      align: textSettings.align,
-      width: textSettings.width,
-      x: 0.5,
-      y: 0.5,
-      scaleX: 1,
-      scaleY: 1,
-      rotation: 0,
-      visible: true,
-    };
-    addText(text);
+  function handleActivateTextTool() {
+    setActiveTool('text');
   }
 
   function applyPreset(key: string) {
@@ -529,8 +508,33 @@ export function TextPanel() {
 
       <div className="divider" />
 
+      {/* Draft text — shown even without a selected object */}
+      <div>
+        <PanelLabel>Текст для вставки</PanelLabel>
+        <textarea
+          value={textSettings.draftText}
+          onChange={e => updateTextSettings({ draftText: e.target.value })}
+          placeholder="Введите текст, затем кликните на холст"
+          rows={3}
+          onWheel={e => e.stopPropagation()}
+          style={{
+            width: '100%',
+            resize: 'vertical',
+            background: 'var(--bg-panel-raised)',
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            color: 'var(--text-primary)',
+            fontSize: 12,
+            padding: '6px 8px',
+            fontFamily: 'inherit',
+            lineHeight: 1.4,
+            boxSizing: 'border-box',
+          }}
+        />
+      </div>
+
       <button
-        onClick={handleAddText}
+        onClick={handleActivateTextTool}
         disabled={!hasDoc}
         style={{
           padding: '7px 10px', borderRadius: 6, fontWeight: 600, fontSize: 13,
@@ -540,7 +544,7 @@ export function TextPanel() {
           cursor: hasDoc ? 'pointer' : 'not-allowed',
         }}
       >
-        + Добавить текст (T)
+        Разместить текст (T)
       </button>
     </div>
   );

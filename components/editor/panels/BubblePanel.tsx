@@ -2,64 +2,190 @@
 
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import type { BubbleObject, BubbleKind } from '@/types';
-import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import type { BubbleObject, BubbleKind, BubbleTail } from '@/types';
 import { MANGA_FONTS } from '@/types';
+import { getBubblePath, getThoughtTailCircles } from '@/utils/bubbleGeometry';
 
-const BUBBLE_TYPES: { kind: BubbleKind; label: string }[] = [
-  { kind: 'speech', label: 'Речь' },
-  { kind: 'thought', label: 'Мысль' },
-  { kind: 'scream', label: 'Крик' },
-  { kind: 'narration', label: 'Нарратив' },
-  { kind: 'whisper', label: 'Шёпот' },
+// ─────────────────────────────────────────────────────────────────────────────
+// Mini SVG preview for each bubble kind
+// ─────────────────────────────────────────────────────────────────────────────
+const PREVIEW_W = 80;
+const PREVIEW_H = 56;
+
+interface PreviewDef {
+  kind: BubbleKind;
+  label: string;
+  subLabel?: string;
+  defaultTail?: BubbleTail | null;
+  strokeDash?: string;
+}
+
+const PREVIEWS: PreviewDef[] = [
+  {
+    kind: 'speech',
+    label: 'Речь',
+    defaultTail: { enabled: true, side: 'bottom', anchor: 0.35, length: 0.45, width: 0.12, curve: 0.3 },
+  },
+  {
+    kind: 'thought',
+    label: 'Мысль',
+    defaultTail: { enabled: true, side: 'bottom', anchor: 0.35, length: 0.5, width: 0.12, curve: 0.3 },
+  },
+  {
+    kind: 'scream',
+    label: 'Крик',
+    defaultTail: null,
+  },
+  {
+    kind: 'whisper',
+    label: 'Шёпот',
+    defaultTail: { enabled: true, side: 'bottom', anchor: 0.35, length: 0.35, width: 0.08, curve: 0.2 },
+    strokeDash: '4,3',
+  },
+  {
+    kind: 'narration',
+    label: 'Нарратив',
+    defaultTail: null,
+  },
 ];
 
-const TAIL_DIRECTIONS = [
-  { label: 'N', tipX: 0.5, tipY: -0.15 },
-  { label: 'NE', tipX: 0.65, tipY: -0.1 },
-  { label: 'E', tipX: 0.8, tipY: 0.5 },
-  { label: 'SE', tipX: 0.65, tipY: 1.1 },
-  { label: 'S', tipX: 0.5, tipY: 1.15 },
-  { label: 'SW', tipX: 0.35, tipY: 1.1 },
-  { label: 'W', tipX: 0.2, tipY: 0.5 },
-  { label: 'NW', tipX: 0.35, tipY: -0.1 },
+function BubblePreview({ def, active, onClick }: { def: PreviewDef; active: boolean; onClick: () => void }) {
+  const W = PREVIEW_W, H = PREVIEW_H;
+  const bodyW = W * 0.72, bodyH = H * 0.54;
+  const cx = W / 2, cy = H * 0.42;
+
+  const params = {
+    x: 0, y: 0,
+    width: bodyW, height: bodyH,
+    rotation: 0,
+    tail: def.defaultTail,
+  };
+
+  const d = getBubblePath(def.kind, params, { rays: 16, spikiness: 0.3, cornerRadius: 5 });
+  const thoughtCircles = def.kind === 'thought'
+    ? getThoughtTailCircles(def.defaultTail ?? null, bodyW, bodyH)
+    : [];
+
+  return (
+    <button
+      onClick={onClick}
+      title={def.label}
+      style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+        padding: '5px 3px',
+        background: active ? 'var(--accent-dim)' : 'var(--bg-panel-raised)',
+        border: active ? '1.5px solid var(--accent)' : '1px solid var(--border-default)',
+        borderRadius: 6, cursor: 'pointer', transition: 'border-color 0.12s',
+        minWidth: W + 8,
+      }}
+    >
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ overflow: 'visible' }}>
+        <g transform={`translate(${cx} ${cy})`}>
+          <path
+            d={d}
+            fill="#ffffff"
+            stroke="#333333"
+            strokeWidth={1.2}
+            strokeDasharray={def.strokeDash}
+          />
+          {thoughtCircles.map((c, i) => (
+            <circle key={i} cx={c.cx} cy={c.cy} r={c.r} fill="#ffffff" stroke="#333333" strokeWidth={1} />
+          ))}
+        </g>
+      </svg>
+      <span style={{ fontSize: 9, color: 'var(--text-secondary)', fontWeight: 500 }}>{def.label}</span>
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tail direction presets (side + arrow label)
+// ─────────────────────────────────────────────────────────────────────────────
+const TAIL_PRESETS: Array<{ side: BubbleTail['side']; anchor: number; label: string }> = [
+  { side: 'top',    anchor: 0.5,  label: '↑' },
+  { side: 'top',    anchor: 0.25, label: '↖' },
+  { side: 'top',    anchor: 0.75, label: '↗' },
+  { side: 'right',  anchor: 0.5,  label: '→' },
+  { side: 'bottom', anchor: 0.5,  label: '↓' },
+  { side: 'bottom', anchor: 0.75, label: '↘' },
+  { side: 'bottom', anchor: 0.25, label: '↙' },
+  { side: 'left',   anchor: 0.5,  label: '←' },
 ];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Slider row
+// ─────────────────────────────────────────────────────────────────────────────
+function SliderRow({
+  label, value, min, max, step, onChange, fmt,
+}: {
+  label: string;
+  value: number;
+  min: number; max: number; step: number;
+  onChange: (v: number) => void;
+  fmt?: (v: number) => string;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+      <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 80, flexShrink: 0 }}>{label}</span>
+      <input
+        type="range"
+        min={min} max={max} step={step}
+        value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        onWheel={e => {
+          e.preventDefault();
+          e.stopPropagation();
+          const dir = e.deltaY < 0 ? 1 : -1;
+          const mult = e.shiftKey ? 10 : 1;
+          onChange(Math.max(min, Math.min(max, value + dir * step * mult)));
+        }}
+        onPointerDown={e => {
+          e.stopPropagation();
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerUp={e => { e.currentTarget.releasePointerCapture(e.pointerId); }}
+        onDragStart={e => e.preventDefault()}
+        style={{ flex: 1 }}
+      />
+      <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 28, textAlign: 'right', flexShrink: 0 }}>
+        {fmt ? fmt(value) : value}
+      </span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main panel
+// ─────────────────────────────────────────────────────────────────────────────
 export function BubblePanel() {
-  const {
-    activeDocIndex, documents, selectedObject, addBubble, updateBubble,
-  } = useStore();
+  const { activeDocIndex, documents, selectedObject, addBubble, updateBubble } = useStore();
 
-  const hasDoc = activeDocIndex >= 0;
+  const hasDoc    = activeDocIndex >= 0;
   const activeDoc = hasDoc ? documents[activeDocIndex] : null;
   const selectedBubble = selectedObject?.type === 'bubble' && activeDoc
-    ? activeDoc.bubbles?.find(b => b.id === selectedObject.id) ?? null
+    ? (activeDoc.bubbles ?? []).find(b => b.id === selectedObject.id) ?? null
     : null;
 
   function createBubble(kind: BubbleKind) {
     if (!activeDoc) return;
+    const defaultTail = PREVIEWS.find(p => p.kind === kind)?.defaultTail;
     const bubble: BubbleObject = {
       id: uid(),
       kind,
       visible: true,
-      x: 0.5,
-      y: 0.5,
-      width: 0.3,
-      height: 0.2,
+      x: 0.5, y: 0.5,
+      width: 0.3, height: 0.2,
       rotation: 0,
       autoSize: true,
-      tail: kind === 'narration' ? null : {
-        enabled: true,
-        tipX: 0.7,
-        tipY: 0.8,
-        width: 0.2,
+      tail: defaultTail !== undefined ? defaultTail : {
+        enabled: true, side: 'bottom', anchor: 0.35,
+        length: 0.4, width: 0.12, curve: 0.3,
       },
       fill: '#ffffff',
       stroke: '#000000',
       strokeWidth: 2,
       text: {
-        content: 'Текст',
+        content: '',
         fontFamily: 'Russo One',
         fontSize: 14,
         fill: '#000000',
@@ -70,206 +196,244 @@ export function BubblePanel() {
     addBubble(bubble);
   }
 
+  function updateTail(updates: Partial<BubbleTail>) {
+    if (!selectedBubble) return;
+    const prev = selectedBubble.tail ?? { enabled: true, side: 'bottom' as const, anchor: 0.35, length: 0.4, width: 0.12, curve: 0.3 };
+    updateBubble(selectedBubble.id, { tail: { ...prev, ...updates } });
+  }
+
+  const tail = selectedBubble?.tail;
+  const hasTail = !!tail?.enabled;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {!selectedBubble && (
-        <>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            Выберите или создайте бабл, чтобы редактировать его параметры
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingBottom: 12 }}>
+
+      {/* ── Type cards ────────────────────────────────────────────────── */}
+      <div>
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '0 2px 6px' }}>Тип бабла</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {PREVIEWS.map(def => (
+            <BubblePreview
+              key={def.kind}
+              def={def}
+              active={selectedBubble?.kind === def.kind}
+              onClick={() => {
+                if (selectedBubble) {
+                  const newTail = def.defaultTail !== undefined ? def.defaultTail : selectedBubble.tail;
+                  updateBubble(selectedBubble.id, { kind: def.kind, tail: newTail });
+                } else {
+                  createBubble(def.kind);
+                }
+              }}
+            />
+          ))}
+        </div>
+        {!selectedBubble && (
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6, padding: '0 2px' }}>
+            Нажмите на карточку, чтобы добавить бабл
           </div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '0 2px 4px' }}>Тип бабла</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 4 }}>
-            {BUBBLE_TYPES.map(({ kind, label }) => (
-              <button
-                key={kind}
-                onClick={() => createBubble(kind)}
-                style={{
-                  padding: '6px 8px', fontSize: 10, borderRadius: 4,
-                  border: '1px solid var(--border-default)',
-                  background: 'var(--bg-panel-raised)',
-                  color: 'var(--text-secondary)', cursor: 'pointer',
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+        )}
+      </div>
 
       {selectedBubble && (
         <>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '0 2px 4px' }}>Тип бабла</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 4 }}>
-            {BUBBLE_TYPES.map(({ kind, label }) => (
-              <button
-                key={kind}
-                onClick={() => {
-                  updateBubble(selectedBubble.id, {
-                    kind,
-                    tail: kind === 'narration' ? null : selectedBubble.tail || {
-                      enabled: true,
-                      tipX: 0.7,
-                      tipY: 0.8,
-                      width: 0.2,
-                    },
-                  });
-                }}
-                style={{
-                  padding: '6px 8px', fontSize: 10, borderRadius: 4,
-                  border: selectedBubble.kind === kind ? '1.5px solid var(--accent)' : '1px solid var(--border-default)',
-                  background: selectedBubble.kind === kind ? 'var(--accent-dim)' : 'var(--bg-panel-raised)',
-                  color: 'var(--text-secondary)', cursor: 'pointer',
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Text content */}
+          {/* ── Text content ───────────────────────────────────────────── */}
           <div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '6px 2px 4px' }}>Текст</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '2px 2px 4px' }}>Текст</div>
             <textarea
               value={selectedBubble.text.content}
               onChange={e => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, content: e.target.value } })}
-              style={{ width: '100%', height: 60, padding: 6, fontSize: 11, borderRadius: 4, border: '1px solid var(--border-default)', fontFamily: 'monospace' }}
+              style={{
+                width: '100%', height: 60, padding: 6, fontSize: 11,
+                borderRadius: 4, border: '1px solid var(--border-default)',
+                fontFamily: selectedBubble.text.fontFamily, resize: 'vertical',
+                background: 'var(--bg-input)', color: 'var(--text-primary)',
+              }}
               placeholder="Введите текст бабла"
             />
           </div>
 
-          {/* Tail direction presets */}
+          {/* ── Fill / stroke ───────────────────────────────────────────── */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Заливка</span>
+              <input
+                type="color"
+                value={selectedBubble.fill}
+                onChange={e => updateBubble(selectedBubble.id, { fill: e.target.value })}
+                style={{ width: 28, height: 22, border: 'none', background: 'none', cursor: 'pointer' }}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Обводка</span>
+              <input
+                type="color"
+                value={selectedBubble.stroke}
+                onChange={e => updateBubble(selectedBubble.id, { stroke: e.target.value })}
+                style={{ width: 28, height: 22, border: 'none', background: 'none', cursor: 'pointer' }}
+              />
+            </div>
+          </div>
+
+          <SliderRow
+            label="Толщина обводки"
+            value={selectedBubble.strokeWidth}
+            min={0} max={10} step={0.5}
+            onChange={v => updateBubble(selectedBubble.id, { strokeWidth: v })}
+            fmt={v => v.toFixed(1)}
+          />
+
+          {/* ── Text settings ───────────────────────────────────────────── */}
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '2px 2px 4px' }}>Текст бабла</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 80 }}>Цвет текста</span>
+              <input
+                type="color"
+                value={selectedBubble.text.fill}
+                onChange={e => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, fill: e.target.value } })}
+                style={{ width: 28, height: 22, border: 'none', background: 'none', cursor: 'pointer' }}
+              />
+            </div>
+            <SliderRow
+              label="Размер шрифта"
+              value={selectedBubble.text.fontSize}
+              min={8} max={72} step={1}
+              onChange={v => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, fontSize: v } })}
+            />
+            <SliderRow
+              label="Межстрочный"
+              value={selectedBubble.text.lineHeight}
+              min={0.8} max={3} step={0.05}
+              onChange={v => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, lineHeight: v } })}
+              fmt={v => v.toFixed(2)}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 80 }}>Выравнивание</span>
+              {(['left', 'center', 'right'] as const).map(a => (
+                <button
+                  key={a}
+                  onClick={() => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, align: a } })}
+                  style={{
+                    padding: '3px 6px', fontSize: 10, borderRadius: 3,
+                    border: selectedBubble.text.align === a ? '1.5px solid var(--accent)' : '1px solid var(--border-default)',
+                    background: selectedBubble.text.align === a ? 'var(--accent-dim)' : 'var(--bg-panel-raised)',
+                    color: 'var(--text-secondary)', cursor: 'pointer',
+                  }}
+                >
+                  {a === 'left' ? '⬅' : a === 'center' ? '≡' : '➡'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Tail settings ───────────────────────────────────────────── */}
           {selectedBubble.kind !== 'narration' && (
             <div>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '6px 2px 4px' }}>Направление хвоста</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 2 }}>
-                {TAIL_DIRECTIONS.map((dir, idx) => (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 2px 6px' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500 }}>Хвост</div>
+                <div style={{ display: 'flex', gap: 4 }}>
                   <button
-                    key={idx}
-                    onClick={() => {
-                      if (selectedBubble.tail) {
-                        updateBubble(selectedBubble.id, {
-                          tail: {
-                            ...selectedBubble.tail,
-                            tipX: selectedBubble.x + (dir.tipX - 0.5) * selectedBubble.width * 1.5,
-                            tipY: selectedBubble.y + (dir.tipY - 0.5) * selectedBubble.height * 1.5,
-                          },
-                        });
-                      }
-                    }}
+                    onClick={() => updateTail({ enabled: !hasTail })}
                     style={{
-                      padding: '4px', fontSize: 10, borderRadius: 3,
+                      padding: '3px 8px', fontSize: 9, borderRadius: 3, cursor: 'pointer',
                       border: '1px solid var(--border-default)',
-                      background: 'var(--bg-panel-raised)',
-                      color: 'var(--text-secondary)', cursor: 'pointer',
+                      background: hasTail ? 'var(--accent-dim)' : 'var(--bg-panel-raised)',
+                      color: hasTail ? 'var(--accent)' : 'var(--text-muted)',
                     }}
                   >
-                    {dir.label}
+                    {hasTail ? 'Вкл' : 'Выкл'}
                   </button>
-                ))}
+                  {hasTail && (
+                    <button
+                      onClick={() => updateBubble(selectedBubble.id, { tail: null })}
+                      style={{
+                        padding: '3px 8px', fontSize: 9, borderRadius: 3, cursor: 'pointer',
+                        border: '1px solid var(--border-default)',
+                        background: 'var(--bg-panel-raised)', color: 'var(--text-muted)',
+                      }}
+                    >
+                      Убрать
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {hasTail && tail && (
+                <>
+                  {/* Direction presets */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 2, marginBottom: 6 }}>
+                    {TAIL_PRESETS.map((p, i) => (
+                      <button
+                        key={i}
+                        title={`${p.side} ${Math.round(p.anchor * 100)}%`}
+                        onClick={() => updateTail({ side: p.side, anchor: p.anchor })}
+                        style={{
+                          padding: '4px 0', fontSize: 13, textAlign: 'center', borderRadius: 3, cursor: 'pointer',
+                          border: tail.side === p.side && Math.abs((tail.anchor ?? 0.5) - p.anchor) < 0.15
+                            ? '1.5px solid var(--accent)' : '1px solid var(--border-default)',
+                          background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <SliderRow
+                    label="Положение"
+                    value={Math.round((tail.anchor ?? 0.5) * 100)}
+                    min={12} max={88} step={1}
+                    onChange={v => updateTail({ anchor: v / 100 })}
+                    fmt={v => `${v}%`}
+                  />
+                  <SliderRow
+                    label="Длина"
+                    value={Math.round((tail.length ?? 0.4) * 100)}
+                    min={8} max={80} step={1}
+                    onChange={v => updateTail({ length: v / 100 })}
+                    fmt={v => `${v}%`}
+                  />
+                  <SliderRow
+                    label="Ширина"
+                    value={Math.round((tail.width ?? 0.12) * 100)}
+                    min={4} max={25} step={1}
+                    onChange={v => updateTail({ width: v / 100 })}
+                    fmt={v => `${v}%`}
+                  />
+                  {selectedBubble.kind !== 'thought' && selectedBubble.kind !== 'scream' && (
+                    <SliderRow
+                      label="Изгиб"
+                      value={Math.round((tail.curve ?? 0.3) * 100)}
+                      min={0} max={100} step={1}
+                      onChange={v => updateTail({ curve: v / 100 })}
+                      fmt={v => `${v}%`}
+                    />
+                  )}
+                </>
+              )}
             </div>
           )}
 
-          {/* Settings */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', flex: 1 }}>Толщина обводки</span>
-            <input
-              type="number"
-              value={selectedBubble.strokeWidth}
-              onChange={e => updateBubble(selectedBubble.id, { strokeWidth: Number(e.target.value) })}
-              min={0}
-              max={10}
-              step={0.5}
-              style={{ width: 50, padding: '4px 6px', fontSize: 10, borderRadius: 3, border: '1px solid var(--border-default)' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', flex: 1 }}>Размер текста</span>
-            <input
-              type="number"
-              value={selectedBubble.text.fontSize}
-              onChange={e => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, fontSize: Number(e.target.value) } })}
-              min={8}
-              max={48}
-              style={{ width: 50, padding: '4px 6px', fontSize: 10, borderRadius: 3, border: '1px solid var(--border-default)' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', flex: 1 }}>Интервал строк</span>
-            <input
-              type="number"
-              value={selectedBubble.text.lineHeight}
-              onChange={e => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, lineHeight: Number(e.target.value) } })}
-              min={1}
-              max={2}
-              step={0.1}
-              style={{ width: 50, padding: '4px 6px', fontSize: 10, borderRadius: 3, border: '1px solid var(--border-default)' }}
-            />
-          </div>
-
-          {/* Colors */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', flex: 1 }}>Заливка</span>
-            <input
-              type="color"
-              value={selectedBubble.fill}
-              onChange={e => updateBubble(selectedBubble.id, { fill: e.target.value })}
-              style={{ width: 32, height: 24, borderRadius: 3, border: '1px solid var(--border-default)', cursor: 'pointer' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', flex: 1 }}>Обводка</span>
-            <input
-              type="color"
-              value={selectedBubble.stroke}
-              onChange={e => updateBubble(selectedBubble.id, { stroke: e.target.value })}
-              style={{ width: 32, height: 24, borderRadius: 3, border: '1px solid var(--border-default)', cursor: 'pointer' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', flex: 1 }}>Цвет текста</span>
-            <input
-              type="color"
-              value={selectedBubble.text.fill}
-              onChange={e => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, fill: e.target.value } })}
-              style={{ width: 32, height: 24, borderRadius: 3, border: '1px solid var(--border-default)', cursor: 'pointer' }}
-            />
-          </div>
-
-          {/* Font */}
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '6px 2px 4px' }}>Шрифт</div>
-          <select
-            value={selectedBubble.text.fontFamily}
-            onChange={e => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, fontFamily: e.target.value } })}
-            style={{ width: '100%', padding: '6px', fontSize: 10, borderRadius: 3, border: '1px solid var(--border-default)' }}
+          {/* ── Fit to text ─────────────────────────────────────────────── */}
+          <button
+            onClick={() => {
+              // Estimate auto size: fontSize * lineHeight * lineCount + padding
+              const lines = (selectedBubble.text.content || '').split('\n').length;
+              const estimatedH = (selectedBubble.text.fontSize / 1000) * selectedBubble.text.lineHeight * (lines + 1) + 0.06;
+              const estimatedW = Math.max(selectedBubble.width, 0.2);
+              updateBubble(selectedBubble.id, { width: estimatedW, height: estimatedH });
+            }}
+            style={{
+              padding: '6px 10px', fontSize: 10, borderRadius: 4, cursor: 'pointer',
+              border: '1px solid var(--border-default)',
+              background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)',
+              textAlign: 'center',
+            }}
           >
-            {MANGA_FONTS.map(font => (
-              <option key={font} value={font}>{font}</option>
-            ))}
-          </select>
-
-          {/* Alignment */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 }}>
-            {(['left', 'center', 'right'] as const).map(align => (
-              <button
-                key={align}
-                onClick={() => updateBubble(selectedBubble.id, { text: { ...selectedBubble.text, align } })}
-                style={{
-                  padding: '6px 8px', fontSize: 10, borderRadius: 4,
-                  border: selectedBubble.text.align === align ? '1.5px solid var(--accent)' : '1px solid var(--border-default)',
-                  background: selectedBubble.text.align === align ? 'var(--accent-dim)' : 'var(--bg-panel-raised)',
-                  color: 'var(--text-secondary)', cursor: 'pointer',
-                }}
-              >
-                {align === 'left' ? 'Левое' : align === 'center' ? 'Центр' : 'Правое'}
-              </button>
-            ))}
-          </div>
+            Подогнать бабл под текст
+          </button>
         </>
       )}
     </div>

@@ -68,7 +68,9 @@ export function EditorShell() {
     if ((e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && e.shiftKey) || (e.code === 'KeyY' && (e.ctrlKey || e.metaKey))) {
       e.preventDefault(); redo(); return;
     }
-    if (e.code === 'KeyV') { setActiveTool('select'); return; }
+    // Ctrl/Cmd+V belongs to the browser clipboard flow (image paste is
+    // handled by CanvasArea). Do not also switch tools while pasting.
+    if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey) { setActiveTool('select'); return; }
     if (e.code === 'KeyH') { setActiveTool('pan'); return; }
     if (e.code === 'KeyB') { setActiveTool('brush'); setLeftTab('cleanup'); return; }
     if (e.code === 'KeyE') { setActiveTool('eraser'); setLeftTab('cleanup'); return; }

@@ -215,6 +215,7 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
             image={perspectiveCanvas}
             width={width}
             height={height}
+            listening={interactive}
             onClick={onSelect}
             onTap={onSelect}
             onContextMenu={onContextMenu}
@@ -243,6 +244,7 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
         scaleY={placement.scaleY ?? 1}
         rotation={placement.rotation ?? 0}
         draggable={draggable}
+        listening={interactive}
         onClick={onSelect}
         onTap={onSelect}
         onContextMenu={onContextMenu}
@@ -893,6 +895,7 @@ export function CanvasArea() {
   const brushFrameRef = useRef<number | null>(null);
   const lastBrushPointRef = useRef<{ x: number; y: number } | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+  const finishPointerRef = useRef<(() => void) | null>(null);
   const isLassoing = useRef(false);
   const lassoPoints = useRef<number[]>([]);
   const liveLassoRef = useRef<Konva.Line>(null);
@@ -1098,6 +1101,10 @@ export function CanvasArea() {
       return;
     }
     if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && activeDoc) {
+      // A captured pointer can occasionally miss Konva's synthetic pointerup
+      // (for example when the browser window loses focus). Never start a
+      // second stroke while the previous one is still marked active.
+      if (isPainting.current) return;
       const stage = stageRef.current;
       if (!stage) return;
       const pos = stage.getPointerPosition();
@@ -1299,12 +1306,37 @@ export function CanvasArea() {
     }
   };
 
+  // Keep a native safety net in addition to Konva's pointerup/cancel events.
+  // Pointer capture is useful for long strokes, but some browsers deliver the
+  // release only to the captured canvas and skip the React-Konva callback.
+  finishPointerRef.current = () => handleMouseUp();
+  useEffect(() => {
+    const finish = (event: PointerEvent) => {
+      if (activePointerIdRef.current === event.pointerId) finishPointerRef.current?.();
+    };
+    const finishOnBlur = () => {
+      if (isPainting.current) finishPointerRef.current?.();
+    };
+    window.addEventListener('pointerup', finish, true);
+    window.addEventListener('pointercancel', finish, true);
+    window.addEventListener('blur', finishOnBlur);
+    return () => {
+      window.removeEventListener('pointerup', finish, true);
+      window.removeEventListener('pointercancel', finish, true);
+      window.removeEventListener('blur', finishOnBlur);
+    };
+  }, []);
+
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     const target = e.target as Konva.Node;
     const onStageOrBase = target === (stageRef.current as unknown as Konva.Node) || target.name() === 'base-image';
 
     // ── Text tool: place text at click position ──────────────────────────────
-    if (activeTool === 'text' && activeDoc && onStageOrBase) {
+    // Konva bubbles clicks from raster Layers/Groups, so restricting this to
+    // Stage/base-image made clicks on the visible artwork silently do nothing.
+    // Any canvas click is a valid insertion point; clicking an existing text
+    // object remains an edit/select gesture instead of creating a duplicate.
+    if (activeTool === 'text' && activeDoc && target.getClassName() !== 'Text') {
       const stage = stageRef.current;
       if (!stage) return;
       const pos = stage.getPointerPosition();
@@ -1351,14 +1383,42 @@ export function CanvasArea() {
   };
 
   // File drop
-  async function handleFiles(files: File[]) {
+  const handleFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
     setLoadingFiles(true);
     setLoadErrors([]);
     const { docs, errors } = await loadImagesFromFiles(files);
     if (docs.length > 0) addDocuments(docs);
     setLoadErrors(errors);
     setLoadingFiles(false);
-  }
+  }, [addDocuments]);
+
+  // Paste image files copied from the desktop, Finder/Explorer or another
+  // image editor. Text clipboard contents are left untouched so normal text
+  // inputs and browser shortcuts keep their native behaviour.
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent) => {
+      const data = event.clipboardData;
+      if (!data) return;
+      const target = event.target as HTMLElement | null;
+      // Keep native paste behaviour in text fields (including the inline text
+      // editor); image paste is intended for the canvas/workspace itself.
+      if (target?.isContentEditable || (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      const files = Array.from(data.files).filter(file => file.type.startsWith('image/'));
+      if (files.length === 0) {
+        for (const item of Array.from(data.items)) {
+          if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+          const file = item.getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      if (files.length === 0) return;
+      event.preventDefault();
+      void handleFiles(files);
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [handleFiles]);
 
   // Keyboard shortcuts: [ ] brush size, Ctrl+C/J (layer from selection), Ctrl+D (deselect)
   useEffect(() => {

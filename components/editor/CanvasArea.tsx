@@ -895,6 +895,7 @@ export function CanvasArea() {
   const brushFrameRef = useRef<number | null>(null);
   const lastBrushPointRef = useRef<{ x: number; y: number } | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+  const activePointerTargetRef = useRef<HTMLElement | null>(null);
   const finishPointerRef = useRef<(() => void) | null>(null);
   const isLassoing = useRef(false);
   const lassoPoints = useRef<number[]>([]);
@@ -1115,7 +1116,11 @@ export function CanvasArea() {
       const imgY = imagePoint.y * imgH;
       isPainting.current = true;
       activePointerIdRef.current = e.evt.pointerId;
-      try { stage.container().setPointerCapture(e.evt.pointerId); } catch { /* capture is best-effort */ }
+      try {
+        const pointerTarget = e.evt.target as HTMLElement;
+        pointerTarget.setPointerCapture(e.evt.pointerId);
+        activePointerTargetRef.current = pointerTarget;
+      } catch { /* capture is best-effort */ }
       strokeId.current = uid();
       currentStroke.current = [imagePoint.x, imagePoint.y];
       pendingBrushPoints.current = [];
@@ -1206,8 +1211,9 @@ export function CanvasArea() {
       flushBrushPreview();
     }
     if (activePointerIdRef.current !== null) {
-      try { stageRef.current?.container().releasePointerCapture(activePointerIdRef.current); } catch { /* already released */ }
+      try { activePointerTargetRef.current?.releasePointerCapture(activePointerIdRef.current); } catch { /* already released */ }
       activePointerIdRef.current = null;
+      activePointerTargetRef.current = null;
     }
     const selMode: 'replace' | 'add' | 'subtract' = e?.evt?.altKey ? 'subtract' : e?.evt?.shiftKey ? 'add' : cleanupSettings.selectionMode;
     if (isRectSelecting.current) {

@@ -2,6 +2,12 @@ type ClipdropOperation = 'cleanup' | 'remove-background';
 
 export class ClipdropClientError extends Error {}
 
+function imageFilename(blob: Blob, basename: string) {
+  if (blob.type === 'image/jpeg') return `${basename}.jpg`;
+  if (blob.type === 'image/webp') return `${basename}.webp`;
+  return `${basename}.png`;
+}
+
 async function runClipdrop(
   operation: ClipdropOperation,
   image: Blob,
@@ -9,8 +15,8 @@ async function runClipdrop(
   signal?: AbortSignal,
 ): Promise<string> {
   const formData = new FormData();
-  formData.append('image_file', image, 'image.png');
-  if (mask) formData.append('mask_file', mask, 'mask.png');
+  formData.append('image_file', image, imageFilename(image, 'image'));
+  if (mask) formData.append('mask_file', mask, imageFilename(mask, 'mask'));
 
   const response = await fetch(`/api/clipdrop/${operation}`, {
     method: 'POST',
@@ -18,6 +24,9 @@ async function runClipdrop(
     signal,
   });
   if (!response.ok) {
+    if (response.status === 413) {
+      throw new ClipdropClientError('Изображение слишком большое для отправки. Попробуйте уменьшить выделение или размер файла.');
+    }
     const payload = await response.json().catch(() => null) as { error?: string } | null;
     throw new ClipdropClientError(payload?.error ?? 'Не удалось обработать изображение.');
   }

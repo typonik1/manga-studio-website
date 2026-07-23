@@ -19,6 +19,77 @@ export function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      blob => blob ? resolve(blob) : reject(new Error('Не удалось подготовить изображение.')),
+      type,
+      quality,
+    );
+  });
+}
+
+export interface BudgetEncodedCanvas {
+  blob: Blob;
+  width: number;
+  height: number;
+}
+
+const CLIPDROP_JPEG_QUALITIES = [0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.5] as const;
+
+/**
+ * Encodes a canvas as JPEG under a byte budget. Quality is reduced first;
+ * when that is insufficient, both dimensions are reduced by 15% and the
+ * quality search starts again. Returned dimensions describe the encoded JPEG
+ * and allow callers to keep paired assets (for example a mask) in sync.
+ */
+export async function encodeCanvasToBudget(canvas: HTMLCanvasElement, maxBytes: number): Promise<BudgetEncodedCanvas> {
+  if (maxBytes <= 0) throw new Error('Некорректный лимит размера изображения.');
+  let width = Math.max(1, canvas.width);
+  let height = Math.max(1, canvas.height);
+
+  for (let resizeAttempt = 0; resizeAttempt < 32; resizeAttempt++) {
+    const output = document.createElement('canvas');
+    output.width = width;
+    output.height = height;
+    const ctx = output.getContext('2d');
+    if (!ctx) throw new Error('Canvas недоступен.');
+    // JPEG has no alpha channel. White is a safer neutral background for
+    // Clipdrop than the browser-dependent black produced from transparency.
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(canvas, 0, 0, width, height);
+
+    for (const quality of CLIPDROP_JPEG_QUALITIES) {
+      const blob = await canvasToBlob(output, 'image/jpeg', quality);
+      if (blob.size < maxBytes) return { blob, width, height };
+    }
+
+    if (width === 1 && height === 1) break;
+    width = Math.max(1, Math.floor(width * 0.85));
+    height = Math.max(1, Math.floor(height * 0.85));
+  }
+
+  throw new Error('Изображение слишком большое для отправки. Попробуйте уменьшить выделение или размер файла.');
+}
+
+/** Converts any supported image blob to a budgeted JPEG. */
+export async function encodeBlobToBudget(blob: Blob, maxBytes: number): Promise<Blob> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = await loadCleanupImage(url);
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas недоступен.');
+    ctx.drawImage(image, 0, 0);
+    return (await encodeCanvasToBudget(canvas, maxBytes)).blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function drawStroke(ctx: CanvasRenderingContext2D, stroke: StrokeData, width: number, height: number) {
   drawBrushStroke(ctx, stroke, width, height, { color: 'white' });
 }
@@ -269,6 +340,9 @@ export async function buildCleanupMask(doc: ImageDocument): Promise<{ blob: Blob
 /** Clipdrop Cleanup rejects images above ~16 megapixels; RBG allows ~25. */
 export const CLIPDROP_CLEANUP_MAX_PIXELS = 16_000_000;
 export const CLIPDROP_RBG_MAX_PIXELS = 25_000_000;
+export const CLIPDROP_CLEANUP_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+export const CLIPDROP_RBG_IMAGE_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
+export const CLIPDROP_REQUEST_MAX_BYTES = 4 * 1024 * 1024;
 
 export interface ClipdropCropPlan {
   image: Blob;
@@ -304,8 +378,11 @@ export async function prepareClipdropCleanupInput(
   }
   if (maxX < 0) throw new Error('Выделение пустое.');
 
-  // Generous context padding helps the model reconstruct the background.
-  const pad = Math.max(96, Math.round(Math.max(maxX - minX, maxY - minY) * 0.6));
+  // Keep useful reconstruction context without turning a medium selection into
+  // an unnecessarily large serverless request.
+  const selectionW = maxX - minX + 1;
+  const selectionH = maxY - minY + 1;
+  const pad = Math.max(64, Math.round(Math.max(selectionW, selectionH) * 0.35));
   const cropX = Math.max(0, minX - pad);
   const cropY = Math.max(0, minY - pad);
   const cropW = Math.min(width, maxX + pad + 1) - cropX;
@@ -319,22 +396,49 @@ export async function prepareClipdropCleanupInput(
   const outH = Math.max(1, Math.floor(cropH * scale));
 
   const source = await buildCleanupSourceCanvas(doc);
-  const imageCrop = document.createElement('canvas');
-  imageCrop.width = outW; imageCrop.height = outH;
-  imageCrop.getContext('2d')!.drawImage(source, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+  let targetW = outW;
+  let targetH = outH;
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const imageCrop = document.createElement('canvas');
+    imageCrop.width = targetW;
+    imageCrop.height = targetH;
+    const imageCtx = imageCrop.getContext('2d');
+    if (!imageCtx) throw new Error('Canvas недоступен.');
+    imageCtx.fillStyle = 'white';
+    imageCtx.fillRect(0, 0, targetW, targetH);
+    imageCtx.drawImage(source, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
 
-  const maskCrop = document.createElement('canvas');
-  maskCrop.width = outW; maskCrop.height = outH;
-  const maskCropCtx = maskCrop.getContext('2d')!;
-  maskCropCtx.fillStyle = 'black';
-  maskCropCtx.fillRect(0, 0, outW, outH);
-  maskCropCtx.drawImage(maskCanvas, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+    const encodedImage = await encodeCanvasToBudget(imageCrop, CLIPDROP_CLEANUP_IMAGE_MAX_BYTES);
 
-  return {
-    image: await canvasToPngBlob(imageCrop),
-    mask: await canvasToPngBlob(maskCrop),
-    crop: { x: cropX, y: cropY, width: cropW, height: cropH },
-  };
+    // The Cleanup API requires image and mask to have identical dimensions.
+    // If JPEG budgeting downscaled the image, rasterize the PNG mask at the
+    // exact encoded dimensions instead of resizing it independently.
+    const maskCrop = document.createElement('canvas');
+    maskCrop.width = encodedImage.width;
+    maskCrop.height = encodedImage.height;
+    const maskCropCtx = maskCrop.getContext('2d');
+    if (!maskCropCtx) throw new Error('Canvas недоступен.');
+    maskCropCtx.fillStyle = 'black';
+    maskCropCtx.fillRect(0, 0, maskCrop.width, maskCrop.height);
+    maskCropCtx.drawImage(maskCanvas, cropX, cropY, cropW, cropH, 0, 0, maskCrop.width, maskCrop.height);
+    const encodedMask = await canvasToPngBlob(maskCrop);
+
+    if (encodedImage.blob.size + encodedMask.size < CLIPDROP_REQUEST_MAX_BYTES) {
+      return {
+        image: encodedImage.blob,
+        mask: encodedMask,
+        crop: { x: cropX, y: cropY, width: cropW, height: cropH },
+      };
+    }
+
+    // A complex/feathered PNG mask can consume more than the reserved 1 MB.
+    // Reduce both assets together; plan.crop stays in document coordinates so
+    // aiCleanupMaskedArea scales the returned patch back into the same area.
+    targetW = Math.max(1, Math.floor(encodedImage.width * 0.85));
+    targetH = Math.max(1, Math.floor(encodedImage.height * 0.85));
+  }
+
+  throw new Error('Изображение и маска слишком большие для отправки. Уменьшите выделение.');
 }
 
 /**

@@ -8,8 +8,10 @@ import {
   createColorPatch,
   prepareClipdropCleanupInput,
   fitBlobToPixelLimit,
+  encodeBlobToBudget,
   loadCleanupImage,
   CLIPDROP_RBG_MAX_PIXELS,
+  CLIPDROP_RBG_IMAGE_MAX_BYTES,
 } from './cleanupRaster';
 import { simpleInpaint } from './imageUtils';
 import { cleanupWithClipdrop, removeBackgroundWithClipdrop } from '@/lib/clipdrop/client';
@@ -211,8 +213,11 @@ export async function removeBackgroundFromLayer(layer: { id: string; type: 'base
   }
 
   // Clipdrop RBG rejects images above ~25 MP: downscale before sending.
-  // The result layer is stretched back to document size when rendered.
+  // Vercel also rejects request bodies above its serverless limit, so encode
+  // the pixel-limited image as a budgeted JPEG before sending. The result
+  // layer is stretched back to document size when rendered.
   image = await fitBlobToPixelLimit(image, CLIPDROP_RBG_MAX_PIXELS);
+  image = await encodeBlobToBudget(image, CLIPDROP_RBG_IMAGE_MAX_BYTES);
   const result = await removeBackgroundWithClipdrop(image, signal);
   const current = refreshDoc(doc.id) ?? doc;
   useStore.getState().addAiLayer(doc.id, {

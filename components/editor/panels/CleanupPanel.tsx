@@ -537,7 +537,11 @@ export function CleanupPanel() {
               Повторить
             </button>
           )}
-          {imageQualityWarning && <div style={{ marginTop: 4 }}>Выделение слишком большое, качество перерисовки может пострадать.</div>}
+        </div>
+      )}
+      {imageQualityWarning && (
+        <div role="status" style={{ color: 'var(--text-muted)', fontSize: 11, lineHeight: 1.4 }}>
+          Выделение слишком большое, качество перерисовки может пострадать.
         </div>
       )}
 

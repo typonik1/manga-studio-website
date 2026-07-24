@@ -62,6 +62,7 @@ const defaultCleanupSettings: CleanupSettings = {
   selectionMode: 'replace',
   wandContiguous: true,
   keepSelectionAfterAction: false,
+  translationCleanupMethod: 'local',
 };
 
 const defaultTextSettings: TextSettings = {

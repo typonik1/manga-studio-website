@@ -37,13 +37,13 @@ export function hasActiveSelection(doc: ImageDocument | null): boolean {
   return (mask.elements?.length ?? 0) > 0 || mask.strokes.some(stroke => stroke.mode !== 'erase');
 }
 
-async function requireSelectionMask(doc: ImageDocument) {
+export async function requireSelectionMask(doc: ImageDocument) {
   const mask = await buildCleanupMask(doc);
   if (mask.isEmpty) throw new Error('Сначала создайте выделение: кистью маски, лассо, прямоугольником или волшебной палочкой.');
   return mask;
 }
 
-function finishSelection(clearedByDefault = true) {
+export function finishSelection(clearedByDefault = true) {
   const { cleanupSettings, clearActiveMask } = useStore.getState();
   if (clearedByDefault && !cleanupSettings.keepSelectionAfterAction) clearActiveMask();
 }

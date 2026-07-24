@@ -22,7 +22,9 @@ function upstreamMessage(status: number, body: string) {
   if (status === 402) return 'В RouterAI закончились средства.';
   if (status === 429) return 'Слишком много запросов к RouterAI. Попробуйте позже.';
   if (status >= 500) return 'RouterAI временно недоступен. Попробуйте позже.';
-  return 'RouterAI не смог обработать фрагмент.';
+  // For unknown 4xx, append the upstream detail so it's diagnosable in the UI.
+  const detail = body.trim().slice(0, 200);
+  return detail ? `RouterAI не смог обработать фрагмент: ${detail}` : 'RouterAI не смог обработать фрагмент.';
 }
 
 export async function callRouterAi(

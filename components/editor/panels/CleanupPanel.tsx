@@ -46,7 +46,9 @@ export function CleanupPanel() {
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const activeMask = activeDoc?.masks.find(mask => mask.id === activeDoc.activeMaskId) ?? null;
   const hasMask = Boolean(activeMask && ((activeMask.elements?.length ?? 0) > 0 || activeMask.strokes.some(stroke => stroke.mode !== 'erase')));
-  const safetyHint = /отклонила|safety|unsafe|policy/i.test(aiError);
+  // safetyHint is true when the server reported a content-policy refusal (HTTP 451).
+  // The server message always contains "отклонила фрагмент" for these cases.
+  const safetyHint = /отклонил|safety|unsafe|policy|refus/i.test(aiError);
 
   useEffect(() => setBrushHex(cleanupSettings.brushColor.toUpperCase()), [cleanupSettings.brushColor]);
 

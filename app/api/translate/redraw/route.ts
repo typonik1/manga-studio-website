@@ -20,10 +20,14 @@ const MAX_INPUT_BYTES = 8 * 1024 * 1024; // 8 MB
 // Response helpers
 // ---------------------------------------------------------------------------
 
-function pngResponse(bytes: Buffer): Response {
+/** Return image bytes with the correct MIME type.
+ *  src is the original URL/data-URL we resolved from — if it carries a mime, use it.
+ */
+function imageResponse(bytes: Buffer, srcMime?: string): Response {
+  const contentType = srcMime?.startsWith('image/') ? srcMime : 'image/png';
   return new Response(new Uint8Array(bytes), {
     status: 200,
-    headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' },
+    headers: { 'Content-Type': contentType, 'Cache-Control': 'no-store' },
   });
 }
 
@@ -63,14 +67,18 @@ function upstreamErrorText(payload: unknown, raw: string): string {
 type AnyRecord = Record<string, unknown>;
 
 function isSafetyRefusal(message: AnyRecord, finishReason: unknown, imageFound: boolean): boolean {
-  // 1. Explicit content_filter signal
+  // Image already extracted → return it regardless of any safety signals.
+  // The generation already cost money; discarding the result would be wasteful.
+  if (imageFound) return false;
+
+  // 1. Explicit content_filter signal (only relevant when no image)
   if (finishReason === 'content_filter') return true;
 
-  // 2. OpenAI-style refusal field
+  // 2. OpenAI-style refusal field (only relevant when no image)
   if (typeof message.refusal === 'string' && message.refusal.trim()) return true;
 
-  // 3. Model replied with text instead of image — check only the text, not raw
-  if (!imageFound && typeof message.content === 'string') {
+  // 3. Model replied with a short text refusal instead of an image
+  if (typeof message.content === 'string') {
     const contentText = message.content.trim();
     // Only flag if it's a short text reply (not a partial base64 blob)
     if (contentText.length < 2000 && isRouterAiSafetyText(contentText)) return true;
@@ -83,22 +91,37 @@ function isSafetyRefusal(message: AnyRecord, finishReason: unknown, imageFound: 
 // Image extraction — all known OpenAI-compatible response shapes, in order
 // ---------------------------------------------------------------------------
 
-/** Resolve a URL string (data: or https:) to raw bytes. */
-async function resolveImageString(src: string, signal?: AbortSignal): Promise<Buffer> {
+/** Extract MIME type from a data URL, e.g. "data:image/webp;base64,..." → "image/webp" */
+function mimeFromDataUrl(src: string): string | undefined {
+  const m = src.match(/^data:(image\/[^;,]+)/);
+  return m?.[1];
+}
+
+/** Resolve a URL string (data: or https:) to raw bytes, with optional MIME hint. */
+async function resolveImageString(
+  src: string,
+  signal?: AbortSignal,
+): Promise<{ bytes: Buffer; mime?: string }> {
   if (src.startsWith('data:')) {
     const match = src.match(/base64,([A-Za-z0-9+/=\s]+)/);
     if (!match) throw new RouterAiRequestError(502, 'data URL не содержит base64-данных.');
-    return Buffer.from(match[1].replace(/\s/g, ''), 'base64');
+    return { bytes: Buffer.from(match[1].replace(/\s/g, ''), 'base64'), mime: mimeFromDataUrl(src) };
   }
   if (/^https?:\/\//i.test(src)) {
     const res = await fetch(src, { cache: 'no-store', signal });
     if (!res.ok) throw new RouterAiRequestError(502, 'Не удалось скачать изображение от RouterAI.');
-    return Buffer.from(await res.arrayBuffer());
+    const mime = res.headers.get('content-type')?.split(';')[0].trim();
+    return { bytes: Buffer.from(await res.arrayBuffer()), mime };
   }
   throw new RouterAiRequestError(502, 'Неизвестный формат URL изображения от RouterAI.');
 }
 
-async function extractImageBytes(message: AnyRecord, signal?: AbortSignal): Promise<Buffer | null> {
+interface ExtractedImage {
+  bytes: Buffer;
+  mime?: string;
+}
+
+async function extractImage(message: AnyRecord, signal?: AbortSignal): Promise<ExtractedImage | null> {
   // 1. message.images[0]
   const images = message.images;
   if (Array.isArray(images) && images.length > 0) {
@@ -117,7 +140,7 @@ async function extractImageBytes(message: AnyRecord, signal?: AbortSignal): Prom
 
     // 1c. images[0].b64_json
     if (typeof img.b64_json === 'string' && img.b64_json.trim()) {
-      return Buffer.from(img.b64_json.replace(/\s/g, ''), 'base64');
+      return { bytes: Buffer.from(img.b64_json.replace(/\s/g, ''), 'base64') };
     }
   }
 
@@ -134,7 +157,7 @@ async function extractImageBytes(message: AnyRecord, signal?: AbortSignal): Prom
       if (type === 'output_image' || type === 'image') {
         if (typeof part.url === 'string' && part.url) return resolveImageString(part.url, signal);
         if (typeof part.b64_json === 'string' && part.b64_json.trim()) {
-          return Buffer.from(part.b64_json.replace(/\s/g, ''), 'base64');
+          return { bytes: Buffer.from(part.b64_json.replace(/\s/g, ''), 'base64') };
         }
         // Some routers nest inside image_url
         const iu2 = part.image_url as AnyRecord | undefined;
@@ -145,9 +168,9 @@ async function extractImageBytes(message: AnyRecord, signal?: AbortSignal): Prom
 
   // 3. message.content as string containing an inline data:image/…;base64,… URL
   if (typeof message.content === 'string') {
-    const match = message.content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=\s]+)/);
-    if (match) {
-      return Buffer.from(match[1].replace(/\s/g, ''), 'base64');
+    const dataUrlMatch = message.content.match(/(data:image\/[^;]+;base64,[A-Za-z0-9+/=\s]+)/);
+    if (dataUrlMatch) {
+      return resolveImageString(dataUrlMatch[1], signal);
     }
   }
 
@@ -238,14 +261,20 @@ export async function POST(request: Request) {
     const msg = message as AnyRecord;
 
     // --- Extract image from all known shapes ---
-    const imageBytes = await extractImageBytes(msg, signal);
+    const extracted = await extractImage(msg, signal);
 
-    // --- Structural safety check (after extraction attempt) ---
-    if (isSafetyRefusal(msg, finishReason, imageBytes !== null)) {
+    // --- Structural safety check (only runs when no image was found) ---
+    if (isSafetyRefusal(msg, finishReason, extracted !== null)) {
       throw new RouterAiRequestError(451, 'Image-модель отклонила фрагмент. Перевести через OCR + шрифт?');
     }
 
-    if (!imageBytes) {
+    if (!extracted) {
+      // Specific message when the response was simply cut off by the token limit
+      if (finishReason === 'length') {
+        console.error('[redraw] response truncated by token limit (finish_reason=length)');
+        throw new RouterAiRequestError(502, 'Ответ модели обрезан лимитом токенов — изображение не получено. Попробуйте уменьшить выделение.');
+      }
+
       // Log shape without base64 for debugging; do NOT include in response body
       const safeShape = JSON.stringify(
         msg,
@@ -261,7 +290,7 @@ export async function POST(request: Request) {
       );
     }
 
-    return pngResponse(imageBytes);
+    return imageResponse(extracted.bytes, extracted.mime);
   } catch (error) {
     return routerAiErrorResponse(error);
   }

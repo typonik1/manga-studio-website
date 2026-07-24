@@ -1,5 +1,5 @@
 import { requireImageFile } from '@/lib/clipdrop/server';
-import { callRouterAi, routerAiErrorResponse, RouterAiRequestError } from '@/lib/routerai/server';
+import { callRouterAi, routerAiErrorResponse, RouterAiRequestError, ROUTERAI_TEXT_MODEL } from '@/lib/routerai/server';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -74,7 +74,7 @@ export async function POST(request: Request) {
     const targetName = LANGUAGE_NAMES[targetLang] ?? targetLang;
     const dataUrl = await fileToDataUrl(image);
     const payload = await callRouterAi({
-      model: 'google/gemini-3.5-flash-lite',
+      model: ROUTERAI_TEXT_MODEL,
       messages: [{
         role: 'user',
         content: [

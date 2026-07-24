@@ -1,6 +1,8 @@
 import 'server-only';
 
 const ROUTERAI_BASE_URL = 'https://routerai.ru/api/v1';
+export const ROUTERAI_IMAGE_MODEL = process.env.ROUTERAI_IMAGE_MODEL || 'google/gemini-3.1-flash-lite-image';
+export const ROUTERAI_TEXT_MODEL = process.env.ROUTERAI_TEXT_MODEL || 'google/gemini-3.5-flash-lite';
 
 export class RouterAiRequestError extends Error {
   constructor(public status: number, message: string) {

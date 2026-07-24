@@ -14,6 +14,13 @@ import { ocrTranslate, redrawRegion } from '@/lib/routerai/client';
 const TRANSLATE_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
 
 export const DEFAULT_REDRAW_PROMPT = 'Удали только буквы/символы текста в выделенной области и восстанови то, что находится непосредственно под ними. Сохрани все остальные элементы без изменений: речевые баблы, их контуры и заливку, персонажей, фон. Не добавляй новых объектов. Стиль рисунка сохрани.';
+const TRANSLATION_LANGUAGE_NAMES: Record<string, string> = {
+  ru: 'русский',
+  en: 'английский',
+  ja: 'японский',
+  ko: 'корейский',
+  zh: 'китайский',
+};
 
 export type BubbleCleanupMethod = 'local' | 'clipdrop';
 
@@ -241,6 +248,39 @@ export async function translateBubble(
     translation,
     draft: createBubbleTextDraft(doc, crop.selection, translation),
   };
+}
+
+/**
+ * One-step translation/redraw. The model receives the same padded OCR crop,
+ * but its full generated crop is always clipped back through the user's mask.
+ */
+export async function translateRegionWithAi(targetLang = 'ru', signal?: AbortSignal): Promise<void> {
+  const doc = activeDocument();
+  const crop = await buildBubbleCrop(doc);
+  const language = TRANSLATION_LANGUAGE_NAMES[targetLang] ?? targetLang;
+  const prompt = `Переведи весь текст на этом фрагменте манги на ${language} язык. Перерисуй текст на том же месте, в том же стиле и с тем же оформлением (баблы, контуры, цвета — без изменений). Не меняй ничего, кроме самого текста. Верни изображение того же размера.`;
+  const resultDataUrl = await redrawRegion(crop.image, prompt, signal);
+  const result = await loadCleanupImage(resultDataUrl);
+  const patch = document.createElement('canvas');
+  patch.width = doc.width;
+  patch.height = doc.height;
+  const ctx = patch.getContext('2d');
+  if (!ctx) throw new Error('Canvas недоступен.');
+  ctx.drawImage(result, crop.crop.x, crop.crop.y, crop.crop.width, crop.crop.height);
+  const mask = await requireSelectionMask(doc);
+  const maskedPatch = await createCleanupPatch(patch.toDataURL('image/png'), mask.canvas, doc.width, doc.height);
+  const current = useStore.getState().documents.find(item => item.id === doc.id) ?? doc;
+  useStore.getState().addAiLayer(doc.id, {
+    id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: `Перевод AI ${current.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
+    src: maskedPatch,
+    visible: true,
+    opacity: 1,
+    operation: 'cleanup',
+    maskId: current.activeMaskId ?? undefined,
+    eraseElements: [],
+  });
+  finishSelection();
 }
 
 export async function redrawSfx(signal?: AbortSignal, prompt = DEFAULT_REDRAW_PROMPT): Promise<void> {

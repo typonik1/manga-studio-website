@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
 import { aiCleanupMaskedArea, inpaintMaskedArea, removeBackgroundFromLayer } from '@/utils/layerActions';
-import { DEFAULT_REDRAW_PROMPT, redrawSfx, translateBubble } from '@/utils/translateActions';
+import { DEFAULT_REDRAW_PROMPT, redrawSfx, translateBubble, translateRegionWithAi } from '@/utils/translateActions';
 import type { TextObject } from '@/types';
 
 const primaryButtonStyle = {
@@ -28,7 +28,7 @@ export function CleanupPanel() {
     addText, setSelectedObject,
   } = useStore();
   const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
-  const [translationOperation, setTranslationOperation] = useState<'bubble' | 'redraw' | null>(null);
+  const [translationOperation, setTranslationOperation] = useState<'bubble' | 'ai' | 'redraw' | null>(null);
   const [aiError, setAiError] = useState('');
   const [brushHex, setBrushHex] = useState(cleanupSettings.brushColor.toUpperCase());
   const [targetLang, setTargetLang] = useState('ru');
@@ -36,6 +36,7 @@ export function CleanupPanel() {
   const [translationText, setTranslationText] = useState('');
   const [translationDraft, setTranslationDraft] = useState<TextObject | null>(null);
   const [redrawPrompt, setRedrawPrompt] = useState(DEFAULT_REDRAW_PROMPT);
+  const [aiFallbackVisible, setAiFallbackVisible] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
@@ -82,6 +83,7 @@ export function CleanupPanel() {
     const controller = new AbortController();
     abortRef.current = controller;
     setAiError('');
+    setAiFallbackVisible(false);
     setTranslationOperation('bubble');
     setTranslationOriginal('');
     setTranslationText('');
@@ -94,6 +96,27 @@ export function CleanupPanel() {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         setAiError(error instanceof Error ? error.message : 'Не удалось перевести фрагмент.');
+      }
+    } finally {
+      abortRef.current = null;
+      setTranslationOperation(null);
+    }
+  }
+
+  async function handleTranslateAi() {
+    if (!activeDoc || !hasMask || aiOperation || translationOperation) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setAiError('');
+    setAiFallbackVisible(false);
+    setTranslationOperation('ai');
+    try {
+      await translateRegionWithAi(targetLang, controller.signal);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        const message = error instanceof Error ? error.message : 'Не удалось выполнить AI-перевод.';
+        setAiError(message);
+        if (/отклони|safety|unsafe|policy|refus|не могу|cannot assist/i.test(message)) setAiFallbackVisible(true);
       }
     } finally {
       abortRef.current = null;
@@ -334,6 +357,22 @@ export function CleanupPanel() {
       >
         {translationOperation === 'bubble' ? 'Переводим…' : 'Перевести бабл'}
       </button>
+      <button
+        type="button"
+        title="Модель перерисует текст сама. Результат нельзя редактировать как текст"
+        onClick={handleTranslateAi}
+        disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
+        style={{
+          ...secondaryButtonStyle,
+          opacity: activeDoc && hasMask && !aiOperation && !translationOperation ? 1 : 0.55,
+          cursor: activeDoc && hasMask && !aiOperation && !translationOperation ? 'pointer' : 'not-allowed',
+        }}
+      >
+        {translationOperation === 'ai' ? 'Переводим…' : 'Перевод AI (в стиле оригинала)'}
+      </button>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+        Для AI-перевода выделяйте бабл целиком вместе с текстом. Если выделена только часть текста, результат может обрезаться.
+      </div>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--text-secondary)' }}>
         Инструкция для AI
         <textarea
@@ -452,6 +491,11 @@ export function CleanupPanel() {
         <div role="alert" style={{ color: 'var(--destructive)', fontSize: 11, lineHeight: 1.4 }}>
           <div>{aiError}</div>
           {safetyHint && <div style={{ marginTop: 4 }}>Фрагмент отклонён моделью. Замажьте текст замыванием и вставьте перевод вручную.</div>}
+          {aiFallbackVisible && (
+            <button type="button" onClick={handleTranslateBubble} disabled={Boolean(translationOperation)} style={{ ...secondaryButtonStyle, marginTop: 6 }}>
+              Перевести бабл (OCR + заливка)
+            </button>
+          )}
         </div>
       )}
 

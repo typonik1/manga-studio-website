@@ -542,6 +542,7 @@ function TextNode({
   docHeight,
   previewScale,
   isSelected,
+  isEditing,
   onSelect,
   onChange,
   onBeforeChange,
@@ -552,6 +553,8 @@ function TextNode({
   docHeight: number;
   previewScale: number;
   isSelected: boolean;
+  /** While the inline editor is open, the Konva node is hidden to avoid a "ghost" copy under the textarea. */
+  isEditing: boolean;
   onSelect: () => void;
   onChange: (updates: Partial<TextObject>) => void;
   onBeforeChange: () => void;
@@ -561,11 +564,11 @@ function TextNode({
   const trRef = useRef<Konva.Transformer>(null);
 
   useEffect(() => {
-    if (isSelected && trRef.current && nodeRef.current) {
+    if (isSelected && !isEditing && trRef.current && nodeRef.current) {
       trRef.current.nodes([nodeRef.current]);
       trRef.current.getLayer()?.batchDraw();
     }
-  }, [isSelected]);
+  }, [isSelected, isEditing]);
 
   const pW = docWidth * previewScale;
   const pH = docHeight * previewScale;
@@ -608,6 +611,8 @@ function TextNode({
         scaleX={txt.scaleX}
         scaleY={txt.scaleY}
         rotation={txt.rotation}
+        visible={!isEditing}
+        listening={!isEditing}
         draggable
         onClick={onSelect}
         onTap={onSelect}
@@ -618,7 +623,7 @@ function TextNode({
         onDragEnd={handleDragEnd}
         onTransformEnd={handleTransformEnd}
       />
-      {isSelected && (
+      {isSelected && !isEditing && (
         <Transformer
           ref={trRef}
           boundBoxFunc={(oldBox, newBox) => {
@@ -1798,6 +1803,7 @@ export function CanvasArea() {
                     docHeight={activeDoc.height}
                     previewScale={previewScale}
                     isSelected={selectedObject?.id === txt.id}
+                    isEditing={inlineEditingTextId === txt.id}
                     onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
                     onChange={updates => updateText(txt.id, updates)}
                     onBeforeChange={pushHistory}

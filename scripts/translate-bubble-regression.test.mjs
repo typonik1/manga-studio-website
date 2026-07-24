@@ -25,3 +25,16 @@ test('cleanup panel exposes an editable conservative AI instruction', () => {
   assert.match(cleanupPanel, /redrawPrompt/);
   assert.match(cleanupPanel, /Инструкция для AI/);
 });
+
+test('AI translation redraws the crop and keeps the result inside the selection mask', () => {
+  assert.match(translateActions, /translateRegionWithAi/);
+  const aiSection = translateActions.slice(translateActions.indexOf('export async function translateRegionWithAi'));
+  assert.match(aiSection, /redrawRegion/);
+  assert.match(aiSection, /createCleanupPatch/);
+  assert.match(aiSection, /Переведи весь текст/);
+});
+
+test('cleanup panel exposes AI translation and the OCR fallback', () => {
+  assert.match(cleanupPanel, /Перевод AI/);
+  assert.match(cleanupPanel, /Перевести бабл/);
+});

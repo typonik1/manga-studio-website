@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/materialize-fonts.mjs",
     "build": "next build",
+    "predev": "node scripts/materialize-fonts.mjs",
     "dev": "next dev",
+    "fonts": "node scripts/materialize-fonts.mjs",
     "lint": "eslint .",
     "start": "next start"
   },

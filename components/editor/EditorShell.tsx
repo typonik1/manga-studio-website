@@ -3,10 +3,13 @@
 import { useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useStore } from '@/store/useStore';
+import { DEFAULT_ANIME_FONT, MANGA_FONTS } from '@/types';
 import { LeftPanel } from './LeftPanel';
 import { ToolRail } from './ToolRail';
 import { RightPanel } from './RightPanel';
 import { ExportModal } from './ExportModal';
+import { Toaster } from '@/components/ui/toaster';
+import { toast } from '@/hooks/use-toast';
 
 // Konva's Stage relies on browser APIs and react-reconciler internals that
 // break during SSR ("getOwner is not a function"), so load it client-only.
@@ -33,7 +36,7 @@ const CanvasArea = dynamic(
 );
 
 export function EditorShell() {
-  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, documents } = useStore();
+  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, documents, fontsReady } = useStore();
 
   // Register hasChanges for beforeunload
   useEffect(() => {
@@ -42,19 +45,69 @@ export function EditorShell() {
     return () => { delete (window as any).__mangaStudioHasChanges; };
   }, [documents]);
 
-  // Load all fonts (Google + saved custom) once, then force a canvas redraw
+  // Register ALL fonts (built-in + saved custom from IndexedDB) BEFORE the
+  // canvas first renders — otherwise Konva would paint text with a fallback
+  // font. fontsReady gates <CanvasArea/>; a 6s guard keeps the editor usable
+  // even if font loading stalls (fonts then arrive in the background and the
+  // canvas repaints via fontsVersion).
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { preloadGoogleFonts, loadSavedCustomFonts } = await import('@/utils/fonts');
-      const [, customNames] = await Promise.all([
-        preloadGoogleFonts(),
-        loadSavedCustomFonts(),
-      ]);
+      const {
+        preloadGoogleFonts,
+        loadSavedCustomFonts,
+        loadStoredDefaultTranslationFont,
+      } = await import('@/utils/fonts');
+      const {
+        setCustomFonts, bumpFontsVersion, setFontsReady,
+        setTranslationFontFamily, replaceMissingFonts,
+      } = useStore.getState();
+
+      const finalize = (customNames: string[]) => {
+        if (cancelled) return;
+        setCustomFonts(customNames);
+        const available = [...MANGA_FONTS, ...customNames];
+
+        // Восстанавливаем «Шрифт перевода по умолчанию» из localStorage.
+        // Если выбранный шрифт удалён из IndexedDB — возвращаемся к встроенному.
+        const stored = loadStoredDefaultTranslationFont();
+        const effective = stored && available.includes(stored) ? stored : DEFAULT_ANIME_FONT;
+        setTranslationFontFamily(effective);
+        if (stored && !available.includes(stored)) {
+          toast({
+            title: 'Шрифт по умолчанию недоступен',
+            description: `«${stored}» не найден среди сохранённых шрифтов. Используется встроенный «${DEFAULT_ANIME_FONT}».`,
+          });
+        }
+
+        // Если открытые документы ссылаются на отсутствующие шрифты —
+        // подставляем дефолтный, чтобы не ломать рендер.
+        const missing = replaceMissingFonts(available);
+        if (missing.length > 0) {
+          toast({
+            title: 'Шрифты не найдены',
+            description: `Не найдены: ${missing.join(', ')}. Текст показан шрифтом по умолчанию «${effective}».`,
+          });
+        }
+        bumpFontsVersion();
+      };
+
+      const loadPromise = (async () => {
+        const [, customNames] = await Promise.all([
+          preloadGoogleFonts(),
+          loadSavedCustomFonts(),
+        ]);
+        return customNames;
+      })();
+      const guard = new Promise<null>(resolve => { window.setTimeout(() => resolve(null), 6000); });
+      const result = await Promise.race([loadPromise, guard]);
       if (cancelled) return;
-      const { setCustomFonts, bumpFontsVersion } = useStore.getState();
-      if (customNames.length > 0) setCustomFonts(customNames);
-      bumpFontsVersion();
+      if (result !== null) {
+        finalize(result);
+      } else {
+        loadPromise.then(finalize).catch(() => {});
+      }
+      setFontsReady(true);
     })();
     return () => { cancelled = true; };
   }, []);
@@ -114,10 +167,27 @@ export function EditorShell() {
       <div className="editor-main">
         <LeftPanel />
         <ToolRail />
-        <CanvasArea />
+        {fontsReady ? (
+          <CanvasArea />
+        ) : (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'var(--bg-app)',
+              color: 'var(--text-muted)',
+              fontSize: 13,
+            }}
+          >
+            Загружаем шрифты…
+          </div>
+        )}
         <RightPanel />
       </div>
       <ExportModal />
+      <Toaster />
     </div>
   );
 }

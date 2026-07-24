@@ -29,9 +29,10 @@ import type {
   BubbleKind,
   PerspectiveQuad,
 } from '../types';
-import { DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
+import { DEFAULT_ANIME_FONT, DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
 import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
 import { clonePerspectiveQuad } from '@/utils/perspective';
+import { storeDefaultTranslationFont } from '@/utils/fonts';
 
 const MAX_HISTORY = 40;
 
@@ -67,7 +68,7 @@ const defaultCleanupSettings: CleanupSettings = {
 };
 
 const defaultTextSettings: TextSettings = {
-  fontFamily: 'Russo One',
+  fontFamily: DEFAULT_ANIME_FONT,
   fontSize: 0.06,
   fill: '#000000',
   stroke: '',
@@ -153,6 +154,14 @@ export interface AppState {
   shapeSettings: ShapeSettings;
   customFonts: string[];
   fontsVersion: number;
+  /** Все шрифты из IndexedDB зарегистрированы — можно рендерить канвас. */
+  fontsReady: boolean;
+  /**
+   * «Шрифт перевода по умолчанию»: применяется к новому тексту, «Вставить
+   * текст» после перевода бабла и блокам автоперевода. По умолчанию —
+   * встроенный анимешный шрифт; пользователь может выбрать свой загруженный.
+   */
+  translationFontFamily: string;
   cropRect: CropRect | null;
   /** When set, the crop tool edits this layer's non-destructive crop instead of the whole document. */
   layerCropTarget: LayerReference | null;
@@ -217,7 +226,16 @@ export interface AppState {
   duplicateBubble: (id: string) => void;
   addCustomFont: (name: string) => void;
   setCustomFonts: (names: string[]) => void;
+  removeCustomFont: (name: string) => void;
   bumpFontsVersion: () => void;
+  setFontsReady: (ready: boolean) => void;
+  /** Меняет дефолтный шрифт перевода (и текущий шрифт инструмента «Текст»). */
+  setTranslationFontFamily: (name: string, options?: { persist?: boolean }) => void;
+  /**
+   * Заменяет во всех открытых документах шрифты, которых нет в availableFonts,
+   * на дефолтный (не ломая рендер). Возвращает имена недостающих шрифтов.
+   */
+  replaceMissingFonts: (availableFonts: string[]) => string[];
   setCropRect: (rect: CropRect | null) => void;
   applyDocumentTransform: (updates: Partial<ImageDocument>) => void;
   updateWmSettings: (updates: Partial<WatermarkSettings>) => void;
@@ -255,6 +273,8 @@ export const useStore = create<AppState>((set, get) => ({
   shapeSettings: defaultShapeSettings,
   customFonts: [],
   fontsVersion: 0,
+  fontsReady: false,
+  translationFontFamily: DEFAULT_ANIME_FONT,
   cropRect: null,
   layerCropTarget: null,
   rightTab: 'gallery',
@@ -941,7 +961,61 @@ export const useStore = create<AppState>((set, get) => ({
 
   addCustomFont: (name) => set(s => ({ customFonts: s.customFonts.includes(name) ? s.customFonts : [...s.customFonts, name] })),
   setCustomFonts: (names) => set({ customFonts: names }),
+  removeCustomFont: (name) => set(s => ({ customFonts: s.customFonts.filter(f => f !== name) })),
   bumpFontsVersion: () => set(s => ({ fontsVersion: s.fontsVersion + 1 })),
+  setFontsReady: (ready) => set({ fontsReady: ready }),
+
+  setTranslationFontFamily: (name, options) => {
+    if (options?.persist !== false) storeDefaultTranslationFont(name);
+    set(s => ({
+      translationFontFamily: name,
+      // «Использовать его везде»: инструмент «Текст» тоже стартует с дефолта.
+      textSettings: { ...s.textSettings, fontFamily: name },
+    }));
+  },
+
+  replaceMissingFonts: (availableFonts) => {
+    const missing = new Set<string>();
+    set(state => {
+      const available = new Set(availableFonts);
+      const fallback = available.has(state.translationFontFamily)
+        ? state.translationFontFamily
+        : DEFAULT_ANIME_FONT;
+      const resolve = (family: string | undefined): string | null => {
+        if (!family || available.has(family)) return null;
+        missing.add(family);
+        return fallback;
+      };
+      let changed = false;
+      const documents = state.documents.map(doc => {
+        let docChanged = false;
+        const texts = doc.texts.map(t => {
+          const replacement = resolve(t.fontFamily);
+          if (!replacement) return t;
+          docChanged = true;
+          return { ...t, fontFamily: replacement };
+        });
+        const watermarks = doc.watermarks.map(w => {
+          if (w.type !== 'text') return w;
+          const replacement = resolve(w.fontFamily);
+          if (!replacement) return w;
+          docChanged = true;
+          return { ...w, fontFamily: replacement };
+        });
+        const bubbles = (doc.bubbles ?? []).map(b => {
+          const replacement = resolve(b.text.fontFamily);
+          if (!replacement) return b;
+          docChanged = true;
+          return { ...b, text: { ...b.text, fontFamily: replacement } };
+        });
+        if (!docChanged) return doc;
+        changed = true;
+        return { ...doc, texts, watermarks, bubbles, hasChanges: true };
+      });
+      return changed ? { documents } : {};
+    });
+    return Array.from(missing);
+  },
   setCropRect: (rect) => set({ cropRect: rect }),
 
   applyDocumentTransform: (updates) =>

@@ -371,7 +371,19 @@ export interface LayerVisibility {
   shapes: boolean;
 }
 
+/**
+ * Встроенный «анимешный» шрифт по умолчанию. Balsamiq Sans — комиксный
+ * стиль с полной поддержкой кириллицы; файлы self-hosted в /public/fonts.
+ * Используется для инструмента «Текст», «Вставить текст» после перевода
+ * бабла и блоков автоперевода (если пользователь не выбрал свой шрифт).
+ */
+export const DEFAULT_ANIME_FONT = 'Balsamiq Sans';
+
+/** Ключ localStorage для выбранного «Шрифта перевода по умолчанию». */
+export const DEFAULT_TRANSLATION_FONT_STORAGE_KEY = 'manga-studio:default-translation-font';
+
 export const MANGA_FONTS = [
+  DEFAULT_ANIME_FONT,
   'Russo One',
   'Neucha',
   'Marck Script',

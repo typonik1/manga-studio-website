@@ -1296,6 +1296,25 @@ export function CanvasArea() {
     }
   };
 
+  // Double click reliably closes the polygonal lasso: Konva synthesizes
+  // dblclick/dbltap itself, while pointerdown's `detail` click counter is
+  // not dependable across browsers.
+  const handleStageDblClick = (e: Konva.KonvaEventObject<Event>) => {
+    if (activeTool !== 'polyLasso' || !isPolyLassoing.current) return;
+    const pts = polyLassoPoints.current;
+    // The two clicks of a double click each placed a vertex at the same
+    // spot — drop the duplicate before closing.
+    if (pts.length >= 8) {
+      const dx = (pts[pts.length - 2] - pts[pts.length - 4]) * imgW;
+      const dy = (pts[pts.length - 1] - pts[pts.length - 3]) * imgH;
+      if (Math.hypot(dx, dy) * viewport.scale < 8) pts.splice(pts.length - 2, 2);
+    }
+    if (pts.length >= 6) {
+      const evt = e.evt as Partial<MouseEvent>;
+      finishPolyLasso(evt.altKey ? 'subtract' : evt.shiftKey ? 'add' : cleanupSettings.selectionMode);
+    }
+  };
+
   const handleMouseUp = (e?: Konva.KonvaEventObject<PointerEvent>) => {
     isPanning.current = false;
     if (brushFrameRef.current !== null) {
@@ -1546,8 +1565,14 @@ export function CanvasArea() {
       if (isEditable) return;
 
       const { cleanupSettings: cs, updateCleanupSettings: ucs } = useStore.getState();
-      if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
-      if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
+      // e.code = физическая клавиша: хоткеи работают и на русской раскладке,
+      // где e.key даёт кириллицу ('с', 'в', 'о', 'х', 'ъ').
+      if (e.key === '[' || e.code === 'BracketLeft') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
+      if (e.key === ']' || e.code === 'BracketRight') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
+
+      const isKeyC = e.code === 'KeyC' || e.key.toLowerCase() === 'c';
+      const isKeyJ = e.code === 'KeyJ' || e.key.toLowerCase() === 'j';
+      const isKeyD = e.code === 'KeyD' || e.key.toLowerCase() === 'd';
 
       // ── Прямолинейное лассо: Enter — замкнуть, Backspace — убрать точку ─
       if (isPolyLassoing.current) {
@@ -1570,10 +1595,15 @@ export function CanvasArea() {
           return;
         }
         if (e.key === 'Escape') { cancelPolyLasso(); return; }
+        // Ctrl+C / Ctrl+J с незамкнутым контуром — сначала замыкаем его,
+        // дальше сработает обычный обработчик копирования/слоя ниже.
+        if ((e.ctrlKey || e.metaKey) && (isKeyC || isKeyJ)) {
+          finishPolyLasso(e.altKey ? 'subtract' : e.shiftKey ? 'add' : cs.selectionMode);
+        }
       }
 
       // ── Ctrl+D — снять выделение ────────────────────────────────────────
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+      if ((e.ctrlKey || e.metaKey) && isKeyD) {
         e.preventDefault();
         const store = useStore.getState();
         const doc = store.documents[store.activeDocIndex];
@@ -1598,16 +1628,16 @@ export function CanvasArea() {
 
       // ── Ctrl+C — копировать фрагмент выделения (вставка по Ctrl+V) ─────
       // ── Ctrl+J — сразу создать слой из выделения ────────────────────────
-      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'j')) {
+      if ((e.ctrlKey || e.metaKey) && (isKeyC || isKeyJ)) {
         const store = useStore.getState();
         const doc = store.documents[store.activeDocIndex];
         if (!doc || !hasActiveSelection(doc)) {
           // No active selection — let browser handle Ctrl+C normally (text copy)
-          if (e.key.toLowerCase() === 'j') e.preventDefault();
+          if (isKeyJ) e.preventDefault();
           return;
         }
         e.preventDefault();
-        if (e.key.toLowerCase() === 'j') {
+        if (isKeyJ) {
           void createLayerFromSelection().then(err => {
             if (err) console.warn('[v0] createLayerFromSelection:', err);
           });
@@ -1799,6 +1829,8 @@ export function CanvasArea() {
           onPointerUp={handleMouseUp}
           onPointerCancel={handleMouseUp}
           onClick={handleStageClick}
+          onDblClick={handleStageDblClick}
+          onDblTap={handleStageDblClick}
           onPointerLeave={() => { if (!isPainting.current && cursorRef.current) cursorRef.current.style.display = 'none'; }}
           style={{
             display: 'block',
@@ -1943,6 +1975,10 @@ export function CanvasArea() {
                     onChange={updates => updateText(txt.id, updates)}
                     onBeforeChange={pushHistory}
                     onEditRequest={() => {
+                      // While a selection tool is active, a double click is a
+                      // selection gesture (e.g. closing the polygonal lasso) —
+                      // don't drop into text editing.
+                      if (activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'rectSelect' || activeTool === 'wand') return;
                       setSelectedObject({ id: txt.id, type: 'text' });
                       isNewTextRef.current = false;
                       setInlineEditingTextId(txt.id);

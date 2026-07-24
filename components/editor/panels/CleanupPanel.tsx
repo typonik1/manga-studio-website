@@ -5,6 +5,7 @@ import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
 import { aiCleanupMaskedArea, inpaintMaskedArea, removeBackgroundFromLayer } from '@/utils/layerActions';
 import { DEFAULT_REDRAW_PROMPT, redrawSfx, translateBubble, translateRegionWithAi } from '@/utils/translateActions';
+import { getImageUsage } from '@/lib/routerai/client';
 import type { TextObject } from '@/types';
 
 const primaryButtonStyle = {
@@ -37,6 +38,9 @@ export function CleanupPanel() {
   const [translationDraft, setTranslationDraft] = useState<TextObject | null>(null);
   const [redrawPrompt, setRedrawPrompt] = useState(DEFAULT_REDRAW_PROMPT);
   const [aiFallbackVisible, setAiFallbackVisible] = useState(false);
+  const [aiRetryAction, setAiRetryAction] = useState<'translate' | 'redraw' | null>(null);
+  const [imageQualityWarning, setImageQualityWarning] = useState(false);
+  const [imageUsage, setImageUsage] = useState(getImageUsage());
   const abortRef = useRef<AbortController | null>(null);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
@@ -109,18 +113,22 @@ export function CleanupPanel() {
     abortRef.current = controller;
     setAiError('');
     setAiFallbackVisible(false);
+    setAiRetryAction(null);
     setTranslationOperation('ai');
     try {
-      await translateRegionWithAi(targetLang, controller.signal);
+      const result = await translateRegionWithAi(targetLang, controller.signal, Math.floor(Math.random() * 2_000_000_000));
+      setImageQualityWarning(result.downscaleRatio > 2);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         const message = error instanceof Error ? error.message : 'Не удалось выполнить AI-перевод.';
         setAiError(message);
         if (/отклони|safety|unsafe|policy|refus|не могу|cannot assist/i.test(message)) setAiFallbackVisible(true);
+        else setAiRetryAction('translate');
       }
     } finally {
       abortRef.current = null;
       setTranslationOperation(null);
+      setImageUsage(getImageUsage());
     }
   }
 
@@ -129,16 +137,22 @@ export function CleanupPanel() {
     const controller = new AbortController();
     abortRef.current = controller;
     setAiError('');
+    setAiRetryAction(null);
     setTranslationOperation('redraw');
     try {
-      await redrawSfx(controller.signal, redrawPrompt);
+      const result = await redrawSfx(controller.signal, redrawPrompt, Math.floor(Math.random() * 2_000_000_000));
+      setImageQualityWarning(result.downscaleRatio > 2);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        setAiError(error instanceof Error ? error.message : 'Не удалось перерисовать фрагмент.');
+        const message = error instanceof Error ? error.message : 'Не удалось перерисовать фрагмент.';
+        setAiError(message);
+        if (/отклони|safety|unsafe|policy|refus|не могу|cannot assist/i.test(message)) setAiFallbackVisible(true);
+        else setAiRetryAction('redraw');
       }
     } finally {
       abortRef.current = null;
       setTranslationOperation(null);
+      setImageUsage(getImageUsage());
     }
   }
 
@@ -345,6 +359,14 @@ export function CleanupPanel() {
           </select>
         </label>
       </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
+        <input
+          type="checkbox"
+          checked={cleanupSettings.disableImageTranslationModel}
+          onChange={event => updateCleanupSettings({ disableImageTranslationModel: event.target.checked })}
+        />
+        Не использовать image-модель
+      </label>
       <button
         type="button"
         onClick={handleTranslateBubble}
@@ -357,51 +379,60 @@ export function CleanupPanel() {
       >
         {translationOperation === 'bubble' ? 'Переводим…' : 'Перевести бабл'}
       </button>
-      <button
-        type="button"
-        title="Модель перерисует текст сама. Результат нельзя редактировать как текст"
-        onClick={handleTranslateAi}
-        disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
-        style={{
-          ...secondaryButtonStyle,
-          opacity: activeDoc && hasMask && !aiOperation && !translationOperation ? 1 : 0.55,
-          cursor: activeDoc && hasMask && !aiOperation && !translationOperation ? 'pointer' : 'not-allowed',
-        }}
-      >
-        {translationOperation === 'ai' ? 'Переводим…' : 'Перевод AI (в стиле оригинала)'}
-      </button>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-        Для AI-перевода выделяйте бабл целиком вместе с текстом. Если выделена только часть текста, результат может обрезаться.
-      </div>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--text-secondary)' }}>
-        Инструкция для AI
-        <textarea
-          aria-label="Инструкция для AI"
-          value={redrawPrompt}
-          onChange={event => setRedrawPrompt(event.target.value)}
-          rows={5}
-          style={{
-            width: '100%', resize: 'vertical', boxSizing: 'border-box',
-            background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)',
-            borderRadius: 6, color: 'var(--text-primary)', fontSize: 11, padding: '6px 8px', lineHeight: 1.35,
-          }}
-        />
-      </label>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-        Для текста в баблах используйте «Перевести бабл» — он заливает область цветом фона. «Перерисовать» предназначен для надписей поверх арта.
-      </div>
-      <button
-        type="button"
-        onClick={handleRedrawSfx}
-        disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
-        style={{
-          ...secondaryButtonStyle,
-          opacity: activeDoc && hasMask && !aiOperation && !translationOperation ? 1 : 0.55,
-          cursor: activeDoc && hasMask && !aiOperation && !translationOperation ? 'pointer' : 'not-allowed',
-        }}
-      >
-        {translationOperation === 'redraw' ? 'Перерисовываем…' : 'Перерисовать участок (AI)'}
-      </button>
+      {!cleanupSettings.disableImageTranslationModel && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          Image-вызовы за сессию: {imageUsage.calls} · примерно ${imageUsage.estimatedCostUsd.toFixed(2)}
+        </div>
+      )}
+      {!cleanupSettings.disableImageTranslationModel && (
+        <>
+          <button
+            type="button"
+            title="Модель перерисует текст сама. Результат нельзя редактировать как текст"
+            onClick={handleTranslateAi}
+            disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
+            style={{
+              ...secondaryButtonStyle,
+              opacity: activeDoc && hasMask && !aiOperation && !translationOperation ? 1 : 0.55,
+              cursor: activeDoc && hasMask && !aiOperation && !translationOperation ? 'pointer' : 'not-allowed',
+            }}
+          >
+            {translationOperation === 'ai' ? 'Переводим…' : 'Перевод AI (в стиле оригинала)'}
+          </button>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            Для AI-перевода выделяйте бабл целиком вместе с текстом. Если выделена только часть текста, результат может обрезаться.
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--text-secondary)' }}>
+            Инструкция для AI
+            <textarea
+              aria-label="Инструкция для AI"
+              value={redrawPrompt}
+              onChange={event => setRedrawPrompt(event.target.value)}
+              rows={5}
+              style={{
+                width: '100%', resize: 'vertical', boxSizing: 'border-box',
+                background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)',
+                borderRadius: 6, color: 'var(--text-primary)', fontSize: 11, padding: '6px 8px', lineHeight: 1.35,
+              }}
+            />
+          </label>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            Для текста в баблах используйте «Перевести бабл» — он заливает область цветом фона. «Перерисовать» предназначен для надписей поверх арта.
+          </div>
+          <button
+            type="button"
+            onClick={handleRedrawSfx}
+            disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
+            style={{
+              ...secondaryButtonStyle,
+              opacity: activeDoc && hasMask && !aiOperation && !translationOperation ? 1 : 0.55,
+              cursor: activeDoc && hasMask && !aiOperation && !translationOperation ? 'pointer' : 'not-allowed',
+            }}
+          >
+            {translationOperation === 'redraw' ? 'Перерисовываем…' : 'Перерисовать участок (AI)'}
+          </button>
+        </>
+      )}
       {(translationOriginal || translationText) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {translationOriginal && (
@@ -490,12 +521,23 @@ export function CleanupPanel() {
       {aiError && (
         <div role="alert" style={{ color: 'var(--destructive)', fontSize: 11, lineHeight: 1.4 }}>
           <div>{aiError}</div>
-          {safetyHint && <div style={{ marginTop: 4 }}>Фрагмент отклонён моделью. Замажьте текст замыванием и вставьте перевод вручную.</div>}
+          {safetyHint && <div style={{ marginTop: 4 }}>Image-модель отклонила фрагмент. Перевести через OCR + шрифт?</div>}
           {aiFallbackVisible && (
             <button type="button" onClick={handleTranslateBubble} disabled={Boolean(translationOperation)} style={{ ...secondaryButtonStyle, marginTop: 6 }}>
               Перевести бабл (OCR + заливка)
             </button>
           )}
+          {aiRetryAction && !aiFallbackVisible && (
+            <button
+              type="button"
+              onClick={() => { if (aiRetryAction === 'translate') void handleTranslateAi(); else void handleRedrawSfx(); }}
+              disabled={Boolean(translationOperation)}
+              style={{ ...secondaryButtonStyle, marginTop: 6 }}
+            >
+              Повторить
+            </button>
+          )}
+          {imageQualityWarning && <div style={{ marginTop: 4 }}>Выделение слишком большое, качество перерисовки может пострадать.</div>}
         </div>
       )}
 

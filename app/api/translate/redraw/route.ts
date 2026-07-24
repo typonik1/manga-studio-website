@@ -1,5 +1,5 @@
 import { requireImageFile } from '@/lib/clipdrop/server';
-import { callRouterAi, routerAiErrorResponse, RouterAiRequestError } from '@/lib/routerai/server';
+import { callRouterAi, routerAiErrorResponse, RouterAiRequestError, ROUTERAI_IMAGE_MODEL } from '@/lib/routerai/server';
 
 export const runtime = 'nodejs';
 export const maxDuration = 90;
@@ -50,11 +50,12 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const image = requireImageFile(formData.get('image_file'), 'image_file');
     const prompt = String(formData.get('prompt') ?? '').trim();
+    const seedValue = Number(formData.get('seed'));
     if (!prompt) return Response.json({ error: 'Укажите, что нужно перерисовать.' }, { status: 400 });
     if (prompt.length > 2000) return Response.json({ error: 'Промпт слишком длинный.' }, { status: 400 });
 
     const payload = await callRouterAi({
-      model: 'google/gemini-3.1-flash-image',
+      model: ROUTERAI_IMAGE_MODEL,
       messages: [{
         role: 'user',
         content: [
@@ -63,6 +64,9 @@ export async function POST(request: Request) {
         ],
       }],
       modalities: ['image', 'text'],
+      max_tokens: 2048,
+      temperature: 0.4,
+      ...(Number.isFinite(seedValue) ? { seed: Math.trunc(seedValue) } : {}),
     });
     const message = (payload as { choices?: Array<{ message?: unknown }> } | null)?.choices?.[0]?.message;
     const dataUrl = findDataUrl((message as { images?: unknown; content?: unknown } | null)?.images)

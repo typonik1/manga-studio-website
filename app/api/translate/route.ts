@@ -1,4 +1,5 @@
 import { generateText } from 'ai';
+import { ROUTERAI_TEXT_MODEL } from '@/lib/routerai/server';
 
 export const maxDuration = 30;
 
@@ -29,7 +30,7 @@ export async function POST(req: Request) {
     const toName = LANG_NAMES[to ?? 'ru'] ?? 'Russian';
 
     const { text: translated } = await generateText({
-      model: 'google/gemini-3.5-flash',
+      model: ROUTERAI_TEXT_MODEL,
       instructions:
         `You are a professional manga/comic translator. Translate the given ${fromName} text into natural, colloquial ${toName}. ` +
         `The text comes from OCR of a comic speech bubble, so it may contain recognition artifacts: ` +

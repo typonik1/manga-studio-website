@@ -12,6 +12,7 @@ import { aiCleanupMaskedArea, finishSelection, requireSelectionMask } from './la
 import { ocrTranslate, redrawRegion } from '@/lib/routerai/client';
 
 const TRANSLATE_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+export const IMAGE_MODEL_MAX_DIMENSION = 768;
 
 export const DEFAULT_REDRAW_PROMPT = 'Удали только буквы/символы текста в выделенной области и восстанови то, что находится непосредственно под ними. Сохрани все остальные элементы без изменений: речевые баблы, их контуры и заливку, персонажей, фон. Не добавляй новых объектов. Стиль рисунка сохрани.';
 const TRANSLATION_LANGUAGE_NAMES: Record<string, string> = {
@@ -41,6 +42,7 @@ interface BubbleCrop {
   image: Blob;
   crop: SelectionBounds;
   selection: SelectionBounds;
+  downscaleRatio: number;
 }
 
 function hasMaskPixels(maskCanvas: HTMLCanvasElement): boolean {
@@ -159,10 +161,23 @@ function getSelectionBounds(maskCanvas: HTMLCanvasElement): SelectionBounds {
   };
 }
 
-async function buildBubbleCrop(doc: ImageDocument): Promise<BubbleCrop> {
+function resizeCanvasToMaxDimension(canvas: HTMLCanvasElement, maxDimension: number): HTMLCanvasElement {
+  const longest = Math.max(canvas.width, canvas.height);
+  if (longest <= maxDimension) return canvas;
+  const scale = maxDimension / longest;
+  const output = document.createElement('canvas');
+  output.width = Math.max(1, Math.round(canvas.width * scale));
+  output.height = Math.max(1, Math.round(canvas.height * scale));
+  output.getContext('2d')!.drawImage(canvas, 0, 0, output.width, output.height);
+  return output;
+}
+
+async function buildBubbleCrop(doc: ImageDocument, paddingPx?: number, maxDimension?: number): Promise<BubbleCrop> {
   const mask = await requireSelectionMask(doc);
   const selection = getSelectionBounds(mask.canvas);
-  const pad = Math.max(8, Math.round(Math.max(selection.width, selection.height) * 0.15));
+  const pad = paddingPx === undefined
+    ? Math.max(8, Math.round(Math.max(selection.width, selection.height) * 0.15))
+    : Math.max(0, Math.min(12, Math.round(paddingPx)));
   const cropX = Math.max(0, selection.x - pad);
   const cropY = Math.max(0, selection.y - pad);
   const cropRight = Math.min(doc.width, selection.x + selection.width + pad);
@@ -181,8 +196,14 @@ async function buildBubbleCrop(doc: ImageDocument): Promise<BubbleCrop> {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas недоступен.');
   ctx.drawImage(source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
-  const encoded = await encodeCanvasToBudget(canvas, TRANSLATE_IMAGE_MAX_BYTES);
-  return { image: encoded.blob, crop, selection };
+  const prepared = maxDimension ? resizeCanvasToMaxDimension(canvas, maxDimension) : canvas;
+  const encoded = await encodeCanvasToBudget(prepared, TRANSLATE_IMAGE_MAX_BYTES);
+  return {
+    image: encoded.blob,
+    crop,
+    selection,
+    downscaleRatio: Math.max(crop.width / encoded.width, crop.height / encoded.height),
+  };
 }
 
 function createBubbleTextDraft(doc: ImageDocument, selection: SelectionBounds, translation: string): TextObject {
@@ -251,15 +272,15 @@ export async function translateBubble(
 }
 
 /**
- * One-step translation/redraw. The model receives the same padded OCR crop,
- * but its full generated crop is always clipped back through the user's mask.
+ * One-step translation/redraw. Image-model operations use the strict
+ * selection bounding box; the generated crop is clipped back through the mask.
  */
-export async function translateRegionWithAi(targetLang = 'ru', signal?: AbortSignal): Promise<void> {
+export async function translateRegionWithAi(targetLang = 'ru', signal?: AbortSignal, seed?: number): Promise<{ downscaleRatio: number }> {
   const doc = activeDocument();
-  const crop = await buildBubbleCrop(doc);
+  const crop = await buildBubbleCrop(doc, 0, IMAGE_MODEL_MAX_DIMENSION);
   const language = TRANSLATION_LANGUAGE_NAMES[targetLang] ?? targetLang;
   const prompt = `Переведи весь текст на этом фрагменте манги на ${language} язык. Перерисуй текст на том же месте, в том же стиле и с тем же оформлением (баблы, контуры, цвета — без изменений). Не меняй ничего, кроме самого текста. Верни изображение того же размера.`;
-  const resultDataUrl = await redrawRegion(crop.image, prompt, signal);
+  const resultDataUrl = await redrawRegion(crop.image, prompt, signal, { seed });
   const result = await loadCleanupImage(resultDataUrl);
   const patch = document.createElement('canvas');
   patch.width = doc.width;
@@ -281,15 +302,17 @@ export async function translateRegionWithAi(targetLang = 'ru', signal?: AbortSig
     eraseElements: [],
   });
   finishSelection();
+  return { downscaleRatio: crop.downscaleRatio };
 }
 
-export async function redrawSfx(signal?: AbortSignal, prompt = DEFAULT_REDRAW_PROMPT): Promise<void> {
+export async function redrawSfx(signal?: AbortSignal, prompt = DEFAULT_REDRAW_PROMPT, seed?: number): Promise<{ downscaleRatio: number }> {
   const doc = activeDocument();
-  const crop = await buildBubbleCrop(doc);
+  const crop = await buildBubbleCrop(doc, 0, IMAGE_MODEL_MAX_DIMENSION);
   const resultDataUrl = await redrawRegion(
     crop.image,
     prompt.trim() || DEFAULT_REDRAW_PROMPT,
     signal,
+    { seed },
   );
   const result = await loadCleanupImage(resultDataUrl);
   const patch = document.createElement('canvas');
@@ -313,4 +336,5 @@ export async function redrawSfx(signal?: AbortSignal, prompt = DEFAULT_REDRAW_PR
     eraseElements: [],
   });
   finishSelection();
+  return { downscaleRatio: crop.downscaleRatio };
 }

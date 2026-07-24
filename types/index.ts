@@ -333,6 +333,8 @@ export interface CleanupSettings {
   keepSelectionAfterAction: boolean;
   /** How «Перевести бабл» should remove the original text before insertion. */
   translationCleanupMethod: 'local' | 'clipdrop';
+  /** Hide image-model translation/redraw actions and use OCR + text instead. */
+  disableImageTranslationModel: boolean;
 }
 
 export interface TextSettings {

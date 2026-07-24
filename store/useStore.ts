@@ -63,6 +63,7 @@ const defaultCleanupSettings: CleanupSettings = {
   wandContiguous: true,
   keepSelectionAfterAction: false,
   translationCleanupMethod: 'local',
+  disableImageTranslationModel: false,
 };
 
 const defaultTextSettings: TextSettings = {

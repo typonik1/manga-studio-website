@@ -10,85 +10,11 @@ export const runtime = 'nodejs';
 export const maxDuration = 90;
 
 const ROUTERAI_BASE_URL = 'https://routerai.ru/api/v1';
-const MAX_LONG_SIDE = 768;
 
 // ---------------------------------------------------------------------------
-// Image dimension helpers
+// File size guard (client already downscales to ≤768 px, this is a backstop)
 // ---------------------------------------------------------------------------
-
-interface ImageDimensions {
-  width: number;
-  height: number;
-}
-
-function readPngDimensions(bytes: Buffer): ImageDimensions | null {
-  if (bytes.length < 24 || bytes.toString('ascii', 1, 4) !== 'PNG') return null;
-  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
-}
-
-function readJpegDimensions(bytes: Buffer): ImageDimensions | null {
-  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
-  let offset = 2;
-  while (offset + 9 < bytes.length) {
-    if (bytes[offset] !== 0xff) { offset += 1; continue; }
-    const marker = bytes[offset + 1];
-    offset += 2;
-    if (marker === 0xd8 || marker === 0xd9) continue;
-    const length = bytes.readUInt16BE(offset);
-    if (length < 2 || offset + length > bytes.length) break;
-    const isSof = (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)
-      || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf);
-    if (isSof && offset + 7 < bytes.length) {
-      return { width: bytes.readUInt16BE(offset + 5), height: bytes.readUInt16BE(offset + 3) };
-    }
-    offset += length;
-  }
-  return null;
-}
-
-function readWebpDimensions(bytes: Buffer): ImageDimensions | null {
-  if (bytes.length < 30 || bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WEBP') return null;
-  if (bytes.toString('ascii', 12, 16) === 'VP8X') {
-    return {
-      width: 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16),
-      height: 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16),
-    };
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Resize input image so long side ≤ 768 px (each generation costs ~3.5 ₽)
-// ---------------------------------------------------------------------------
-
-async function resizeToDataUrl(
-  bytes: Buffer,
-  mimeType: string,
-): Promise<{ dataUrl: string; dimensions: ImageDimensions | null }> {
-  const dimensions =
-    readPngDimensions(bytes) ?? readJpegDimensions(bytes) ?? readWebpDimensions(bytes);
-
-  let finalBytes = bytes;
-  if (dimensions && Math.max(dimensions.width, dimensions.height) > MAX_LONG_SIDE) {
-    try {
-      // sharp is available in Next.js Node runtime
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const sharp = require('sharp') as typeof import('sharp');
-      finalBytes = await sharp(bytes)
-        .resize(MAX_LONG_SIDE, MAX_LONG_SIDE, { fit: 'inside', withoutEnlargement: true })
-        .png()
-        .toBuffer();
-    } catch {
-      // sharp not installed — send original; log but do not fail
-      console.warn('[redraw] sharp not available, sending original-size image');
-    }
-  }
-
-  return {
-    dataUrl: `data:${mimeType || 'image/png'};base64,${finalBytes.toString('base64')}`,
-    dimensions,
-  };
-}
+const MAX_INPUT_BYTES = 8 * 1024 * 1024; // 8 MB
 
 // ---------------------------------------------------------------------------
 // Response helpers
@@ -101,46 +27,78 @@ function pngResponse(bytes: Buffer): Response {
   });
 }
 
-function upstreamMessage(payload: unknown, raw: string): string {
+function upstreamErrorText(payload: unknown, raw: string): string {
   if (typeof payload === 'object' && payload !== null) {
     const record = payload as Record<string, unknown>;
     for (const key of ['message', 'error', 'detail']) {
       const value = record[key];
-      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 300);
       if (
         typeof value === 'object' &&
         value !== null &&
         typeof (value as Record<string, unknown>).message === 'string'
       ) {
-        return String((value as Record<string, unknown>).message).trim();
+        return String((value as Record<string, unknown>).message).trim().slice(0, 300);
       }
     }
   }
-  return raw.trim();
+  return raw.trim().slice(0, 300);
 }
 
 // ---------------------------------------------------------------------------
-// Image extraction — all known OpenAI-compatible response shapes
+// Structural safety-refusal detection
+//
+// We intentionally do NOT run isRouterAiSafetyText() against the full raw body
+// of a successful response:  the raw string may contain megabytes of base64
+// where words like "refus", "policy", "unsafe" appear by chance, causing false
+// rejections even though an image was returned and money was spent.
+//
+// We only check:
+//  1. finish_reason === 'content_filter'
+//  2. message.refusal is a non-empty string
+//  3. No image was extracted AND message.content is a short text string that
+//     contains safety keywords (i.e. the model replied with text instead of an image)
 // ---------------------------------------------------------------------------
 
 type AnyRecord = Record<string, unknown>;
 
+function isSafetyRefusal(message: AnyRecord, finishReason: unknown, imageFound: boolean): boolean {
+  // 1. Explicit content_filter signal
+  if (finishReason === 'content_filter') return true;
+
+  // 2. OpenAI-style refusal field
+  if (typeof message.refusal === 'string' && message.refusal.trim()) return true;
+
+  // 3. Model replied with text instead of image — check only the text, not raw
+  if (!imageFound && typeof message.content === 'string') {
+    const contentText = message.content.trim();
+    // Only flag if it's a short text reply (not a partial base64 blob)
+    if (contentText.length < 2000 && isRouterAiSafetyText(contentText)) return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Image extraction — all known OpenAI-compatible response shapes, in order
+// ---------------------------------------------------------------------------
+
 /** Resolve a URL string (data: or https:) to raw bytes. */
-async function resolveImageString(src: string): Promise<Buffer> {
+async function resolveImageString(src: string, signal?: AbortSignal): Promise<Buffer> {
   if (src.startsWith('data:')) {
     const match = src.match(/base64,([A-Za-z0-9+/=\s]+)/);
     if (!match) throw new RouterAiRequestError(502, 'data URL не содержит base64-данных.');
     return Buffer.from(match[1].replace(/\s/g, ''), 'base64');
   }
   if (/^https?:\/\//i.test(src)) {
-    const res = await fetch(src, { cache: 'no-store' });
+    const res = await fetch(src, { cache: 'no-store', signal });
     if (!res.ok) throw new RouterAiRequestError(502, 'Не удалось скачать изображение от RouterAI.');
     return Buffer.from(await res.arrayBuffer());
   }
   throw new RouterAiRequestError(502, 'Неизвестный формат URL изображения от RouterAI.');
 }
 
-async function extractImageBytes(message: AnyRecord): Promise<Buffer | null> {
+async function extractImageBytes(message: AnyRecord, signal?: AbortSignal): Promise<Buffer | null> {
   // 1. message.images[0]
   const images = message.images;
   if (Array.isArray(images) && images.length > 0) {
@@ -149,12 +107,12 @@ async function extractImageBytes(message: AnyRecord): Promise<Buffer | null> {
     // 1a. images[0].image_url.url  (data URL or https URL)
     const imageUrl = img.image_url as AnyRecord | undefined;
     if (typeof imageUrl?.url === 'string' && imageUrl.url) {
-      return resolveImageString(imageUrl.url);
+      return resolveImageString(imageUrl.url, signal);
     }
 
     // 1b. images[0].url
     if (typeof img.url === 'string' && img.url) {
-      return resolveImageString(img.url);
+      return resolveImageString(img.url, signal);
     }
 
     // 1c. images[0].b64_json
@@ -170,17 +128,17 @@ async function extractImageBytes(message: AnyRecord): Promise<Buffer | null> {
 
       if (type === 'image_url') {
         const iu = part.image_url as AnyRecord | undefined;
-        if (typeof iu?.url === 'string' && iu.url) return resolveImageString(iu.url);
+        if (typeof iu?.url === 'string' && iu.url) return resolveImageString(iu.url, signal);
       }
 
       if (type === 'output_image' || type === 'image') {
-        if (typeof part.url === 'string' && part.url) return resolveImageString(part.url);
+        if (typeof part.url === 'string' && part.url) return resolveImageString(part.url, signal);
         if (typeof part.b64_json === 'string' && part.b64_json.trim()) {
           return Buffer.from(part.b64_json.replace(/\s/g, ''), 'base64');
         }
         // Some routers nest inside image_url
         const iu2 = part.image_url as AnyRecord | undefined;
-        if (typeof iu2?.url === 'string' && iu2.url) return resolveImageString(iu2.url);
+        if (typeof iu2?.url === 'string' && iu2.url) return resolveImageString(iu2.url, signal);
       }
     }
   }
@@ -211,10 +169,17 @@ export async function POST(request: Request) {
     if (!prompt) return Response.json({ error: 'Укажите, что нужно перерисовать.' }, { status: 400 });
     if (prompt.length > 2000) return Response.json({ error: 'Промпт слишком длинный.' }, { status: 400 });
 
+    // File size backstop (client-side resize should keep this well below 3 MB)
     const bytes = Buffer.from(await image.arrayBuffer());
-    const { dataUrl } = await resizeToDataUrl(bytes, image.type);
+    if (bytes.length > MAX_INPUT_BYTES) {
+      return Response.json({ error: `Изображение слишком большое (${(bytes.length / 1024 / 1024).toFixed(1)} МБ > 8 МБ).` }, { status: 413 });
+    }
 
-    // --- POST to chat/completions (NOT /images/generations) ---
+    const dataUrl = `data:${image.type || 'image/jpeg'};base64,${bytes.toString('base64')}`;
+
+    // Propagate abort signal so cancelled requests don't keep billing us
+    const signal = request.signal;
+
     const response = await fetch(`${ROUTERAI_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -229,9 +194,10 @@ export async function POST(request: Request) {
             ],
           },
         ],
-        max_tokens: 2048,
+        max_tokens: 4096,
       }),
       cache: 'no-store',
+      signal,
     });
 
     const raw = await response.text();
@@ -239,16 +205,20 @@ export async function POST(request: Request) {
     try { payload = raw ? JSON.parse(raw) : null; } catch { /* preserve raw error below */ }
 
     if (!response.ok) {
+      // Error bodies are plain JSON/text, never base64 — keyword check is safe here
       console.error('[redraw] upstream error', { status: response.status, body: raw.slice(0, 500) });
-      const detail = upstreamMessage(payload, raw);
+      const detail = upstreamErrorText(payload, raw);
       if (isRouterAiSafetyText(detail)) {
         throw new RouterAiRequestError(response.status, 'Image-модель отклонила фрагмент. Перевести через OCR + шрифт?');
       }
       throw new RouterAiRequestError(response.status, detail || 'RouterAI не смог обработать изображение.');
     }
 
-    // --- Log response shape for diagnostics (base64 strings truncated) ---
-    const message = (payload as { choices?: Array<{ message?: unknown }> } | null)?.choices?.[0]?.message;
+    // --- Log response shape for diagnostics (base64 truncated to avoid log spam) ---
+    const choice = (payload as { choices?: Array<{ message?: unknown; finish_reason?: unknown }> } | null)?.choices?.[0];
+    const message = choice?.message;
+    const finishReason = choice?.finish_reason;
+
     console.log(
       '[redraw] response shape',
       JSON.stringify(
@@ -265,13 +235,20 @@ export async function POST(request: Request) {
       throw new RouterAiRequestError(502, 'Ответ RouterAI не содержит message.');
     }
 
+    const msg = message as AnyRecord;
+
     // --- Extract image from all known shapes ---
-    const imageBytes = await extractImageBytes(message as AnyRecord);
+    const imageBytes = await extractImageBytes(msg, signal);
+
+    // --- Structural safety check (after extraction attempt) ---
+    if (isSafetyRefusal(msg, finishReason, imageBytes !== null)) {
+      throw new RouterAiRequestError(451, 'Image-модель отклонила фрагмент. Перевести через OCR + шрифт?');
+    }
 
     if (!imageBytes) {
-      // Build a safe summary of message shape (no base64 blobs)
+      // Log shape without base64 for debugging; do NOT include in response body
       const safeShape = JSON.stringify(
-        message,
+        msg,
         (k, v) =>
           typeof v === 'string' && v.length > 80
             ? v.slice(0, 80) + `…[${v.length}]`
@@ -279,7 +256,7 @@ export async function POST(request: Request) {
       );
       console.error('[redraw] no image found in message. shape:', safeShape);
       return Response.json(
-        { error: 'Модель не вернула изображение.', messageShape: JSON.parse(safeShape) },
+        { error: 'Модель не вернула изображение.' },
         { status: 502, headers: { 'Cache-Control': 'no-store' } },
       );
     }

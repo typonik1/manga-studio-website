@@ -52,15 +52,17 @@ export async function callRouterAi(
   }
 
   if (!response.ok) {
+    // Error bodies are plain JSON/text, never base64 — safe to run keyword check here.
     const detail = typeof payload === 'object' && payload !== null
-      ? JSON.stringify(payload)
-      : raw;
+      ? JSON.stringify(payload).slice(0, 300)
+      : raw.slice(0, 300);
     throw new RouterAiRequestError(response.status, upstreamMessage(response.status, detail));
   }
 
-  if (isRouterAiSafetyText(raw)) {
-    throw new RouterAiRequestError(502, 'Модель отклонила этот фрагмент. Используйте локальное замывание.');
-  }
+  // NOTE: do NOT call isRouterAiSafetyText(raw) on a successful response.
+  // The raw string may contain megabytes of base64 image data where substrings
+  // like "refus", "policy", "unsafe" appear by chance, causing false rejections
+  // even when money was already spent and an image was returned.
 
   return payload;
 }

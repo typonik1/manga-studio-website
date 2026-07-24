@@ -3,13 +3,17 @@ import type { ImageDocument, TextObject } from '@/types';
 import { uid } from './imageUtils';
 import {
   buildCleanupSourceCanvas,
+  createCleanupPatch,
+  createColorPatch,
   encodeCanvasToBudget,
   loadCleanupImage,
 } from './cleanupRaster';
-import { aiCleanupMaskedArea, finishSelection, inpaintMaskedArea, requireSelectionMask } from './layerActions';
+import { aiCleanupMaskedArea, finishSelection, requireSelectionMask } from './layerActions';
 import { ocrTranslate, redrawRegion } from '@/lib/routerai/client';
 
 const TRANSLATE_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+
+export const DEFAULT_REDRAW_PROMPT = 'Удали только буквы/символы текста в выделенной области и восстанови то, что находится непосредственно под ними. Сохрани все остальные элементы без изменений: речевые баблы, их контуры и заливку, персонажей, фон. Не добавляй новых объектов. Стиль рисунка сохрани.';
 
 export type BubbleCleanupMethod = 'local' | 'clipdrop';
 
@@ -30,6 +34,89 @@ interface BubbleCrop {
   image: Blob;
   crop: SelectionBounds;
   selection: SelectionBounds;
+}
+
+function hasMaskPixels(maskCanvas: HTMLCanvasElement): boolean {
+  const ctx = maskCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+  const data = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+  for (let index = 3; index < data.length; index += 4) {
+    if (data[index] > 8) return true;
+  }
+  return false;
+}
+
+/** Keeps only pixels with a full neighbourhood inside the selection. */
+export function erodeMaskCanvas(maskCanvas: HTMLCanvasElement, radius = 2): HTMLCanvasElement {
+  const output = document.createElement('canvas');
+  output.width = maskCanvas.width;
+  output.height = maskCanvas.height;
+  const sourceCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+  const outputCtx = output.getContext('2d');
+  if (!sourceCtx || !outputCtx) throw new Error('Canvas недоступен.');
+  const source = sourceCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+  const result = outputCtx.createImageData(maskCanvas.width, maskCanvas.height);
+  const width = maskCanvas.width;
+  const height = maskCanvas.height;
+  const safeRadius = Math.max(0, Math.floor(radius));
+  for (let y = safeRadius; y < height - safeRadius; y++) {
+    for (let x = safeRadius; x < width - safeRadius; x++) {
+      let inside = true;
+      for (let dy = -safeRadius; dy <= safeRadius && inside; dy++) {
+        for (let dx = -safeRadius; dx <= safeRadius; dx++) {
+          if (source.data[((y + dy) * width + (x + dx)) * 4 + 3] <= 8) {
+            inside = false;
+            break;
+          }
+        }
+      }
+      if (inside) result.data[(y * width + x) * 4 + 3] = source.data[(y * width + x) * 4 + 3];
+    }
+  }
+  outputCtx.putImageData(result, 0, 0);
+  return output;
+}
+
+function median(values: number[]): number {
+  if (!values.length) return 255;
+  values.sort((a, b) => a - b);
+  return values[Math.floor(values.length / 2)];
+}
+
+/** Samples a 3–6 px inner band so the bubble outline is not used as fill color. */
+export function estimateMaskBackgroundColor(source: HTMLCanvasElement, maskCanvas: HTMLCanvasElement): string {
+  const sourceCtx = source.getContext('2d', { willReadFrequently: true });
+  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sourceCtx || !maskCtx) throw new Error('Canvas недоступен.');
+  const sourceData = sourceCtx.getImageData(0, 0, source.width, source.height).data;
+  const maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+  const inner3 = erodeMaskCanvas(maskCanvas, 3);
+  const inner6 = erodeMaskCanvas(maskCanvas, 6);
+  const inner3Data = inner3.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, inner3.width, inner3.height).data;
+  const inner6Data = inner6.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, inner6.width, inner6.height).data;
+  const red: number[] = [];
+  const green: number[] = [];
+  const blue: number[] = [];
+  const addPixel = (index: number) => {
+    red.push(sourceData[index]); green.push(sourceData[index + 1]); blue.push(sourceData[index + 2]);
+  };
+  for (let pixel = 0; pixel < maskCanvas.width * maskCanvas.height; pixel++) {
+    const maskIndex = pixel * 4;
+    if (maskData[maskIndex + 3] > 8 && inner3Data[maskIndex + 3] > 8 && inner6Data[maskIndex + 3] <= 8) addPixel(maskIndex);
+  }
+  if (!red.length) {
+    for (let pixel = 0; pixel < maskCanvas.width * maskCanvas.height; pixel++) {
+      const index = pixel * 4;
+      if (inner3Data[index + 3] > 8) addPixel(index);
+    }
+  }
+  if (!red.length) {
+    for (let pixel = 0; pixel < maskCanvas.width * maskCanvas.height; pixel++) {
+      const index = pixel * 4;
+      if (maskData[index + 3] > 8) addPixel(index);
+    }
+  }
+  return `rgb(${median(red)}, ${median(green)}, ${median(blue)})`;
 }
 
 function activeDocument(): ImageDocument {
@@ -129,7 +216,24 @@ export async function translateBubble(
   if (cleanupMethod === 'clipdrop') {
     await aiCleanupMaskedArea(signal);
   } else {
-    await inpaintMaskedArea();
+    const mask = await requireSelectionMask(doc);
+    const source = await buildCleanupSourceCanvas(doc);
+    const erodedMask = erodeMaskCanvas(mask.canvas, 2);
+    const fillMask = hasMaskPixels(erodedMask) ? erodedMask : mask.canvas;
+    const color = estimateMaskBackgroundColor(source, mask.canvas);
+    const patch = await createColorPatch(fillMask, doc.width, doc.height, color);
+    const current = useStore.getState().documents.find(item => item.id === doc.id) ?? doc;
+    useStore.getState().addAiLayer(doc.id, {
+      id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: `Заливка бабла ${current.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
+      src: patch,
+      visible: true,
+      opacity: 1,
+      operation: 'cleanup',
+      maskId: current.activeMaskId ?? undefined,
+      eraseElements: [],
+    });
+    finishSelection();
   }
 
   return {
@@ -139,12 +243,12 @@ export async function translateBubble(
   };
 }
 
-export async function redrawSfx(signal?: AbortSignal): Promise<void> {
+export async function redrawSfx(signal?: AbortSignal, prompt = DEFAULT_REDRAW_PROMPT): Promise<void> {
   const doc = activeDocument();
   const crop = await buildBubbleCrop(doc);
   const resultDataUrl = await redrawRegion(
     crop.image,
-    'Удали нарисованный текст и звуки и восстанови рисунок под ними. Сохрани стиль, линии, освещение и фактуру исходной манги.',
+    prompt.trim() || DEFAULT_REDRAW_PROMPT,
     signal,
   );
   const result = await loadCleanupImage(resultDataUrl);
@@ -154,12 +258,14 @@ export async function redrawSfx(signal?: AbortSignal): Promise<void> {
   const ctx = patch.getContext('2d');
   if (!ctx) throw new Error('Canvas недоступен.');
   ctx.drawImage(result, crop.crop.x, crop.crop.y, crop.crop.width, crop.crop.height);
+  const mask = await requireSelectionMask(doc);
+  const maskedPatch = await createCleanupPatch(patch.toDataURL('image/png'), mask.canvas, doc.width, doc.height);
 
   const current = useStore.getState().documents.find(item => item.id === doc.id) ?? doc;
   useStore.getState().addAiLayer(doc.id, {
     id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     name: `Перерисовка участка ${current.aiLayers.filter(layer => layer.operation === 'cleanup').length + 1}`,
-    src: patch.toDataURL('image/png'),
+    src: maskedPatch,
     visible: true,
     opacity: 1,
     operation: 'cleanup',

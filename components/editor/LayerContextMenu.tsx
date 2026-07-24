@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { deleteMaskedPixels, hasActiveSelection, removeBackgroundFromLayer } from '@/utils/layerActions';
+import { localRectToDocRect } from '@/utils/coordinates';
 import type { LayerReference } from '@/types';
 
 export interface ContextMenuState {
@@ -115,7 +116,14 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
       onClick: () => run('crop', () => {
         selectLayer({ id: menu.target.id, type: menu.target.type });
         setLayerCropTarget(layerRef);
-        setCropRect(crop ?? { x: 0, y: 0, width: 1, height: 1 });
+        // The crop frame lives in document space, but the layer may be moved,
+        // scaled or rotated — open the frame where the layer's visible content
+        // actually is on screen, not at its untransformed position.
+        const placement = isBase ? doc.baseLayer : aiLayer!;
+        const initial = crop ?? { x: 0, y: 0, width: 1, height: 1 };
+        setCropRect(placement && !placement.perspective
+          ? localRectToDocRect(initial, placement, doc.width, doc.height)
+          : initial);
         setActiveTool('crop');
       }),
     },

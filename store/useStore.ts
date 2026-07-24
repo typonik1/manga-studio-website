@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { sanitizeImageDocument, sanitizeShape, sanitizeText, sanitizeWatermark } from '@/utils/coordinates';
+import { docRectToLocalRect, sanitizeImageDocument, sanitizeShape, sanitizeText, sanitizeWatermark } from '@/utils/coordinates';
 import { createBaseLayerState } from '../types';
 import type {
   BaseLayerState,
@@ -287,12 +287,22 @@ export const useStore = create<AppState>((set, get) => ({
     const target = state.layerCropTarget;
     const rect = state.cropRect;
     if (!target || !rect || state.activeDocIndex < 0) return;
+    // The crop frame is drawn in document space, but the layer may be moved,
+    // scaled or rotated — store the crop in the layer's LOCAL space so it cuts
+    // exactly what the frame showed on screen.
+    const doc = state.documents[state.activeDocIndex];
+    const placement = target.type === 'base'
+      ? doc?.baseLayer
+      : doc?.aiLayers.find(layer => layer.id === target.id);
+    const localRect = doc && placement && !placement.perspective
+      ? docRectToLocalRect(rect, placement, doc.width, doc.height)
+      : rect;
     // Unlock the layer so the cropped fragment can immediately be moved/scaled
     // with the select tool — that's what users expect right after cropping.
     if (target.type === 'base') {
-      state.updateBaseLayer({ crop: rect, locked: false });
+      state.updateBaseLayer({ crop: localRect, locked: false });
     } else if (target.type === 'ai') {
-      state.updateAiLayer(target.id, { crop: rect, locked: false });
+      state.updateAiLayer(target.id, { crop: localRect, locked: false });
     }
     // Keep the layer selected so the transformer appears right away.
     state.selectLayer({ id: target.id, type: target.type as 'base' | 'ai' });

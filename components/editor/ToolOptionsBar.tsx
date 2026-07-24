@@ -10,7 +10,7 @@ import type { SelectionMode } from '@/types';
 const toolTitles: Record<string, string> = {
   eraser: 'Ластик', maskBrush: 'Маска', brush: 'Кисть', select: 'Выделение объектов',
   pan: 'Рука', text: 'Текст', watermark: 'Вотерка', wand: 'Волшебная палочка',
-  lasso: 'Лассо', rectSelect: 'Прямоугольное выделение', crop: 'Кадрирование',
+  lasso: 'Лассо', polyLasso: 'Прямолинейное лассо', rectSelect: 'Прямоугольное выделение', crop: 'Кадрирование',
 };
 
 const selectionModes: Array<{ mode: SelectionMode; label: string; hint: string }> = [
@@ -24,7 +24,7 @@ export function ToolOptionsBar() {
   const { activeTool, cleanupSettings, updateCleanupSettings, selectedObject, documents, activeDocIndex } = state;
   const doc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const isMarking = activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser';
-  const isSelecting = activeTool === 'lasso' || activeTool === 'rectSelect' || activeTool === 'wand';
+  const isSelecting = activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'rectSelect' || activeTool === 'wand';
   const [running, setRunning] = useState<string | null>(null);
   const [fillColor, setFillColor] = useState('#ffffff');
   const abortRef = useRef<AbortController | null>(null);
@@ -106,6 +106,12 @@ export function ToolOptionsBar() {
             </button>
           ))}
         </div>
+
+        {activeTool === 'polyLasso' && (
+          <span style={{ color: 'var(--text-muted)', fontSize: 11 }} title="Backspace убирает последнюю точку, Esc отменяет выделение">
+            Клики — точки · Enter/двойной клик — замкнуть
+          </span>
+        )}
 
         {activeTool === 'wand' && <>
           <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>

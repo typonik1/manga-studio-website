@@ -905,6 +905,12 @@ export function CanvasArea() {
   const finishPointerRef = useRef<(() => void) | null>(null);
   const isLassoing = useRef(false);
   const lassoPoints = useRef<number[]>([]);
+  // Polygonal lasso: vertices are placed by clicks, closed by Enter/double
+  // click/clicking the first vertex. Points are normalized to the document.
+  const isPolyLassoing = useRef(false);
+  const polyLassoPoints = useRef<number[]>([]);
+  // Latest preview-pixel size for handlers registered once (keyboard).
+  const imgSizeRef = useRef({ w: 1, h: 1 });
   const liveLassoRef = useRef<Konva.Line>(null);
   // Rectangular selection (rectSelect)
   const isRectSelecting = useRef(false);
@@ -960,6 +966,39 @@ export function CanvasArea() {
     : 1;
   const imgW = activeDoc ? activeDoc.width * previewScale : 0;
   const imgH = activeDoc ? activeDoc.height * previewScale : 0;
+
+  useEffect(() => {
+    imgSizeRef.current = { w: Math.max(1, imgW), h: Math.max(1, imgH) };
+  }, [imgW, imgH]);
+
+  // Polygonal lasso helpers. Stable identities (used by once-registered
+  // keyboard handlers); store access goes through getState().
+  const cancelPolyLasso = useCallback(() => {
+    if (!isPolyLassoing.current && polyLassoPoints.current.length === 0) return;
+    isPolyLassoing.current = false;
+    polyLassoPoints.current = [];
+    const line = liveLassoRef.current;
+    if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
+  }, []);
+
+  const finishPolyLasso = useCallback((mode: 'replace' | 'add' | 'subtract') => {
+    const points = [...polyLassoPoints.current];
+    cancelPolyLasso();
+    if (points.length >= 6) {
+      useStore.getState().addMaskElement(
+        { type: 'polygon', points, mode: mode === 'subtract' ? 'erase' : 'add' },
+        { replace: mode === 'replace' }
+      );
+    }
+  }, [cancelPolyLasso]);
+
+  // Leaving the tool or switching pages mid-polygon cancels the contour.
+  useEffect(() => {
+    if (activeTool !== 'polyLasso') cancelPolyLasso();
+  }, [activeTool, cancelPolyLasso]);
+  useEffect(() => {
+    cancelPolyLasso();
+  }, [activeDocIndex, cancelPolyLasso]);
 
   // Fit to screen
   const fitToScreen = useCallback(() => {
@@ -1085,13 +1124,37 @@ export function CanvasArea() {
       panVpStart.current = { x: viewport.x, y: viewport.y };
       return;
     }
-    if ((activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect') && activeDoc) {
+    if ((activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect' || activeTool === 'polyLasso') && activeDoc) {
       const stage = stageRef.current; const pos = stage?.getPointerPosition();
       if (!pos) return;
       const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
       if (!imagePoint?.inside) return;
       // Shift = add to selection, Alt = subtract (overrides the panel toggle)
       const mode: 'replace' | 'add' | 'subtract' = e.evt.altKey ? 'subtract' : e.evt.shiftKey ? 'add' : cleanupSettings.selectionMode;
+      if (activeTool === 'polyLasso') {
+        // Photoshop-style polygonal lasso: every click places a vertex; the
+        // contour closes on double click or on a click near the first vertex
+        // (Enter also closes — handled in the keyboard shortcuts).
+        if (!isPolyLassoing.current) {
+          isPolyLassoing.current = true;
+          polyLassoPoints.current = [imagePoint.x, imagePoint.y];
+        } else {
+          const pts = polyLassoPoints.current;
+          const closeDistPx = Math.hypot((imagePoint.x - pts[0]) * imgW, (imagePoint.y - pts[1]) * imgH) * viewport.scale;
+          if (pts.length >= 6 && (closeDistPx < 12 || e.evt.detail >= 2)) {
+            finishPolyLasso(mode);
+            return;
+          }
+          pts.push(imagePoint.x, imagePoint.y);
+        }
+        const line = liveLassoRef.current;
+        if (line) {
+          line.points(polyLassoPoints.current.flatMap((value, index) => index % 2 === 0 ? value * imgW : value * imgH));
+          line.visible(true);
+          line.getLayer()?.batchDraw();
+        }
+        return;
+      }
       if (activeTool === 'wand') {
         void createFloodMask(activeDoc, imagePoint.x, imagePoint.y, cleanupSettings.magicThreshold, cleanupSettings.wandContiguous).then(({ src, coverage }) => {
           addMaskElement(
@@ -1190,6 +1253,21 @@ export function CanvasArea() {
         const points = lassoPoints.current; const lastX = points.at(-2) ?? imagePoint.x, lastY = points.at(-1) ?? imagePoint.y;
         if (Math.hypot(imagePoint.x - lastX, imagePoint.y - lastY) > 0.002) points.push(imagePoint.x, imagePoint.y);
         const line = liveLassoRef.current; if (line) { line.points(points.flatMap((value, index) => index % 2 === 0 ? value * imgW : value * imgH)); line.getLayer()?.batchDraw(); }
+      }
+      return;
+    }
+    if (activeTool === 'polyLasso' && isPolyLassoing.current && pos) {
+      // Rubber band: contour so far + a straight segment to the cursor.
+      const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (imagePoint) {
+        const cursorX = Math.max(0, Math.min(1, imagePoint.x)) * imgW;
+        const cursorY = Math.max(0, Math.min(1, imagePoint.y)) * imgH;
+        const line = liveLassoRef.current;
+        if (line) {
+          const base = polyLassoPoints.current.flatMap((value, index) => index % 2 === 0 ? value * imgW : value * imgH);
+          line.points([...base, cursorX, cursorY]);
+          line.getLayer()?.batchDraw();
+        }
       }
       return;
     }
@@ -1471,6 +1549,29 @@ export function CanvasArea() {
       if (e.key === '[') ucs({ brushSize: Math.max(0.003, cs.brushSize * 0.85) });
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
 
+      // ── Прямолинейное лассо: Enter — замкнуть, Backspace — убрать точку ─
+      if (isPolyLassoing.current) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finishPolyLasso(e.altKey ? 'subtract' : e.shiftKey ? 'add' : cs.selectionMode);
+          return;
+        }
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          const pts = polyLassoPoints.current;
+          if (pts.length > 2) {
+            pts.splice(pts.length - 2, 2);
+            const { w, h } = imgSizeRef.current;
+            const line = liveLassoRef.current;
+            if (line) { line.points(pts.flatMap((value, index) => index % 2 === 0 ? value * w : value * h)); line.getLayer()?.batchDraw(); }
+          } else {
+            cancelPolyLasso();
+          }
+          return;
+        }
+        if (e.key === 'Escape') { cancelPolyLasso(); return; }
+      }
+
       // ── Ctrl+D — снять выделение ────────────────────────────────────────
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
@@ -1489,6 +1590,7 @@ export function CanvasArea() {
             const rect = liveRectRef.current;
             if (rect) { rect.visible(false); rect.getLayer()?.batchDraw(); }
           }
+          cancelPolyLasso();
           setWandPending(null);
         }
         return;
@@ -1548,7 +1650,7 @@ export function CanvasArea() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [finishPolyLasso, cancelPolyLasso]);
 
   if (documents.length === 0) {
     return (
@@ -1701,7 +1803,7 @@ export function CanvasArea() {
           style={{
             display: 'block',
             touchAction: 'none',
-            cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect') ? 'crosshair' : activeTool === 'text' ? 'text' : 'default',
+            cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'wand' || activeTool === 'rectSelect') ? 'crosshair' : activeTool === 'text' ? 'text' : 'default',
           }}
         >
           {/* Base image layer — key includes fontsVersion so the canvas

@@ -1,5 +1,5 @@
 import { createBaseLayerState, DEFAULT_BASE_ADJUSTMENTS } from '@/types';
-import type { ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject, BubbleObject } from '@/types';
+import type { CropRect, ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject, BubbleObject } from '@/types';
 import { sanitizePerspectiveQuad } from '@/utils/perspective';
 
 export interface CoordinateSpace {
@@ -23,6 +23,90 @@ export function imageToScreen(point: { x: number; y: number }, space: Coordinate
   return {
     x: space.viewport.x + point.x * space.imageWidth * space.viewport.scale,
     y: space.viewport.y + point.y * space.imageHeight * space.viewport.scale,
+  };
+}
+
+/** Placement transform shared by raster layers (Konva order: translate → rotate → scale). */
+export interface PlacementTransform {
+  x?: number;
+  y?: number;
+  scaleX?: number;
+  scaleY?: number;
+  rotation?: number;
+}
+
+function transformRectBBox(
+  rect: CropRect,
+  docW: number,
+  docH: number,
+  mapPoint: (px: number, py: number) => { x: number; y: number },
+): CropRect {
+  const corners = [
+    [rect.x * docW, rect.y * docH],
+    [(rect.x + rect.width) * docW, rect.y * docH],
+    [(rect.x + rect.width) * docW, (rect.y + rect.height) * docH],
+    [rect.x * docW, (rect.y + rect.height) * docH],
+  ].map(([px, py]) => mapPoint(px, py));
+  const xs = corners.map(corner => corner.x);
+  const ys = corners.map(corner => corner.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return {
+    x: minX / docW,
+    y: minY / docH,
+    width: (Math.max(...xs) - minX) / docW,
+    height: (Math.max(...ys) - minY) / docH,
+  };
+}
+
+/**
+ * Map a layer-local normalized rect (e.g. the layer's crop) to the
+ * document-normalized rect where that area is actually rendered on canvas,
+ * honoring the layer's move/scale/rotation. For rotated layers this is the
+ * axis-aligned bounding box of the transformed rect.
+ */
+export function localRectToDocRect(rect: CropRect, placement: PlacementTransform, docW: number, docH: number): CropRect {
+  const tx = (placement.x ?? 0) * docW;
+  const ty = (placement.y ?? 0) * docH;
+  const sx = placement.scaleX ?? 1;
+  const sy = placement.scaleY ?? 1;
+  const rad = ((placement.rotation ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return transformRectBBox(rect, docW, docH, (px, py) => ({
+    x: tx + cos * sx * px - sin * sy * py,
+    y: ty + sin * sx * px + cos * sy * py,
+  }));
+}
+
+/**
+ * Inverse of localRectToDocRect: map an on-canvas (document-normalized) rect
+ * back into the layer's local normalized space, intersected with the layer's
+ * own [0..1] bounds. Used to store a crop drawn over a moved/scaled layer.
+ */
+export function docRectToLocalRect(rect: CropRect, placement: PlacementTransform, docW: number, docH: number): CropRect {
+  const tx = (placement.x ?? 0) * docW;
+  const ty = (placement.y ?? 0) * docH;
+  const sx = placement.scaleX ?? 1;
+  const sy = placement.scaleY ?? 1;
+  if (sx === 0 || sy === 0 || !finite(sx) || !finite(sy)) return rect;
+  const rad = ((placement.rotation ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const raw = transformRectBBox(rect, docW, docH, (px, py) => {
+    const vx = px - tx;
+    const vy = py - ty;
+    return { x: (cos * vx + sin * vy) / sx, y: (-sin * vx + cos * vy) / sy };
+  });
+  const x1 = clamp01(raw.x);
+  const y1 = clamp01(raw.y);
+  const x2 = clamp01(raw.x + raw.width);
+  const y2 = clamp01(raw.y + raw.height);
+  return {
+    x: Math.min(x1, x2),
+    y: Math.min(y1, y2),
+    width: Math.max(0.005, Math.abs(x2 - x1)),
+    height: Math.max(0.005, Math.abs(y2 - y1)),
   };
 }
 

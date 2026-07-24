@@ -7,6 +7,7 @@ import { aiCleanupMaskedArea, inpaintMaskedArea, removeBackgroundFromLayer } fro
 import { DEFAULT_REDRAW_PROMPT, redrawSfx, translateBubble, translateRegionWithAi } from '@/utils/translateActions';
 import { getImageUsage } from '@/lib/routerai/client';
 import type { TextObject } from '@/types';
+import { DEFAULT_ANIME_FONT } from '@/types';
 
 const primaryButtonStyle = {
   padding: '7px', borderRadius: 6, fontSize: 12, fontWeight: 600,
@@ -27,6 +28,7 @@ export function CleanupPanel() {
     createMask, clearActiveMask, setInpaintRunning,
     isInpaintRunning, inpaintProgress,
     addText, setSelectedObject,
+    customFonts, translationFontFamily, setTranslationFontFamily,
   } = useStore();
   const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
   const [translationOperation, setTranslationOperation] = useState<'bubble' | 'ai' | 'redraw' | null>(null);
@@ -360,6 +362,29 @@ export function CleanupPanel() {
             <option value="clipdrop">Clipdrop</option>
           </select>
         </label>
+      </div>
+      <label style={{ display: 'block', fontSize: 11, color: 'var(--text-secondary)' }}>
+        Шрифт перевода по умолчанию
+        <select
+          aria-label="Шрифт перевода по умолчанию"
+          value={translationFontFamily}
+          onChange={event => setTranslationFontFamily(event.target.value)}
+          style={{ width: '100%', marginTop: 3, fontSize: 11 }}
+        >
+          <option value={DEFAULT_ANIME_FONT} style={{ fontFamily: DEFAULT_ANIME_FONT }}>
+            {DEFAULT_ANIME_FONT} (встроенный)
+          </option>
+          {customFonts.length > 0 && (
+            <optgroup label="Мои шрифты">
+              {customFonts.filter(f => f !== DEFAULT_ANIME_FONT).map(f => (
+                <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+      </label>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+        Применяется к новому тексту, «Вставить текст» и блокам автоперевода. Выбор сохраняется после перезагрузки.
       </div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
         <input

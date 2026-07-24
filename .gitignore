@@ -25,3 +25,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# self-hosted fonts: бинарники материализуются из *.b64 (scripts/materialize-fonts.mjs)
+/public/fonts/*.woff2

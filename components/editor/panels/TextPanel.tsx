@@ -3,19 +3,20 @@
 import { useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import { saveCustomFont } from '@/utils/fonts';
+import { saveCustomFont, hasCustomFont, deleteCustomFont } from '@/utils/fonts';
 import { translateText, type TranslateLang } from '@/utils/translate';
 import type { TextObject } from '@/types';
-import { MANGA_FONTS, TEXT_PRESETS } from '@/types';
+import { DEFAULT_ANIME_FONT, MANGA_FONTS, TEXT_PRESETS } from '@/types';
 import { PanelRow, PanelSlider, PanelLabel, PanelSection } from './PanelComponents';
 import { clampOcrBox } from '@/utils/coordinates';
 import { TEXT_PRESET_LABELS } from '@/lib/strings.ru';
+import { toast } from '@/hooks/use-toast';
 
 export function TextPanel() {
   const {
     textSettings, updateTextSettings, addText, activeDocIndex, documents,
-    selectedObject, updateText, customFonts, addCustomFont, bumpFontsVersion,
-    addStroke, restorePageSourceText, setActiveTool,
+    selectedObject, updateText, customFonts, addCustomFont, removeCustomFont, bumpFontsVersion,
+    addStroke, restorePageSourceText, setActiveTool, translationFontFamily,
   } = useStore();
   const customFontRef = useRef<HTMLInputElement>(null);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -50,25 +51,57 @@ export function TextPanel() {
     updateTextSettings({ ...preset });
   }
 
-  function handleCustomFont(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleCustomFont(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async ev => {
-      try {
-        const buffer = ev.target?.result as ArrayBuffer;
-        const fontName = file.name.replace(/\.[^.]+$/, '');
-        // Registers the font AND saves it to IndexedDB so it survives reloads
-        await saveCustomFont(fontName, buffer);
-        addCustomFont(fontName);
-        bumpFontsVersion();
-        updateTextSettings({ fontFamily: fontName });
-      } catch {
-        alert('Не удалось загрузить шрифт. Проверьте файл.');
-      }
-    };
-    reader.readAsArrayBuffer(file);
     e.target.value = '';
+    if (!file) return;
+    const fontName = file.name.replace(/\.[^.]+$/, '').trim();
+    if (!fontName) {
+      alert('Не удалось определить имя шрифта из файла.');
+      return;
+    }
+    // Дубликаты имён: перезаписываем только после подтверждения.
+    const isDuplicate = customFonts.includes(fontName) || await hasCustomFont(fontName);
+    if (isDuplicate) {
+      if (!window.confirm(`Шрифт «${fontName}» уже загружен. Заменить его новым файлом?`)) return;
+    } else if (MANGA_FONTS.includes(fontName)) {
+      if (!window.confirm(`Имя «${fontName}» совпадает со встроенным шрифтом — загруженный файл заменит его при отображении. Продолжить?`)) return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      // Registers the font AND saves it to IndexedDB so it survives reloads
+      await saveCustomFont(fontName, buffer);
+      addCustomFont(fontName);
+      bumpFontsVersion();
+      updateTextSettings({ fontFamily: fontName });
+    } catch {
+      alert('Не удалось загрузить шрифт. Проверьте файл (.ttf/.otf/.woff/.woff2).');
+    }
+  }
+
+  async function handleDeleteCustomFont(name: string) {
+    if (!window.confirm(`Удалить шрифт «${name}»? Он исчезнет из списка и из сохранённых шрифтов.`)) return;
+    // Удаляем из IndexedDB и дерегистрируем из текущей сессии
+    await deleteCustomFont(name);
+    removeCustomFont(name);
+
+    const state = useStore.getState();
+    // Если удалили дефолтный шрифт перевода — возвращаем встроенный
+    if (state.translationFontFamily === name) {
+      state.setTranslationFontFamily(DEFAULT_ANIME_FONT);
+    } else if (state.textSettings.fontFamily === name) {
+      state.updateTextSettings({ fontFamily: state.translationFontFamily });
+    }
+    // Тексты в открытых документах не должны ссылаться на удалённый шрифт
+    const available = [...MANGA_FONTS, ...useStore.getState().customFonts];
+    const missing = useStore.getState().replaceMissingFonts(available);
+    if (missing.length > 0) {
+      toast({
+        title: 'Шрифт удалён',
+        description: `Тексты, использовавшие «${name}», переключены на шрифт по умолчанию.`,
+      });
+    }
+    bumpFontsVersion();
   }
 
   async function handleTranslate() {
@@ -173,7 +206,8 @@ export function TextPanel() {
         addText({
           id: uid(),
           text: translated,
-          fontFamily: textSettings.fontFamily,
+          // Блоки автоперевода всегда создаются «Шрифтом перевода по умолчанию»
+          fontFamily: useStore.getState().translationFontFamily,
           fontSize,
           fill: '#000000',
           stroke: '',
@@ -207,7 +241,7 @@ export function TextPanel() {
     }
   }
 
-  const allFonts = [...MANGA_FONTS, ...customFonts.filter(f => !MANGA_FONTS.includes(f))];
+  const userFonts = customFonts.filter(f => !MANGA_FONTS.includes(f));
 
   const settings = selectedText ? {
     fontFamily: selectedText.fontFamily,
@@ -405,11 +439,22 @@ export function TextPanel() {
       <div>
         <PanelLabel>Шрифт</PanelLabel>
         <select value={settings.fontFamily} onChange={e => update({ fontFamily: e.target.value })}>
-          {allFonts.map(f => (
-            <option key={f} value={f} style={{ fontFamily: f }}>
-              {f}{customFonts.includes(f) && !MANGA_FONTS.includes(f) ? ' (свой)' : ''}
-            </option>
-          ))}
+          <optgroup label="Встроенные">
+            {MANGA_FONTS.map(f => (
+              <option key={f} value={f} style={{ fontFamily: f }}>
+                {f}{f === DEFAULT_ANIME_FONT ? ' (встроенный)' : ''}{f === translationFontFamily ? ' — по умолчанию' : ''}
+              </option>
+            ))}
+          </optgroup>
+          {userFonts.length > 0 && (
+            <optgroup label="Мои шрифты">
+              {userFonts.map(f => (
+                <option key={f} value={f} style={{ fontFamily: f }}>
+                  {f}{f === translationFontFamily ? ' — по умолчанию' : ''}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
       </div>
 
@@ -422,9 +467,54 @@ export function TextPanel() {
           color: 'var(--text-muted)', cursor: 'pointer',
         }}
       >
-        Загрузить шрифт (.ttf/.otf)
+        Загрузить шрифт (.ttf/.otf/.woff/.woff2)
       </button>
-      <input ref={customFontRef} type="file" accept=".ttf,.otf" onChange={handleCustomFont} style={{ display: 'none' }} />
+      <input ref={customFontRef} type="file" accept=".ttf,.otf,.woff,.woff2" onChange={handleCustomFont} style={{ display: 'none' }} />
+
+      {/* Мои шрифты: сохранены в браузере (IndexedDB), переживают перезагрузку */}
+      {customFonts.length > 0 && (
+        <div>
+          <PanelLabel>Мои шрифты</PanelLabel>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {customFonts.map(f => (
+              <div
+                key={f}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '4px 4px 4px 8px', borderRadius: 6,
+                  border: '1px solid var(--border-subtle)',
+                  background: 'var(--bg-panel-raised)',
+                }}
+              >
+                <span
+                  style={{
+                    flex: 1, fontSize: 12, color: 'var(--text-primary)',
+                    fontFamily: `"${f}"`,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {f}
+                </span>
+                {f === translationFontFamily && (
+                  <span style={{ fontSize: 9, color: 'var(--accent)', flexShrink: 0 }}>по умолчанию</span>
+                )}
+                <button
+                  onClick={() => handleDeleteCustomFont(f)}
+                  title={`Удалить шрифт «${f}»`}
+                  aria-label={`Удалить шрифт «${f}»`}
+                  style={{
+                    flexShrink: 0, width: 22, height: 22, borderRadius: 5,
+                    border: 'none', background: 'transparent',
+                    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, lineHeight: 1,
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Colors */}
       <PanelRow label="Цвет текста">

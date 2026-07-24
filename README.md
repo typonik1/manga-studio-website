@@ -8,6 +8,12 @@ This repository is linked to a [v0](https://v0.app) project. You can continue de
 
 [Continue working on v0 →](https://v0.app/chat/projects/prj_IbFBpYpP3LrosMEzWFECEmeptdJ9)
 
+## Шрифты
+
+Встроенный шрифт редактора по умолчанию — [Balsamiq Sans](https://fonts.google.com/specimen/Balsamiq+Sans) (OFL, поддерживает кириллицу). Он self-hosted: бинарные `.woff2` не хранятся в git — в `public/fonts/` лежат их base64-версии (`*.woff2.b64`), которые автоматически декодируются скриптом `scripts/materialize-fonts.mjs` перед `dev` и `build` (см. `predev`/`prebuild`). Запустить вручную: `npm run fonts`.
+
+Пользовательские шрифты (ttf/otf/woff/woff2), загруженные в редакторе, сохраняются в IndexedDB браузера и переживают перезагрузку страницы. «Шрифт перевода по умолчанию» выбирается в настройках перевода и хранится в localStorage.
+
 ## Getting Started
 
 First, run the development server:

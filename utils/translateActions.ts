@@ -207,11 +207,12 @@ async function buildBubbleCrop(doc: ImageDocument, paddingPx?: number, maxDimens
 }
 
 function createBubbleTextDraft(doc: ImageDocument, selection: SelectionBounds, translation: string): TextObject {
-  const { textSettings } = useStore.getState();
+  const { textSettings, translationFontFamily } = useStore.getState();
   return {
     id: uid(),
     text: translation.trim(),
-    fontFamily: textSettings.fontFamily,
+    // «Вставить текст» после перевода бабла — всегда дефолтным шрифтом перевода
+    fontFamily: translationFontFamily,
     fontSize: textSettings.fontSize,
     fill: textSettings.fill,
     stroke: textSettings.stroke,

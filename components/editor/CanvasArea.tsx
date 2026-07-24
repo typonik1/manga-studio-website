@@ -14,6 +14,7 @@ import { ToolOptionsBar } from './ToolOptionsBar';
 import { screenToImage } from '@/utils/coordinates';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
 import { createLayerFromSelection, hasActiveSelection } from '@/utils/layerActions';
+import { copySelectionFragment, pasteFragmentAsLayer, shouldPasteFragment } from '@/utils/fragmentClipboard';
 import { BubbleNode } from './BubbleNode';
 import { InlineTextEditor } from './InlineTextEditor';
 import { drawBrushStroke } from '@/utils/brushRaster';
@@ -919,6 +920,7 @@ export function CanvasArea() {
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
   const [wandPending, setWandPending] = useState<{ src: string; coverage: number } | null>(null);
   const [wandInfo, setWandInfo] = useState<string | null>(null);
+  const [clipboardInfo, setClipboardInfo] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const checkerPattern = useRef<HTMLCanvasElement | null>(null);
   if (typeof document !== 'undefined' && !checkerPattern.current) checkerPattern.current = makeCheckerPattern();
@@ -929,6 +931,13 @@ export function CanvasArea() {
     const timer = window.setTimeout(() => setWandInfo(null), 2500);
     return () => window.clearTimeout(timer);
   }, [wandInfo]);
+
+  // Auto-hide the copy/paste info chip
+  useEffect(() => {
+    if (!clipboardInfo) return;
+    const timer = window.setTimeout(() => setClipboardInfo(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [clipboardInfo]);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const baseReplaced = activeDoc?.aiLayers.some(layer => layer.visible && layer.replacesBase) ?? false;
@@ -1404,9 +1413,13 @@ export function CanvasArea() {
     setLoadingFiles(false);
   }, [addDocuments]);
 
-  // Paste image files copied from the desktop, Finder/Explorer or another
-  // image editor. Text clipboard contents are left untouched so normal text
-  // inputs and browser shortcuts keep their native behaviour.
+  // Paste handling.
+  // 1) A fragment copied with Ctrl+C from a selection is inserted as a NEW
+  //    LAYER of the active document (not as a new page).
+  // 2) Image files copied from the desktop, Finder/Explorer or another image
+  //    editor are still added as new pages. Text clipboard contents are left
+  //    untouched so normal text inputs and browser shortcuts keep their
+  //    native behaviour.
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
       const data = event.clipboardData;
@@ -1415,6 +1428,19 @@ export function CanvasArea() {
       // Keep native paste behaviour in text fields (including the inline text
       // editor); image paste is intended for the canvas/workspace itself.
       if (target?.isContentEditable || (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+
+      // Our own copied selection fragment → paste as a new layer in place.
+      const store = useStore.getState();
+      const hasDoc = store.activeDocIndex >= 0 && Boolean(store.documents[store.activeDocIndex]);
+      if (hasDoc && shouldPasteFragment(data)) {
+        event.preventDefault();
+        void pasteFragmentAsLayer().then(err => {
+          setClipboardInfo(err ?? 'Фрагмент вставлен новым слоем');
+          if (err) console.warn('[v0] pasteFragmentAsLayer:', err);
+        });
+        return;
+      }
+
       const files = Array.from(data.files).filter(file => file.type.startsWith('image/'));
       if (files.length === 0) {
         for (const item of Array.from(data.items)) {
@@ -1431,7 +1457,9 @@ export function CanvasArea() {
     return () => window.removeEventListener('paste', handlePaste);
   }, [handleFiles]);
 
-  // Keyboard shortcuts: [ ] brush size, Ctrl+C/J (layer from selection), Ctrl+D (deselect)
+  // Keyboard shortcuts: [ ] brush size, Ctrl+C (copy selection fragment),
+  // Ctrl+V (paste fragment as layer — see the paste handler above),
+  // Ctrl+J (layer from selection), Ctrl+D (deselect)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -1444,7 +1472,7 @@ export function CanvasArea() {
       if (e.key === ']') ucs({ brushSize: Math.min(0.2, cs.brushSize * 1.18) });
 
       // ── Ctrl+D — снять выделение ────────────────────────────────────────
-      if (e.ctrlKey && e.key.toLowerCase() === 'd') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         const store = useStore.getState();
         const doc = store.documents[store.activeDocIndex];
@@ -1466,8 +1494,9 @@ export function CanvasArea() {
         return;
       }
 
-      // ── Ctrl+C or Ctrl+J — создать слой из выделения ───────────────────
-      if (e.ctrlKey && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'j')) {
+      // ── Ctrl+C — копировать фрагмент выделения (вставка по Ctrl+V) ─────
+      // ── Ctrl+J — сразу создать слой из выделения ────────────────────────
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'j')) {
         const store = useStore.getState();
         const doc = store.documents[store.activeDocIndex];
         if (!doc || !hasActiveSelection(doc)) {
@@ -1476,12 +1505,16 @@ export function CanvasArea() {
           return;
         }
         e.preventDefault();
-        void createLayerFromSelection().then(err => {
-          if (err) {
-            // Show a brief overlay message via console (UI toast not available here)
-            console.warn('[v0] createLayerFromSelection:', err);
-          }
-        });
+        if (e.key.toLowerCase() === 'j') {
+          void createLayerFromSelection().then(err => {
+            if (err) console.warn('[v0] createLayerFromSelection:', err);
+          });
+        } else {
+          void copySelectionFragment().then(err => {
+            setClipboardInfo(err ?? 'Фрагмент скопирован — Ctrl+V вставит его новым слоем');
+            if (err) console.warn('[v0] copySelectionFragment:', err);
+          });
+        }
         return;
       }
 
@@ -1906,6 +1939,18 @@ export function CanvasArea() {
           backdropFilter: 'blur(4px)',
         }}>
           {wandInfo}
+        </div>
+      )}
+
+      {/* Copy/paste fragment chip */}
+      {clipboardInfo && (
+        <div style={{
+          position: 'absolute', top: wandInfo && !wandPending ? 76 : 48, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 31, background: 'rgba(0,0,0,0.65)', borderRadius: 12,
+          padding: '4px 12px', fontSize: 12, color: 'var(--text-secondary)',
+          backdropFilter: 'blur(4px)',
+        }}>
+          {clipboardInfo}
         </div>
       )}
 

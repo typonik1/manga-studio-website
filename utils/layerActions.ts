@@ -4,6 +4,7 @@ import {
   buildCleanupSource,
   buildCleanupSourceCanvas,
   buildElementsMaskCanvas,
+  computeAlphaBBox,
   createCleanupPatch,
   createColorPatch,
   prepareClipdropCleanupInput,
@@ -233,10 +234,11 @@ export async function removeBackgroundFromLayer(layer: { id: string; type: 'base
 }
 
 /**
- * Ctrl+C / Ctrl+J — «Слой из выделения».
- * Renders the active raster layer (base or ai) with all adjustments applied,
- * then punches out everything outside the active mask, and creates a new
- * full-document-size raster layer immediately above the source.
+ * Ctrl+J — «Слой из выделения».
+ * Renders the visible composite with all adjustments applied, punches out
+ * everything outside the active mask, and creates a new raster layer cropped
+ * to the selection's bounding box (so the transform frame hugs the fragment,
+ * not the whole page).
  * Returns an error string on failure (so the caller can show a toast/message).
  */
 export async function createLayerFromSelection(): Promise<string | null> {
@@ -268,7 +270,15 @@ export async function createLayerFromSelection(): Promise<string | null> {
 
   const src = resultCanvas.toDataURL('image/png');
 
-  // ── 4. Add layer ──────────────────────────────────────────────────────────
+  // ── 4. Crop the layer to the selection bounds ─────────────────────────────
+  // The layer bitmap stays document-sized (consistent with rendering/export),
+  // but the non-destructive crop makes the layer occupy only the fragment.
+  const bboxPx = computeAlphaBBox(maskCanvas);
+  const crop = bboxPx
+    ? { x: bboxPx.x / W, y: bboxPx.y / H, width: bboxPx.width / W, height: bboxPx.height / H }
+    : undefined;
+
+  // ── 5. Add layer ──────────────────────────────────────────────────────────
   const count = doc.aiLayers.filter(l => l.operation === 'drawing').length;
   useStore.getState().pushHistory();
   useStore.getState().addAiLayer(doc.id, {
@@ -280,6 +290,7 @@ export async function createLayerFromSelection(): Promise<string | null> {
     operation: 'drawing',
     locked: false,
     eraseElements: [],
+    crop,
   });
   return null; // success
 }

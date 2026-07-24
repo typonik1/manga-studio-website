@@ -337,6 +337,36 @@ export async function buildCleanupMask(doc: ImageDocument): Promise<{ blob: Blob
   return { blob: await canvasToPngBlob(output), isEmpty, canvas };
 }
 
+/**
+ * Bounding box (in device pixels) of all pixels with alpha above the
+ * threshold. Used to crop selection fragments to their actual bounds.
+ * Returns null when the canvas is fully transparent.
+ */
+export function computeAlphaBBox(
+  canvas: HTMLCanvasElement,
+  threshold = 8,
+): { x: number; y: number; width: number; height: number } | null {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  const { width, height } = canvas;
+  if (width === 0 || height === 0) return null;
+  const data = ctx.getImageData(0, 0, width, height).data;
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      if (data[row + x * 4 + 3] > threshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
 /** Clipdrop Cleanup rejects images above ~16 megapixels; RBG allows ~25. */
 export const CLIPDROP_CLEANUP_MAX_PIXELS = 16_000_000;
 export const CLIPDROP_RBG_MAX_PIXELS = 25_000_000;

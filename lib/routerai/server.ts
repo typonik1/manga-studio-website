@@ -11,13 +11,13 @@ export class RouterAiRequestError extends Error {
   }
 }
 
-function isSafetyText(value: string) {
+export function isRouterAiSafetyText(value: string) {
   const normalized = value.toLowerCase();
   return /safety|unsafe|policy|refus|cannot assist|can't help|не могу помочь|отказ/.test(normalized);
 }
 
 function upstreamMessage(status: number, body: string) {
-  if (isSafetyText(body)) return 'Модель отклонила этот фрагмент. Используйте локальное замывание.';
+  if (isRouterAiSafetyText(body)) return 'Модель отклонила этот фрагмент. Используйте локальное замывание.';
   if (status === 401 || status === 403) return 'Ключ RouterAI недействителен.';
   if (status === 402) return 'В RouterAI закончились средства.';
   if (status === 429) return 'Слишком много запросов к RouterAI. Попробуйте позже.';
@@ -58,7 +58,7 @@ export async function callRouterAi(
     throw new RouterAiRequestError(response.status, upstreamMessage(response.status, detail));
   }
 
-  if (isSafetyText(raw)) {
+  if (isRouterAiSafetyText(raw)) {
     throw new RouterAiRequestError(502, 'Модель отклонила этот фрагмент. Используйте локальное замывание.');
   }
 

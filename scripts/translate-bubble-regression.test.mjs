@@ -59,8 +59,6 @@ test('image model configuration and request limits are explicit', () => {
   assert.match(routerServer, /ROUTERAI_IMAGE_MODEL/);
   assert.match(routerServer, /ROUTERAI_TEXT_MODEL/);
   assert.match(redrawRoute, /ROUTERAI_IMAGE_MODEL/);
-  assert.match(redrawRoute, /max_tokens/);
-  assert.match(redrawRoute, /temperature:\s*0\.4/);
   assert.match(translateActions, /IMAGE_MODEL_MAX_DIMENSION\s*=\s*768/);
   assert.match(translateActions, /resize.*max/i);
 });
@@ -70,4 +68,13 @@ test('image usage is counted per session and retries are explicit', () => {
   assert.match(routerClient, /imageCalls/);
   assert.match(cleanupPanel, /Повторить/);
   assert.match(cleanupPanel, /примерн|стоим/i);
+});
+
+test('redraw route uses RouterAI native Images API response formats', () => {
+  assert.match(redrawRoute, /routerai\.ru\/api\/v1\/images\/generations/);
+  assert.match(redrawRoute, /input_references/);
+  assert.match(redrawRoute, /aspect_ratio/);
+  assert.match(redrawRoute, /b64_json/);
+  assert.match(redrawRoute, /data\[0\]\.url|url/);
+  assert.doesNotMatch(redrawRoute, /callRouterAi/);
 });

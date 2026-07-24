@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
 import { aiCleanupMaskedArea, inpaintMaskedArea, removeBackgroundFromLayer } from '@/utils/layerActions';
+import { redrawSfx, translateBubble } from '@/utils/translateActions';
+import type { TextObject } from '@/types';
 
 const primaryButtonStyle = {
   padding: '7px', borderRadius: 6, fontSize: 12, fontWeight: 600,
@@ -23,15 +25,22 @@ export function CleanupPanel() {
     activeDocIndex, documents,
     createMask, clearActiveMask, setInpaintRunning,
     isInpaintRunning, inpaintProgress,
+    addText, setSelectedObject,
   } = useStore();
   const [aiOperation, setAiOperation] = useState<'cleanup' | 'background' | null>(null);
+  const [translationOperation, setTranslationOperation] = useState<'bubble' | 'redraw' | null>(null);
   const [aiError, setAiError] = useState('');
   const [brushHex, setBrushHex] = useState(cleanupSettings.brushColor.toUpperCase());
+  const [targetLang, setTargetLang] = useState('ru');
+  const [translationOriginal, setTranslationOriginal] = useState('');
+  const [translationText, setTranslationText] = useState('');
+  const [translationDraft, setTranslationDraft] = useState<TextObject | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const activeMask = activeDoc?.masks.find(mask => mask.id === activeDoc.activeMaskId) ?? null;
   const hasMask = Boolean(activeMask && ((activeMask.elements?.length ?? 0) > 0 || activeMask.strokes.some(stroke => stroke.mode !== 'erase')));
+  const safetyHint = /отклонила|safety|unsafe|policy/i.test(aiError);
 
   useEffect(() => setBrushHex(cleanupSettings.brushColor.toUpperCase()), [cleanupSettings.brushColor]);
 
@@ -46,7 +55,7 @@ export function CleanupPanel() {
   }
 
   async function handleClipdrop(operation: 'cleanup' | 'background') {
-    if (!activeDoc || aiOperation) return;
+    if (!activeDoc || aiOperation || translationOperation) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setAiError('');
@@ -65,6 +74,57 @@ export function CleanupPanel() {
       abortRef.current = null;
       setAiOperation(null);
     }
+  }
+
+  async function handleTranslateBubble() {
+    if (!activeDoc || !hasMask || aiOperation || translationOperation) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setAiError('');
+    setTranslationOperation('bubble');
+    setTranslationOriginal('');
+    setTranslationText('');
+    setTranslationDraft(null);
+    try {
+      const result = await translateBubble(targetLang, cleanupSettings.translationCleanupMethod, controller.signal);
+      setTranslationOriginal(result.original);
+      setTranslationText(result.translation);
+      setTranslationDraft(result.draft);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setAiError(error instanceof Error ? error.message : 'Не удалось перевести фрагмент.');
+      }
+    } finally {
+      abortRef.current = null;
+      setTranslationOperation(null);
+    }
+  }
+
+  async function handleRedrawSfx() {
+    if (!activeDoc || !hasMask || aiOperation || translationOperation) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setAiError('');
+    setTranslationOperation('redraw');
+    try {
+      await redrawSfx(controller.signal);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setAiError(error instanceof Error ? error.message : 'Не удалось перерисовать фрагмент.');
+      }
+    } finally {
+      abortRef.current = null;
+      setTranslationOperation(null);
+    }
+  }
+
+  function handleInsertTranslation() {
+    if (!translationDraft || !translationText.trim()) return;
+    const text = { ...translationDraft, text: translationText.trim() };
+    addText(text);
+    setSelectedObject({ id: text.id, type: 'text' });
+    setActiveTool('text');
+    setTranslationDraft(null);
   }
 
   async function handleInpaint() {
@@ -228,6 +288,94 @@ export function CleanupPanel() {
       )}
 
       <div className="divider" />
+      <div className="section-label">Перевод</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+        Выделите бабл маской, чтобы отправить только его фрагмент в RouterAI.
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <label style={{ flex: 1, fontSize: 11, color: 'var(--text-secondary)' }}>
+          Язык
+          <select
+            aria-label="Язык перевода бабла"
+            value={targetLang}
+            onChange={event => setTargetLang(event.target.value)}
+            style={{ width: '100%', marginTop: 3, fontSize: 11 }}
+          >
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="zh">中文</option>
+          </select>
+        </label>
+        <label style={{ flex: 1, fontSize: 11, color: 'var(--text-secondary)' }}>
+          Очистка
+          <select
+            aria-label="Способ очистки перед переводом"
+            value={cleanupSettings.translationCleanupMethod}
+            onChange={event => updateCleanupSettings({ translationCleanupMethod: event.target.value as 'local' | 'clipdrop' })}
+            style={{ width: '100%', marginTop: 3, fontSize: 11 }}
+          >
+            <option value="local">Локально</option>
+            <option value="clipdrop">Clipdrop</option>
+          </select>
+        </label>
+      </div>
+      <button
+        type="button"
+        onClick={handleTranslateBubble}
+        disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
+        style={{
+          ...primaryButtonStyle,
+          opacity: activeDoc && hasMask && !aiOperation && !translationOperation ? 1 : 0.55,
+          cursor: activeDoc && hasMask && !aiOperation && !translationOperation ? 'pointer' : 'not-allowed',
+        }}
+      >
+        {translationOperation === 'bubble' ? 'Переводим…' : 'Перевести бабл'}
+      </button>
+      <button
+        type="button"
+        onClick={handleRedrawSfx}
+        disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
+        style={{
+          ...secondaryButtonStyle,
+          opacity: activeDoc && hasMask && !aiOperation && !translationOperation ? 1 : 0.55,
+          cursor: activeDoc && hasMask && !aiOperation && !translationOperation ? 'pointer' : 'not-allowed',
+        }}
+      >
+        {translationOperation === 'redraw' ? 'Перерисовываем…' : 'Перерисовать участок (AI)'}
+      </button>
+      {(translationOriginal || translationText) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {translationOriginal && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+              <strong style={{ color: 'var(--text-secondary)' }}>Оригинал:</strong> {translationOriginal}
+            </div>
+          )}
+          <textarea
+            aria-label="Перевод бабла"
+            value={translationText}
+            onChange={event => setTranslationText(event.target.value)}
+            rows={3}
+            style={{
+              width: '100%', resize: 'vertical', boxSizing: 'border-box',
+              background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)',
+              borderRadius: 6, color: 'var(--text-primary)', fontSize: 12, padding: '6px 8px',
+              lineHeight: 1.4,
+            }}
+          />
+          <button
+            type="button"
+            onClick={handleInsertTranslation}
+            disabled={!translationDraft || !translationText.trim()}
+            style={{ ...primaryButtonStyle, opacity: translationDraft && translationText.trim() ? 1 : 0.55 }}
+          >
+            Вставить текст
+          </button>
+        </div>
+      )}
+
+      <div className="divider" />
       <div className="section-label">Маска и удаление</div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
         {activeMask ? `Активна: ${activeMask.name} · ${activeMask.strokes.length} штр.` : 'Создайте маску и закрасьте объект оранжевой кистью.'}
@@ -235,7 +383,7 @@ export function CleanupPanel() {
       <button
         type="button"
         onClick={() => { createMask(); setActiveTool('maskBrush'); }}
-        disabled={!activeDoc || Boolean(aiOperation)}
+        disabled={!activeDoc || Boolean(aiOperation) || Boolean(translationOperation)}
         style={secondaryButtonStyle}
       >
         Новая маска
@@ -244,7 +392,7 @@ export function CleanupPanel() {
         type="button"
         aria-label="Включить кисть маски"
         onClick={() => { updateCleanupSettings({ mode: 'inpaint' }); setActiveTool('maskBrush'); }}
-        disabled={!activeDoc || Boolean(aiOperation)}
+        disabled={!activeDoc || Boolean(aiOperation) || Boolean(translationOperation)}
         style={secondaryButtonStyle}
       >
         Кисть маски
@@ -253,7 +401,7 @@ export function CleanupPanel() {
         <button
           type="button"
           onClick={() => handleClipdrop('cleanup')}
-          disabled={!activeDoc || !hasMask || Boolean(aiOperation)}
+          disabled={!activeDoc || !hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
           aria-busy={aiOperation === 'cleanup'}
           style={{ ...primaryButtonStyle, flex: 1 }}
         >
@@ -262,7 +410,7 @@ export function CleanupPanel() {
         <button
           type="button"
           onClick={() => { if (window.confirm('Очистить все штрихи активной маски?')) clearActiveMask(); }}
-          disabled={!hasMask || Boolean(aiOperation)}
+          disabled={!hasMask || Boolean(aiOperation) || Boolean(translationOperation)}
           style={secondaryButtonStyle}
         >
           Очистить маску
@@ -271,18 +419,23 @@ export function CleanupPanel() {
       <button
         type="button"
         onClick={() => handleClipdrop('background')}
-        disabled={!activeDoc || Boolean(aiOperation)}
+        disabled={!activeDoc || Boolean(aiOperation) || Boolean(translationOperation)}
         aria-busy={aiOperation === 'background'}
         style={primaryButtonStyle}
       >
         {aiOperation === 'background' ? 'Удаляем фон…' : 'Удалить фон'}
       </button>
-      {aiOperation && (
+      {(aiOperation || translationOperation) && (
         <button type="button" onClick={() => abortRef.current?.abort()} style={secondaryButtonStyle}>
           Отменить запрос
         </button>
       )}
-      {aiError && <div role="alert" style={{ color: 'var(--destructive)', fontSize: 11, lineHeight: 1.4 }}>{aiError}</div>}
+      {aiError && (
+        <div role="alert" style={{ color: 'var(--destructive)', fontSize: 11, lineHeight: 1.4 }}>
+          <div>{aiError}</div>
+          {safetyHint && <div style={{ marginTop: 4 }}>Фрагмент отклонён моделью. Замажьте текст замыванием и вставьте перевод вручную.</div>}
+        </div>
+      )}
 
       <div className="divider" />
 

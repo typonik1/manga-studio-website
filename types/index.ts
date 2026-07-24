@@ -331,6 +331,8 @@ export interface CleanupSettings {
   wandContiguous: boolean;
   /** Keep the active selection after applying an action (erase/fill/inpaint). */
   keepSelectionAfterAction: boolean;
+  /** How «Перевести бабл» should remove the original text before insertion. */
+  translationCleanupMethod: 'local' | 'clipdrop';
 }
 
 export interface TextSettings {

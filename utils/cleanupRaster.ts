@@ -479,6 +479,11 @@ export async function createCleanupPatch(resultSrc: string, maskCanvas: HTMLCanv
   const feather = document.createElement('canvas'); feather.width = width; feather.height = height;
   const featherCtx = feather.getContext('2d')!;
   featherCtx.filter = 'blur(3px)'; featherCtx.drawImage(maskCanvas, 0, 0);
+  // Feather only inside the user's mask. A plain blur expands the alpha
+  // outside the selection and can smear a generated crop into nearby artwork.
+  featherCtx.globalCompositeOperation = 'destination-in';
+  featherCtx.filter = 'none';
+  featherCtx.drawImage(maskCanvas, 0, 0);
   ctx.globalCompositeOperation = 'destination-in'; ctx.drawImage(feather, 0, 0);
   return canvas.toDataURL('image/png');
 }

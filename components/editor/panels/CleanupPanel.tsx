@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { PanelSlider, PanelRow } from './PanelComponents';
 import { aiCleanupMaskedArea, inpaintMaskedArea, removeBackgroundFromLayer } from '@/utils/layerActions';
-import { redrawSfx, translateBubble } from '@/utils/translateActions';
+import { DEFAULT_REDRAW_PROMPT, redrawSfx, translateBubble } from '@/utils/translateActions';
 import type { TextObject } from '@/types';
 
 const primaryButtonStyle = {
@@ -35,6 +35,7 @@ export function CleanupPanel() {
   const [translationOriginal, setTranslationOriginal] = useState('');
   const [translationText, setTranslationText] = useState('');
   const [translationDraft, setTranslationDraft] = useState<TextObject | null>(null);
+  const [redrawPrompt, setRedrawPrompt] = useState(DEFAULT_REDRAW_PROMPT);
   const abortRef = useRef<AbortController | null>(null);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
@@ -107,7 +108,7 @@ export function CleanupPanel() {
     setAiError('');
     setTranslationOperation('redraw');
     try {
-      await redrawSfx(controller.signal);
+      await redrawSfx(controller.signal, redrawPrompt);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         setAiError(error instanceof Error ? error.message : 'Не удалось перерисовать фрагмент.');
@@ -333,6 +334,23 @@ export function CleanupPanel() {
       >
         {translationOperation === 'bubble' ? 'Переводим…' : 'Перевести бабл'}
       </button>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--text-secondary)' }}>
+        Инструкция для AI
+        <textarea
+          aria-label="Инструкция для AI"
+          value={redrawPrompt}
+          onChange={event => setRedrawPrompt(event.target.value)}
+          rows={5}
+          style={{
+            width: '100%', resize: 'vertical', boxSizing: 'border-box',
+            background: 'var(--bg-panel-raised)', border: '1px solid var(--border-default)',
+            borderRadius: 6, color: 'var(--text-primary)', fontSize: 11, padding: '6px 8px', lineHeight: 1.35,
+          }}
+        />
+      </label>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+        Для текста в баблах используйте «Перевести бабл» — он заливает область цветом фона. «Перерисовать» предназначен для надписей поверх арта.
+      </div>
       <button
         type="button"
         onClick={handleRedrawSfx}

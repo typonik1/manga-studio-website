@@ -78,54 +78,127 @@ function parseLooseJson(raw: string): unknown {
   }
 }
 
+/* ------------------------------------------------------------------
+ * Геометрия: модели путают и масштаб (0..1 / 0..100 / 0..1000),
+ * и порядок чисел ([x,y,w,h] против gemini-шного [ymin,xmin,ymax,xmax]).
+ * Разбираем бокс целиком и выбираем ту трактовку, которая реально
+ * помещается на странице, — иначе замывка ляжет мимо текста.
+ * ------------------------------------------------------------------ */
+
+type Quad = [number, number, number, number];
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 
-/** Модели путают шкалу: отдают 0..1 или 0..1000. */
-const scale = (value: number) => (Math.abs(value) > 1.5 ? value / 1000 : value);
-
-/** Формат [ymin, xmin, ymax, xmax] (box_2d у Gemini). */
-function boxFrom2d(value: unknown): Box | null {
-  if (!Array.isArray(value) || value.length !== 4) return null;
-  const [yMin, xMin, yMax, xMax] = value.map(Number).map(scale);
-  if (![yMin, xMin, yMax, xMax].every(Number.isFinite)) return null;
-  return {
-    x: clamp01(xMin),
-    y: clamp01(yMin),
-    width: clamp01(xMax - xMin),
-    height: clamp01(yMax - yMin),
-  };
+/** Масштаб выбирается ОДИН раз на весь бокс, а не для каждого числа. */
+function normalizeQuad(raw: unknown): Quad | null {
+  if (!Array.isArray(raw) || raw.length !== 4) return null;
+  const values = raw.map(Number);
+  if (!values.every(Number.isFinite)) return null;
+  const max = Math.max(...values.map(Math.abs));
+  const divisor = max > 100 ? 1000 : max > 1.5 ? 100 : 1;
+  return values.map((value) => value / divisor) as Quad;
 }
 
-/** Формат [x, y, width, height] или { x, y, width, height }. */
-function boxFromXywh(value: unknown): Box | null {
-  if (Array.isArray(value) && value.length === 4) {
-    const [x, y, w, h] = value.map(Number).map(scale);
-    if (![x, y, w, h].every(Number.isFinite)) return null;
-    return { x: clamp01(x), y: clamp01(y), width: clamp01(w), height: clamp01(h) };
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    const x = scale(Number(record.x));
-    const y = scale(Number(record.y));
-    const w = scale(Number(record.width ?? record.w));
-    const h = scale(Number(record.height ?? record.h));
-    if (![x, y, w, h].every(Number.isFinite)) return null;
-    return { x: clamp01(x), y: clamp01(y), width: clamp01(w), height: clamp01(h) };
-  }
+const rectFromXywh = ([x, y, width, height]: Quad): Box => ({ x, y, width, height });
+const rectFromLtrb = ([yMin, xMin, yMax, xMax]: Quad): Box => ({
+  x: xMin,
+  y: yMin,
+  width: xMax - xMin,
+  height: yMax - yMin,
+});
+
+/** Текстовый блок не может быть отрицательным, вылезать за лист или занимать его целиком. */
+function isPlausibleBox(box: Box | null): box is Box {
+  if (!box) return false;
+  const { x, y, width, height } = box;
+  if (![x, y, width, height].every(Number.isFinite)) return false;
+  if (width <= 0.005 || height <= 0.005) return false;
+  if (x < -0.02 || y < -0.02) return false;
+  if (x + width > 1.02 || y + height > 1.02) return false;
+  if (width * height > 0.6) return false;
+  return true;
+}
+
+/** preferred — трактовка по имени поля (box_2d → ltrb, box → xywh). */
+function boxFromArray(value: unknown, preferred: 'xywh' | 'ltrb'): Box | null {
+  const quad = normalizeQuad(value);
+  if (!quad) return null;
+  const xywh = rectFromXywh(quad);
+  const ltrb = rectFromLtrb(quad);
+  const okXywh = isPlausibleBox(xywh);
+  const okLtrb = isPlausibleBox(ltrb);
+  if (okXywh && okLtrb) return preferred === 'ltrb' ? ltrb : xywh;
+  if (okXywh) return xywh;
+  if (okLtrb) return ltrb;
   return null;
 }
 
-const isUsableBox = (box: Box | null): box is Box => !!box && box.width > 0.005 && box.height > 0.005;
+function boxFromObject(value: unknown): Box | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const raw = Number(record[key]);
+      if (Number.isFinite(raw)) return raw;
+    }
+    return NaN;
+  };
+  const x = pick('x', 'left', 'x1', 'xmin');
+  const y = pick('y', 'top', 'y1', 'ymin');
+  const width = pick('width', 'w');
+  const height = pick('height', 'h');
+  const x2 = pick('x2', 'right', 'xmax');
+  const y2 = pick('y2', 'bottom', 'ymax');
+  const quad: number[] | null =
+    Number.isFinite(width) && Number.isFinite(height)
+      ? [x, y, width, height]
+      : Number.isFinite(x2) && Number.isFinite(y2)
+        ? [x, y, x2 - x, y2 - y]
+        : null;
+  if (!quad || !quad.every(Number.isFinite)) return null;
+  const normalized = normalizeQuad(quad);
+  return normalized ? rectFromXywh(normalized) : null;
+}
+
+function readBoxValue(value: unknown, preferred: 'xywh' | 'ltrb'): Box | null {
+  return boxFromObject(value) ?? boxFromArray(value, preferred);
+}
 
 function readTextBox(source: Record<string, unknown>): Box | null {
-  return boxFrom2d(source.box_2d ?? source.bbox_2d) ?? boxFromXywh(source.box ?? source.bbox);
+  return (
+    readBoxValue(source.box_2d ?? source.bbox_2d, 'ltrb') ??
+    readBoxValue(source.box ?? source.bbox, 'xywh')
+  );
 }
 
 function readBubbleBox(source: Record<string, unknown>): Box | null {
   return (
-    boxFrom2d(source.bubble_2d) ??
-    boxFromXywh(source.bubble ?? source.bubble_box ?? source.balloon ?? source.area)
+    readBoxValue(source.bubble_2d, 'ltrb') ??
+    readBoxValue(source.bubble ?? source.bubble_box ?? source.balloon ?? source.area, 'xywh')
   );
+}
+
+function clampBox(box: Box): Box {
+  const x = clamp01(box.x);
+  const y = clamp01(box.y);
+  return {
+    x,
+    y,
+    width: Math.min(1 - x, Math.max(0.005, box.width)),
+    height: Math.min(1 - y, Math.max(0.005, box.height)),
+  };
+}
+
+/** Бабл обязан накрывать свои же буквы, иначе это координаты от другого блока. */
+function coversMost(outer: Box, inner: Box): boolean {
+  const overlapX = Math.max(
+    0,
+    Math.min(outer.x + outer.width, inner.x + inner.width) - Math.max(outer.x, inner.x),
+  );
+  const overlapY = Math.max(
+    0,
+    Math.min(outer.y + outer.height, inner.y + inner.height) - Math.max(outer.y, inner.y),
+  );
+  return overlapX * overlapY >= inner.width * inner.height * 0.7;
 }
 
 function normalizeBlocks(value: unknown): PageBlock[] {
@@ -140,17 +213,18 @@ function normalizeBlocks(value: unknown): PageBlock[] {
     if (!item || typeof item !== 'object') continue;
     const record = item as Record<string, unknown>;
     const translation = String(record.translation ?? '').trim();
-    const box = readTextBox(record);
-    if (!translation || !isUsableBox(box)) continue;
+    const rawBox = readTextBox(record);
+    if (!translation || !isPlausibleBox(rawBox)) continue;
+    const box = clampBox(rawBox);
 
     const bubbleCandidate = readBubbleBox(record);
-    // Бабл считаем полезным, только если он заметно больше текста.
-    // Если модель просто скопировала box — лучше вообще без бабла:
-    // тогда клиент сам расширит область под русский текст.
+    // Бабл берём только если он правдоподобен, заметно больше букв
+    // и действительно их накрывает. Иначе клиент сам расширит бокс.
     const bubble =
-      isUsableBox(bubbleCandidate) &&
-      bubbleCandidate.width * bubbleCandidate.height >= box.width * box.height * 1.15
-        ? bubbleCandidate
+      isPlausibleBox(bubbleCandidate) &&
+      bubbleCandidate.width * bubbleCandidate.height >= box.width * box.height * 1.15 &&
+      coversMost(bubbleCandidate, box)
+        ? clampBox(bubbleCandidate)
         : undefined;
 
     const kind = String(record.kind ?? 'speech');
@@ -231,9 +305,12 @@ export async function POST(request: Request) {
       'Исправляй очевидные артефакты распознавания. Перевод — живой разговорный, без пояснений и кавычек.',
       glossary ? `Обязательный глоссарий имён и терминов: ${glossary}` : '',
       'Верни СТРОГО JSON без markdown в виде массива объектов в порядке чтения:',
-      '[{"original":"...","translation":"...","kind":"speech|thought|narration|sfx","box":[x,y,width,height],"bubble":[x,y,width,height]}]',
-      'box — нормализованные координаты 0..1: прямоугольник ПЛОТНО по буквам оригинала (по нему стирается старый текст).',
-      'bubble — прямоугольник ВСЕЙ области фона: весь белый овал бабла, вся плашка, вся рамка закадрового текста. Он всегда больше box. Для sfx и надписей без бабла повтори box, увеличенный примерно на 20%.',
+      '[{"original":"...","translation":"...","kind":"speech|thought|narration|sfx","box":{"x":0.0,"y":0.0,"width":0.0,"height":0.0},"bubble":{"x":0.0,"y":0.0,"width":0.0,"height":0.0}}]',
+      'Координаты ОБЯЗАТЕЛЬНО объектом с ключами x, y, width, height — не массивом и не в порядке ymin/xmin/ymax/xmax.',
+      'x и y — левый верхний угол, доли ширины и высоты страницы от 0 до 1. width и height — размеры, тоже доли от 0 до 1. Проверь, что x + width ≤ 1 и y + height ≤ 1.',
+      'box — прямоугольник ПЛОТНО по буквам оригинала: по нему стирается старый текст, поэтому он должен совпадать с текстом до нескольких пикселей.',
+      'bubble — прямоугольник ВСЕЙ области фона: весь белый овал бабла, вся плашка, вся рамка закадрового текста. Он всегда больше box и полностью его содержит. Для sfx и надписей без бабла повтори box, увеличенный примерно на 20%.',
+      'Один блок — один бабл: box никогда не занимает половину страницы.',
       'Порядок чтения: для японской манги справа налево и сверху вниз, для остального — слева направо.',
       'Если текста на странице нет вообще — верни пустой массив [].',
     ]

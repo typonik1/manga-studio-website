@@ -206,7 +206,7 @@ export function TextPanel() {
           boxHeightPx: innerHeight * H,
           fontFamily,
           lineHeight: LINE_HEIGHT,
-          maxFontSizePx: Math.max(14, innerHeight * H),
+          maxFontSizePx: Math.max(14, Math.min(innerHeight * H, H * 0.055)),
           // Ниже 11px на странице читать невозможно — лучше слегка вылезти за бабл
           minFontSizePx: Math.max(11, Math.round(H * 0.012)),
           maxWidthScale: block.bubble ? 1.15 : 1.45,

@@ -88,14 +88,17 @@ function parseLooseJson(raw: string): unknown {
 type Quad = [number, number, number, number];
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 
-/** Масштаб выбирается ОДИН раз на весь бокс, а не для каждого числа. */
-function normalizeQuad(raw: unknown): Quad | null {
-  if (!Array.isArray(raw) || raw.length !== 4) return null;
+/** Возможные шкалы: 0..1, 0..1000 (box_2d у Gemini), 0..100 (проценты). */
+function quadCandidates(raw: unknown): Quad[] {
+  if (!Array.isArray(raw) || raw.length !== 4) return [];
   const values = raw.map(Number);
-  if (!values.every(Number.isFinite)) return null;
+  if (!values.every(Number.isFinite)) return [];
   const max = Math.max(...values.map(Math.abs));
-  const divisor = max > 100 ? 1000 : max > 1.5 ? 100 : 1;
-  return values.map((value) => value / divisor) as Quad;
+  // Делитель не угадываем: пробуем все разумные и берём тот, что даёт
+  // бокс, реально помещающийся на странице. 1000 идёт первым — это
+  // родная шкала vision-моделей, проценты встречаются намного реже.
+  const divisors = max <= 1.5 ? [1] : max <= 100 ? [1000, 100] : [1000];
+  return divisors.map((divisor) => values.map((value) => value / divisor) as Quad);
 }
 
 const rectFromXywh = ([x, y, width, height]: Quad): Box => ({ x, y, width, height });
@@ -120,15 +123,14 @@ function isPlausibleBox(box: Box | null): box is Box {
 
 /** preferred — трактовка по имени поля (box_2d → ltrb, box → xywh). */
 function boxFromArray(value: unknown, preferred: 'xywh' | 'ltrb'): Box | null {
-  const quad = normalizeQuad(value);
-  if (!quad) return null;
-  const xywh = rectFromXywh(quad);
-  const ltrb = rectFromLtrb(quad);
-  const okXywh = isPlausibleBox(xywh);
-  const okLtrb = isPlausibleBox(ltrb);
-  if (okXywh && okLtrb) return preferred === 'ltrb' ? ltrb : xywh;
-  if (okXywh) return xywh;
-  if (okLtrb) return ltrb;
+  for (const quad of quadCandidates(value)) {
+    const ordered =
+      preferred === 'ltrb'
+        ? [rectFromLtrb(quad), rectFromXywh(quad)]
+        : [rectFromXywh(quad), rectFromLtrb(quad)];
+    const hit = ordered.find(isPlausibleBox);
+    if (hit) return hit;
+  }
   return null;
 }
 
@@ -155,8 +157,11 @@ function boxFromObject(value: unknown): Box | null {
         ? [x, y, x2 - x, y2 - y]
         : null;
   if (!quad || !quad.every(Number.isFinite)) return null;
-  const normalized = normalizeQuad(quad);
-  return normalized ? rectFromXywh(normalized) : null;
+  for (const candidate of quadCandidates(quad)) {
+    const box = rectFromXywh(candidate);
+    if (isPlausibleBox(box)) return box;
+  }
+  return null;
 }
 
 function readBoxValue(value: unknown, preferred: 'xywh' | 'ltrb'): Box | null {

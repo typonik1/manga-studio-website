@@ -8,12 +8,12 @@ const tools: Array<{ tool: ActiveTool; label: string; hotkey: string; icon: type
   { tool: 'select', label: 'Выделение', hotkey: 'V', icon: MousePointer2 },
   { tool: 'pan', label: 'Рука', hotkey: 'H / Space', icon: Hand },
   { tool: 'brush', label: 'Кисть', hotkey: 'B', icon: Brush, tab: 'cleanup' },
-  { tool: 'maskBrush', label: 'Маска', hotkey: 'M', icon: Paintbrush, tab: 'cleanup' },
+  { tool: 'maskBrush', label: 'Маска', hotkey: 'K', icon: Paintbrush, tab: 'cleanup' },
   { tool: 'eraser', label: 'Ластик', hotkey: 'E', icon: Eraser, tab: 'cleanup' },
   { tool: 'lasso', label: 'Лассо', hotkey: 'L', icon: Lasso, tab: 'cleanup', hint: 'Свободное выделение' },
   { tool: 'polyLasso', label: 'Прямолинейное лассо', hotkey: 'P', icon: Waypoints, tab: 'cleanup', hint: 'Выделение прямыми отрезками: кликайте по точкам, Enter или двойной клик — замкнуть' },
-  { tool: 'rectSelect', label: 'Прямоугольное выделение', hotkey: 'R', icon: SquareDashed, tab: 'cleanup', hint: 'Прямоугольная область' },
-  { tool: 'wand', label: 'Волшебная палочка', hotkey: 'G', icon: WandSparkles, tab: 'cleanup', hint: 'Выделение связанной области похожего цвета' },
+  { tool: 'rectSelect', label: 'Прямоугольное выделение', hotkey: 'M', icon: SquareDashed, tab: 'cleanup', hint: 'Прямоугольная область (или R)' },
+  { tool: 'wand', label: 'Волшебная палочка', hotkey: 'W', icon: WandSparkles, tab: 'cleanup', hint: 'Выделение связанной области похожего цвета (или G)' },
   { tool: 'text', label: 'Текст', hotkey: 'T', icon: Type, tab: 'text' },
 ];
 

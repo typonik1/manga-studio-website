@@ -3,7 +3,7 @@
 import { useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { useStore } from '@/store/useStore';
-import { DEFAULT_ANIME_FONT, MANGA_FONTS } from '@/types';
+import { DEFAULT_ANIME_FONT, MANGA_FONTS, type ActiveTool } from '@/types';
 import { LeftPanel } from './LeftPanel';
 import { ToolRail } from './ToolRail';
 import { RightPanel } from './RightPanel';
@@ -37,7 +37,7 @@ const CanvasArea = dynamic(
 
 export function EditorShell() {
   const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, documents, fontsReady, setShowExportModal, activeTool } = useStore();
-  const prevToolRef = useRef<string | null>(null);
+  const prevToolRef = useRef<ActiveTool | null>(null);
 
   // Register hasChanges for beforeunload
   useEffect(() => {
@@ -141,19 +141,14 @@ export function EditorShell() {
         return;
       }
 
-      // Space — toggle pan tool, restore on keyup
-      if (e.code === 'Space') {
+      // Space — toggle pan tool, restore on keyup (check NO modifiers)
+      if (e.code === 'Space' && !mod) {
         e.preventDefault();
         if (e.repeat) return;
         if (activeTool !== 'pan') {
           prevToolRef.current = activeTool;
           setActiveTool('pan');
         }
-        return;
-      }
-
-      // Escape — deselect
-      if (e.code === 'Escape') {
         return;
       }
 
@@ -272,14 +267,23 @@ export function EditorShell() {
     [setActiveTool],
   );
 
+  const handleBlur = useCallback(() => {
+    // If user alt-tab or lose focus while holding Space, restore the previous tool
+    const previous = prevToolRef.current;
+    prevToolRef.current = null;
+    if (previous) setActiveTool(previous);
+  }, [setActiveTool]);
+
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
     };
-  }, [handleKeyDown, handleKeyUp]);
+  }, [handleKeyDown, handleKeyUp, handleBlur]);
 
   return (
     <div

@@ -4,10 +4,11 @@ import {
   routerAiErrorResponse,
   RouterAiRequestError,
   ROUTERAI_TEXT_MODEL,
+  ROUTERAI_TEXT_MODEL_FALLBACK,
 } from '@/lib/routerai/server';
 
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+export const maxDuration = 60;
 
 const LANGUAGE_NAMES: Record<string, string> = {
   ru: 'русский',
@@ -159,22 +160,49 @@ export async function POST(request: Request) {
       .filter(Boolean)
       .join(' ');
 
-    const payload = await callRouterAi(
-      {
-        model: ROUTERAI_TEXT_MODEL,
-        messages: [
+    // Try primary model first, then fallback
+    let payload: unknown;
+    try {
+      payload = await callRouterAi(
+        {
+          model: ROUTERAI_TEXT_MODEL,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: instructions },
+                { type: 'image_url', image_url: { url: dataUrl } },
+              ],
+            },
+          ],
+          temperature: 0.2,
+        },
+        request.signal,
+      );
+    } catch (primaryError) {
+      // If primary model fails, try fallback
+      try {
+        payload = await callRouterAi(
           {
-            role: 'user',
-            content: [
-              { type: 'text', text: instructions },
-              { type: 'image_url', image_url: { url: dataUrl } },
+            model: ROUTERAI_TEXT_MODEL_FALLBACK,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: instructions },
+                  { type: 'image_url', image_url: { url: dataUrl } },
+                ],
+              },
             ],
+            temperature: 0.2,
           },
-        ],
-        temperature: 0.2,
-      },
-      request.signal,
-    );
+          request.signal,
+        );
+      } catch {
+        // If fallback also fails, throw original error
+        throw primaryError;
+      }
+    }
 
     const raw = extractMessageText(payload);
     if (!raw) throw new RouterAiRequestError(502, 'Модель не вернула текст страницы.');

@@ -133,6 +133,40 @@ function normalizeBlocks(value: unknown): PageBlock[] {
   return out;
 }
 
+async function runModel(
+  model: string,
+  instructions: string,
+  dataUrl: string,
+  signal?: AbortSignal,
+): Promise<PageBlock[]> {
+  const payload = await callRouterAi(
+    {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: instructions },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+      temperature: 0.2,
+    },
+    signal,
+  );
+
+  const raw = extractMessageText(payload);
+  if (!raw) throw new RouterAiRequestError(502, 'Модель не вернула текст страницы.');
+
+  const blocks = normalizeBlocks(parseLooseJson(raw));
+  if (blocks.length === 0) {
+    throw new RouterAiRequestError(502, 'Текст на странице не найден.');
+  }
+
+  return blocks;
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
@@ -160,55 +194,30 @@ export async function POST(request: Request) {
       .filter(Boolean)
       .join(' ');
 
-    // Try primary model first, then fallback
-    let payload: unknown;
     try {
-      payload = await callRouterAi(
-        {
-          model: ROUTERAI_TEXT_MODEL,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: instructions },
-                { type: 'image_url', image_url: { url: dataUrl } },
-              ],
-            },
-          ],
-          temperature: 0.2,
-        },
-        request.signal,
-      );
-    } catch (primaryError) {
-      // If primary model fails, try fallback
+      // Try primary model first
+      const blocks = await runModel(ROUTERAI_TEXT_MODEL, instructions, dataUrl, request.signal);
+      return Response.json({ blocks }, { headers: { 'Cache-Control': 'no-store' } });
+    } catch (error) {
+      // Only retry on specific errors: rate limit (429), server errors (5xx), or abort
+      const shouldRetry =
+        error instanceof RouterAiRequestError &&
+        (error.status === 429 || (error.status >= 500 && error.status < 600));
+
+      if (!shouldRetry || ROUTERAI_TEXT_MODEL === ROUTERAI_TEXT_MODEL_FALLBACK) {
+        // No retry needed, or fallback is the same model
+        throw error;
+      }
+
+      // Try fallback model
       try {
-        payload = await callRouterAi(
-          {
-            model: ROUTERAI_TEXT_MODEL_FALLBACK,
-            messages: [
-              {
-                role: 'user',
-                content: [
-                  { type: 'text', text: instructions },
-                  { type: 'image_url', image_url: { url: dataUrl } },
-                ],
-              },
-            ],
-            temperature: 0.2,
-          },
-          request.signal,
-        );
+        const blocks = await runModel(ROUTERAI_TEXT_MODEL_FALLBACK, instructions, dataUrl, request.signal);
+        return Response.json({ blocks }, { headers: { 'Cache-Control': 'no-store' } });
       } catch {
         // If fallback also fails, throw original error
-        throw primaryError;
+        throw error;
       }
     }
-
-    const raw = extractMessageText(payload);
-    if (!raw) throw new RouterAiRequestError(502, 'Модель не вернула текст страницы.');
-
-    const blocks = normalizeBlocks(parseLooseJson(raw));
-    return Response.json({ blocks }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return routerAiErrorResponse(error);
   }

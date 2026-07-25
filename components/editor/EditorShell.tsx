@@ -355,10 +355,6 @@ function TopBar() {
 
       {activeDoc?.hasChanges && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}><span style={{ color: 'var(--accent)' }}>●</span> Есть изменения</span>}
       <div style={{ flex: 1 }} />
-      <span className="topbar-privacy" style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
-        <svg width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1L2 3v3c0 2.21 1.79 4 4 4s4-1.79 4-4V3L6 1z" fill="currentColor" opacity="0.7" /></svg>
-        Обработка локально
-      </span>
       <button className="ui-button ui-button-primary" onClick={() => setShowExportModal(true)} disabled={!activeDoc} aria-label="Открыть экспорт">
         Экспортировать
         <span aria-hidden="true">→</span>

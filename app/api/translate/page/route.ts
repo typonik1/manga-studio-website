@@ -133,6 +133,10 @@ function normalizeBlocks(value: unknown): PageBlock[] {
   return out;
 }
 
+/**
+ * Пустой результат — это не ошибка: страница может быть без текста.
+ * Различаем «модель не ответила» (throw) и «блоков ноль» (пустой массив).
+ */
 async function runModel(
   model: string,
   instructions: string,
@@ -158,13 +162,18 @@ async function runModel(
 
   const raw = extractMessageText(payload);
   if (!raw) throw new RouterAiRequestError(502, 'Модель не вернула текст страницы.');
+  return normalizeBlocks(parseLooseJson(raw));
+}
 
-  const blocks = normalizeBlocks(parseLooseJson(raw));
-  if (blocks.length === 0) {
-    throw new RouterAiRequestError(502, 'Текст на странице не найден.');
-  }
+const jsonBlocks = (blocks: PageBlock[]) =>
+  Response.json({ blocks }, { headers: { 'Cache-Control': 'no-store' } });
 
-  return blocks;
+/** Повторяем запасной моделью только на лимитах и сбоях провайдера. */
+function isRetriable(error: unknown): boolean {
+  return (
+    error instanceof RouterAiRequestError &&
+    (error.status === 429 || (error.status >= 500 && error.status < 600))
+  );
 }
 
 export async function POST(request: Request) {
@@ -190,33 +199,31 @@ export async function POST(request: Request) {
       'Верни СТРОГО JSON без markdown в виде массива объектов в порядке чтения:',
       '[{"original":"...","translation":"...","kind":"speech|thought|narration|sfx","box":[x,y,width,height]}]',
       'box — нормализованные координаты 0..1 относительно всей страницы: x,y — левый верхний угол текстового блока, width/height — его размеры. Бокс должен плотно охватывать буквы, не весь бабл.',
+      'Если текста на странице нет вообще — верни пустой массив [].',
     ]
       .filter(Boolean)
       .join(' ');
 
+    const canFallback = ROUTERAI_TEXT_MODEL_FALLBACK !== ROUTERAI_TEXT_MODEL;
+
+    let primaryError: unknown = null;
     try {
-      // Try primary model first
       const blocks = await runModel(ROUTERAI_TEXT_MODEL, instructions, dataUrl, request.signal);
-      return Response.json({ blocks }, { headers: { 'Cache-Control': 'no-store' } });
+      // Основная модель справилась — второй запрос делаем только если она нашла ноль блоков.
+      if (blocks.length > 0 || !canFallback) return jsonBlocks(blocks);
     } catch (error) {
-      // Only retry on specific errors: rate limit (429), server errors (5xx), or abort
-      const shouldRetry =
-        error instanceof RouterAiRequestError &&
-        (error.status === 429 || (error.status >= 500 && error.status < 600));
+      if (!isRetriable(error) || !canFallback) throw error;
+      primaryError = error;
+    }
 
-      if (!shouldRetry || ROUTERAI_TEXT_MODEL === ROUTERAI_TEXT_MODEL_FALLBACK) {
-        // No retry needed, or fallback is the same model
-        throw error;
-      }
-
-      // Try fallback model
-      try {
-        const blocks = await runModel(ROUTERAI_TEXT_MODEL_FALLBACK, instructions, dataUrl, request.signal);
-        return Response.json({ blocks }, { headers: { 'Cache-Control': 'no-store' } });
-      } catch {
-        // If fallback also fails, throw original error
-        throw error;
-      }
+    try {
+      const blocks = await runModel(ROUTERAI_TEXT_MODEL_FALLBACK, instructions, dataUrl, request.signal);
+      return jsonBlocks(blocks);
+    } catch (fallbackError) {
+      // Если основная модель отработала штатно и просто ничего не нашла —
+      // это не ошибка сети, а пустая страница.
+      if (!primaryError) return jsonBlocks([]);
+      throw primaryError ?? fallbackError;
     }
   } catch (error) {
     return routerAiErrorResponse(error);

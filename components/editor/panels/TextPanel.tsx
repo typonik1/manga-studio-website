@@ -39,7 +39,7 @@ export function TextPanel() {
     restorePageSourceText();
     setTranslatedBlocks(0);
     setPageProgress(0);
-    setPageStatus('Перевод отменён · показан исходный текст так, как его распознал OCR.');
+    setPageStatus('Перевод отменён · показан исходный текст так, как его распознала AI-модель.');
   }
 
   function handleActivateTextTool() {

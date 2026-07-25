@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { useStore } from '@/store/useStore';
 import { DEFAULT_ANIME_FONT, MANGA_FONTS } from '@/types';
@@ -36,7 +36,8 @@ const CanvasArea = dynamic(
 );
 
 export function EditorShell() {
-  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, documents, fontsReady } = useStore();
+  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, documents, fontsReady, setShowExportModal, activeTool } = useStore();
+  const prevToolRef = useRef<string | null>(null);
 
   // Register hasChanges for beforeunload
   useEffect(() => {
@@ -112,45 +113,173 @@ export function EditorShell() {
     return () => { cancelled = true; };
   }, []);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    const tag = (e.target as HTMLElement).tagName.toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const tag = target.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable)
+        return;
 
-    // Use e.code so shortcuts work on any keyboard layout (e.g. Russian)
-    if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && !e.shiftKey) { e.preventDefault(); undo(); return; }
-    if ((e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && e.shiftKey) || (e.code === 'KeyY' && (e.ctrlKey || e.metaKey))) {
-      e.preventDefault(); redo(); return;
-    }
-    // Ctrl/Cmd+V belongs to the browser clipboard flow (image paste is
-    // handled by CanvasArea). Do not also switch tools while pasting.
-    if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey) { setActiveTool('select'); return; }
-    if (e.code === 'KeyH') { setActiveTool('pan'); return; }
-    if (e.code === 'KeyB') { setActiveTool('brush'); setLeftTab('cleanup'); return; }
-    if (e.code === 'KeyE') { setActiveTool('eraser'); setLeftTab('cleanup'); return; }
-    if (e.code === 'KeyL') { setActiveTool('lasso'); setLeftTab('cleanup'); return; }
-    if (e.code === 'KeyP') { setActiveTool('polyLasso'); setLeftTab('cleanup'); return; }
-    if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) { setActiveTool('rectSelect'); setLeftTab('cleanup'); return; }
-    if (e.code === 'Space') { e.preventDefault(); setActiveTool('pan'); return; }
-    if (e.code === 'KeyT') { setActiveTool('text'); setLeftTab('text'); return; }
-    if (e.code === 'KeyW') { setLeftTab('watermark'); return; }  // W opens watermark panel (no dedicated tool)
-    if (e.code === 'KeyM') { setActiveTool('maskBrush'); setLeftTab('cleanup'); return; }
-    if (e.code === 'KeyG') { setActiveTool('wand'); setLeftTab('cleanup'); return; }
-    if (e.key === '1') { setLeftTab('watermark'); return; }
-    if (e.key === '2') { setLeftTab('cleanup'); return; }
-    if (e.key === '3') { setLeftTab('text'); return; }
-    if (e.key === '4') { setLeftTab('insert'); return; }
-    if (e.key === '5') { setLeftTab('transform'); return; }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObject) {
-      if (selectedObject.type === 'watermark') deleteWatermark(selectedObject.id);
-      else if (selectedObject.type === 'shape') deleteShape(selectedObject.id);
-      else deleteText(selectedObject.id);
-    }
-  }, [undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape]);
+      const mod = e.ctrlKey || e.metaKey;
+
+      // Undo/Redo
+      if (mod && e.code === 'KeyZ') {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+        return;
+      }
+      if (mod && e.code === 'KeyY') {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+      // Export
+      if (mod && e.code === 'KeyE') {
+        e.preventDefault();
+        setShowExportModal(true);
+        return;
+      }
+
+      // Space — toggle pan tool, restore on keyup
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (e.repeat) return;
+        if (activeTool !== 'pan') {
+          prevToolRef.current = activeTool;
+          setActiveTool('pan');
+        }
+        return;
+      }
+
+      // Escape — deselect
+      if (e.code === 'Escape') {
+        return;
+      }
+
+      if (mod) return; // Don't steal other Ctrl/Cmd shortcuts from the browser
+
+      // Tool hotkeys
+      if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey) {
+        setActiveTool('select');
+        return;
+      }
+      if (e.code === 'KeyH') {
+        setActiveTool('pan');
+        return;
+      }
+      if (e.code === 'KeyB') {
+        setActiveTool('brush');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyE') {
+        setActiveTool('eraser');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyL') {
+        setActiveTool('lasso');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyP') {
+        setActiveTool('polyLasso');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyM') {
+        setActiveTool('rectSelect');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyR') {
+        setActiveTool('rectSelect');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyW') {
+        setActiveTool('wand');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyG') {
+        setActiveTool('wand');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyK') {
+        setActiveTool('maskBrush');
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.code === 'KeyT') {
+        setActiveTool('text');
+        setLeftTab('text');
+        return;
+      }
+
+      // Tab numbers
+      if (e.key === '1') {
+        setLeftTab('watermark');
+        return;
+      }
+      if (e.key === '2') {
+        setLeftTab('cleanup');
+        return;
+      }
+      if (e.key === '3') {
+        setLeftTab('text');
+        return;
+      }
+      if (e.key === '4') {
+        setLeftTab('insert');
+        return;
+      }
+      if (e.key === '5') {
+        setLeftTab('transform');
+        return;
+      }
+
+      // Delete/Backspace
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObject) {
+        if (selectedObject.type === 'watermark') deleteWatermark(selectedObject.id);
+        else if (selectedObject.type === 'shape') deleteShape(selectedObject.id);
+        else deleteText(selectedObject.id);
+      }
+    },
+    [
+      undo,
+      redo,
+      setActiveTool,
+      setLeftTab,
+      setShowExportModal,
+      selectedObject,
+      deleteWatermark,
+      deleteText,
+      deleteShape,
+      activeTool,
+    ],
+  );
+
+  const handleKeyUp = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      const previous = prevToolRef.current;
+      prevToolRef.current = null;
+      if (previous) setActiveTool(previous);
+    },
+    [setActiveTool],
+  );
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [handleKeyDown, handleKeyUp]);
 
   return (
     <div

@@ -35,23 +35,25 @@ async function viaGoogle(text: string, from: TranslateLang, to: TranslateLang): 
   return out;
 }
 
-// If the AI route fails once (e.g. gateway not configured), skip it
-// for the rest of the session instead of adding latency to every block.
-let aiUnavailable = false;
+// If AI fails, pause for 60 seconds instead of disabling for the whole session.
+let aiUnavailableUntil = 0;
 
 /** Translate text: AI first (best quality), Google free endpoint as fallback. */
 export async function translateText(
   text: string,
   from: TranslateLang = 'en',
-  to: TranslateLang = 'ru'
+  to: TranslateLang = 'ru',
 ): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed) return text;
-  if (!aiUnavailable) {
-    try {
-      return await viaAI(trimmed, from, to);
-    } catch {
-      aiUnavailable = true;
+  if (Date.now() >= aiUnavailableUntil) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await viaAI(trimmed, from, to);
+      } catch {
+        if (attempt === 1) aiUnavailableUntil = Date.now() + 60_000; // пауза 1 минута, не вся сессия
+        else await new Promise((resolve) => setTimeout(resolve, 700));
+      }
     }
   }
   return await viaGoogle(trimmed, from, to);

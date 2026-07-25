@@ -20,14 +20,19 @@ const LANGUAGE_NAMES: Record<string, string> = {
 
 type BlockKind = 'speech' | 'thought' | 'narration' | 'sfx';
 
-interface PageBlock {
-  original: string;
-  translation: string;
+interface Box {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+interface PageBlock extends Box {
+  original: string;
+  translation: string;
   kind: BlockKind;
+  /** Весь бабл/плашка фона — в него вписываем перевод. Бокс выше — только буквы. */
+  bubble?: Box;
 }
 
 async function fileToDataUrl(file: File): Promise<string> {
@@ -75,37 +80,52 @@ function parseLooseJson(raw: string): unknown {
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 
-/** Модели отдают бокс по-разному: [x,y,w,h] 0..1, 0..1000 или box_2d [ymin,xmin,ymax,xmax]. */
-function readBox(source: Record<string, unknown>): { x: number; y: number; width: number; height: number } | null {
-  const scale = (value: number) => (Math.abs(value) > 1.5 ? value / 1000 : value);
+/** Модели путают шкалу: отдают 0..1 или 0..1000. */
+const scale = (value: number) => (Math.abs(value) > 1.5 ? value / 1000 : value);
 
-  const box2d = source.box_2d ?? source.bbox_2d;
-  if (Array.isArray(box2d) && box2d.length === 4) {
-    const [yMin, xMin, yMax, xMax] = box2d.map(Number).map(scale);
-    return {
-      x: clamp01(xMin),
-      y: clamp01(yMin),
-      width: clamp01(xMax - xMin),
-      height: clamp01(yMax - yMin),
-    };
-  }
+/** Формат [ymin, xmin, ymax, xmax] (box_2d у Gemini). */
+function boxFrom2d(value: unknown): Box | null {
+  if (!Array.isArray(value) || value.length !== 4) return null;
+  const [yMin, xMin, yMax, xMax] = value.map(Number).map(scale);
+  if (![yMin, xMin, yMax, xMax].every(Number.isFinite)) return null;
+  return {
+    x: clamp01(xMin),
+    y: clamp01(yMin),
+    width: clamp01(xMax - xMin),
+    height: clamp01(yMax - yMin),
+  };
+}
 
-  const box = source.box ?? source.bbox;
-  if (Array.isArray(box) && box.length === 4) {
-    const [x, y, w, h] = box.map(Number).map(scale);
+/** Формат [x, y, width, height] или { x, y, width, height }. */
+function boxFromXywh(value: unknown): Box | null {
+  if (Array.isArray(value) && value.length === 4) {
+    const [x, y, w, h] = value.map(Number).map(scale);
+    if (![x, y, w, h].every(Number.isFinite)) return null;
     return { x: clamp01(x), y: clamp01(y), width: clamp01(w), height: clamp01(h) };
   }
-  if (box && typeof box === 'object') {
-    const record = box as Record<string, unknown>;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
     const x = scale(Number(record.x));
     const y = scale(Number(record.y));
-    const w = scale(Number(record.width));
-    const h = scale(Number(record.height));
-    if ([x, y, w, h].every(Number.isFinite)) {
-      return { x: clamp01(x), y: clamp01(y), width: clamp01(w), height: clamp01(h) };
-    }
+    const w = scale(Number(record.width ?? record.w));
+    const h = scale(Number(record.height ?? record.h));
+    if (![x, y, w, h].every(Number.isFinite)) return null;
+    return { x: clamp01(x), y: clamp01(y), width: clamp01(w), height: clamp01(h) };
   }
   return null;
+}
+
+const isUsableBox = (box: Box | null): box is Box => !!box && box.width > 0.005 && box.height > 0.005;
+
+function readTextBox(source: Record<string, unknown>): Box | null {
+  return boxFrom2d(source.box_2d ?? source.bbox_2d) ?? boxFromXywh(source.box ?? source.bbox);
+}
+
+function readBubbleBox(source: Record<string, unknown>): Box | null {
+  return (
+    boxFrom2d(source.bubble_2d) ??
+    boxFromXywh(source.bubble ?? source.bubble_box ?? source.balloon ?? source.area)
+  );
 }
 
 function normalizeBlocks(value: unknown): PageBlock[] {
@@ -120,13 +140,24 @@ function normalizeBlocks(value: unknown): PageBlock[] {
     if (!item || typeof item !== 'object') continue;
     const record = item as Record<string, unknown>;
     const translation = String(record.translation ?? '').trim();
-    const box = readBox(record);
-    if (!translation || !box || box.width <= 0.005 || box.height <= 0.005) continue;
+    const box = readTextBox(record);
+    if (!translation || !isUsableBox(box)) continue;
+
+    const bubbleCandidate = readBubbleBox(record);
+    // Бабл должен быть не меньше текста, иначе это мусорный бокс.
+    const bubble =
+      isUsableBox(bubbleCandidate) &&
+      bubbleCandidate.width >= box.width * 0.9 &&
+      bubbleCandidate.height >= box.height * 0.9
+        ? bubbleCandidate
+        : undefined;
+
     const kind = String(record.kind ?? 'speech');
     out.push({
       original: String(record.original ?? '').trim(),
       translation,
       ...box,
+      bubble,
       kind: (['speech', 'thought', 'narration', 'sfx'].includes(kind) ? kind : 'speech') as BlockKind,
     });
   }
@@ -192,13 +223,17 @@ export async function POST(request: Request) {
 
     const instructions = [
       `Ты профессиональный переводчик манги и комиксов (${sourceName} → ${targetName}).`,
-      'Найди на странице ВСЕ текстовые блоки: реплики в баблах, мысли, закадровый текст, надписи и звуки.',
-      'Переводи страницу как единый диалог: сохраняй одно обращение (ты/вы), одинаковые имена, характер речи и эмоции.',
+      'Сначала мысленно пересчитай ВСЕ текстовые области на странице, потом верни их все до единой.',
+      'На обычной странице их 5–20: реплики в баблах, мысли, шёпот мелким кеглем, закадровый текст в рамках, надписи на вывесках и одежде, звуки (sfx).',
+      'Каждый бабл — ОТДЕЛЬНЫЙ объект. Не склеивай соседние баблы в один блок и не разбивай один бабл на строки. Ничего не пропускай, даже если текст мелкий, наклонный или частично перекрыт.',
+      'Переводи страницу как единый диалог: одно обращение (ты/вы), одинаковые имена, характер речи и эмоции.',
       'Исправляй очевидные артефакты распознавания. Перевод — живой разговорный, без пояснений и кавычек.',
       glossary ? `Обязательный глоссарий имён и терминов: ${glossary}` : '',
       'Верни СТРОГО JSON без markdown в виде массива объектов в порядке чтения:',
-      '[{"original":"...","translation":"...","kind":"speech|thought|narration|sfx","box":[x,y,width,height]}]',
-      'box — нормализованные координаты 0..1 относительно всей страницы: x,y — левый верхний угол текстового блока, width/height — его размеры. Бокс должен плотно охватывать буквы, не весь бабл.',
+      '[{"original":"...","translation":"...","kind":"speech|thought|narration|sfx","box":[x,y,width,height],"bubble":[x,y,width,height]}]',
+      'box — нормализованные координаты 0..1: прямоугольник ПЛОТНО по буквам оригинала (по нему стирается старый текст).',
+      'bubble — прямоугольник ВСЕЙ области фона: весь белый овал бабла, вся плашка, вся рамка закадрового текста. Он всегда больше box. Для sfx и надписей без бабла повтори box, увеличенный примерно на 20%.',
+      'Порядок чтения: для японской манги справа налево и сверху вниз, для остального — слева направо.',
       'Если текста на странице нет вообще — верни пустой массив [].',
     ]
       .filter(Boolean)

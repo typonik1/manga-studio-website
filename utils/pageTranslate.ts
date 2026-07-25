@@ -5,7 +5,7 @@ export interface PageTranslationPlacement extends PageTranslationBlock {
   background: string;
 }
 
-const MAX_PAGE_DIMENSION = 1600;
+const MAX_PAGE_DIMENSION = 2000;
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {

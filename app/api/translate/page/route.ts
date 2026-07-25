@@ -144,11 +144,12 @@ function normalizeBlocks(value: unknown): PageBlock[] {
     if (!translation || !isUsableBox(box)) continue;
 
     const bubbleCandidate = readBubbleBox(record);
-    // Бабл должен быть не меньше текста, иначе это мусорный бокс.
+    // Бабл считаем полезным, только если он заметно больше текста.
+    // Если модель просто скопировала box — лучше вообще без бабла:
+    // тогда клиент сам расширит область под русский текст.
     const bubble =
       isUsableBox(bubbleCandidate) &&
-      bubbleCandidate.width >= box.width * 0.9 &&
-      bubbleCandidate.height >= box.height * 0.9
+      bubbleCandidate.width * bubbleCandidate.height >= box.width * box.height * 1.15
         ? bubbleCandidate
         : undefined;
 

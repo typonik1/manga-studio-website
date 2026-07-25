@@ -53,3 +53,31 @@ export async function redrawRegion(image: Blob, prompt: string, signal?: AbortSi
     reader.readAsDataURL(result);
   });
 }
+
+export interface PageTranslationBlock {
+  original: string;
+  translation: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  kind: 'speech' | 'thought' | 'narration' | 'sfx';
+}
+
+export async function translatePageBlocks(
+  image: Blob,
+  sourceLang: string,
+  targetLang: string,
+  signal?: AbortSignal,
+  glossary?: string,
+): Promise<PageTranslationBlock[]> {
+  const formData = new FormData();
+  formData.append('image_file', image, imageFilename(image, 'page'));
+  formData.append('source_lang', sourceLang);
+  formData.append('target_lang', targetLang);
+  if (glossary) formData.append('glossary', glossary);
+  const response = await fetch('/api/translate/page', { method: 'POST', body: formData, signal });
+  if (!response.ok) throw new RouterAiClientError(await readError(response, 'Не удалось перевести страницу.'));
+  const payload = (await response.json()) as { blocks?: PageTranslationBlock[] };
+  return Array.isArray(payload.blocks) ? payload.blocks : [];
+}

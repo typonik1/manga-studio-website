@@ -39,7 +39,7 @@ export function TextPanel() {
     restorePageSourceText();
     setTranslatedBlocks(0);
     setPageProgress(0);
-    setPageStatus('Перевод отменён · показан исходный текст так, как его распознал OCR.');
+    setPageStatus('Перевод отменён · показан исходный текст так, как его распознала AI-модель.');
   }
 
   function handleActivateTextTool() {
@@ -119,119 +119,102 @@ export function TextPanel() {
   }
 
   /**
-   * Page auto-translate: OCR the image, cover each found text block
-   * with a white brush stroke (cleanup layer), then place the
-   * translated text on top at the same position.
+   * Page auto-translate via AI vision model:
+   * 1. Send full page to /api/translate/page
+   * 2. Detect background color under each block
+   * 3. Cover original with blocks matched to bubble background
+   * 4. Auto-fit translated text with proper line wrapping
    */
   async function handlePageTranslate() {
     if (!activeDoc || isPageTranslating) return;
     setIsPageTranslating(true);
     setTranslatedBlocks(null);
-    setPageProgress(8);
-    setPageStatus('Подготавливаем изображение…');
+    setPageProgress(20);
+    setPageStatus('AI распознаёт и переводит страницу…');
     try {
-      const { recognizeParagraphs } = await import('@/utils/ocr');
+      const { translatePageWithAi } = await import('@/utils/pageTranslate');
       const src = activeDoc.cleanup.committed ?? activeDoc.originalSrc;
-
-      const paragraphs = await recognizeParagraphs(src, langFrom, pct => {
-        setPageProgress(12 + Math.round(pct * 0.48));
-        setPageStatus(`Распознаём текст · ${pct}%`);
-      });
-
-      if (paragraphs.length === 0) {
+      const blocks = await translatePageWithAi(src, langFrom, langTo);
+      if (blocks.length === 0) {
         setPageProgress(0);
         setTranslatedBlocks(0);
         setPageStatus('Текст не найден. Проверьте исходный язык или попробуйте более чёткое изображение.');
         return;
       }
 
+      const { fitTextToBox, ensureFontLoaded } = await import('@/utils/textFit');
+      const fontFamily = useStore.getState().translationFontFamily;
+      await ensureFontLoaded(fontFamily);
+
       const W = activeDoc.width;
       const H = activeDoc.height;
       const translationBatchId = uid();
-      const validParagraphs = paragraphs.flatMap(paragraph => {
-        const box = clampOcrBox(paragraph);
-        if (!box || !paragraph.text.trim()) return [];
-        return [{ ...paragraph, ...box, lines: paragraph.lines.flatMap(line => {
-          const lineBox = clampOcrBox(line);
-          return lineBox ? [{ ...line, ...lineBox }] : [];
-        }) }];
-      });
+      const LINE_HEIGHT = 1.15;
 
-      for (let i = 0; i < validParagraphs.length; i++) {
-        const p = validParagraphs[i];
-        setPageProgress(60 + Math.round(((i + 1) / validParagraphs.length) * 35));
-        setPageStatus(`Переводим и размещаем · ${i + 1}/${validParagraphs.length}`);
+      blocks.forEach((block, index) => {
+        setPageProgress(60 + Math.round(((index + 1) / blocks.length) * 38));
+        const box = clampOcrBox(block);
+        if (!box) return;
 
-        let translated: string;
-        try {
-          translated = await translateText(p.text, langFrom, langTo);
-        } catch {
-          translated = p.text; // keep original if translation fails
-        }
-
-        // 1) Cover the original text line-by-line with white strokes on the
-        // cleanup layer (tight covers instead of one huge blob).
-        // Round line caps extend by (size*H/2) px horizontally.
-        const coverBoxes = p.lines.length > 0 ? p.lines : [p];
-        for (const box of coverBoxes) {
-          const pad = box.height * 0.2;
-          const size = box.height + pad * 2; // stroke width, fraction of image height
-          const capX = (size * H) / 2 / W;   // cap radius in normalized x units
-          const yc = box.y + box.height / 2;
+        // 1) Замывка оригинала цветом фона бабла (вместо белого)
+        const rows = Math.max(1, Math.ceil(box.height / 0.03));
+        const size = (box.height * H) / rows;
+        const capX = (size / 2) / W;
+        for (let row = 0; row < rows; row++) {
           let x0 = box.x + capX;
           let x1 = box.x + box.width - capX;
-          if (x1 < x0) { x0 = x1 = box.x + box.width / 2; } // narrow line -> dot
+          if (x1 < x0) x0 = x1 = box.x + box.width / 2;
           addStroke({
             id: uid(),
-            points: [x0, yc, x1, yc],
-            size,
-            color: '#ffffff',
+            points: [x0, box.y + (size / H) * (row + 0.5), x1, box.y + (size / H) * (row + 0.5)],
+            size: size / H,
+            color: block.background,
             opacity: 1,
+            hardness: 1,
           });
         }
 
-        // 2) Place the translated text on top of the covered area.
-        // Base the font size on the average recognized line height.
-        const avgLineH = p.lines.length > 0
-          ? p.lines.reduce((s, l) => s + l.height, 0) / p.lines.length
-          : p.height / p.lineCount;
-        const fontSize = Math.max(0.012, avgLineH * 0.72);
-        const paddedTextBox = clampOcrBox({
-          x: p.x - p.width * 0.075,
-          y: p.y,
-          width: p.width * 1.15,
-          height: p.height,
+        // 2) Перевод с подобранным кеглем, по центру блока
+        const padX = box.width * 0.06;
+        const innerWidth = Math.max(0.02, box.width - padX * 2);
+        const fitted = fitTextToBox(block.translation, {
+          boxWidthPx: innerWidth * W,
+          boxHeightPx: box.height * H,
+          fontFamily,
+          lineHeight: LINE_HEIGHT,
+          maxFontSizePx: Math.max(12, box.height * H),
+          minFontSizePx: 9,
         });
-        if (!paddedTextBox) continue;
+        const textHeight = (fitted.lines.length * fitted.fontSizePx * LINE_HEIGHT) / H;
+
         addText({
           id: uid(),
-          text: translated,
-          // Блоки автоперевода всегда создаются «Шрифтом перевода по умолчанию»
-          fontFamily: useStore.getState().translationFontFamily,
-          fontSize,
+          text: fitted.text,
+          fontFamily,
+          fontSize: fitted.fontSizePx / H,
           fill: '#000000',
           stroke: '',
           strokeWidth: 0,
           shadowColor: '#000000',
           shadowBlur: 0,
-          lineHeight: 1.1,
+          lineHeight: LINE_HEIGHT,
           align: 'center',
-          width: paddedTextBox.width,
-          x: paddedTextBox.x,
-          y: paddedTextBox.y,
+          width: innerWidth,
+          x: box.x + padX,
+          y: Math.max(0, box.y + (box.height - textHeight) / 2),
           scaleX: 1,
           scaleY: 1,
           rotation: 0,
           visible: true,
-          sourceText: p.text,
+          sourceText: block.original,
           translationBatchId,
-          isTranslated: translated !== p.text,
+          isTranslated: true,
         });
-      }
+      });
 
       setPageProgress(100);
-      setTranslatedBlocks(validParagraphs.length);
-      setPageStatus(`Готово · переведено блоков: ${validParagraphs.length}`);
+      setTranslatedBlocks(blocks.length);
+      setPageStatus(`Готово · переведено блоков: ${blocks.length}`);
     } catch {
       setPageProgress(0);
       setTranslatedBlocks(null);

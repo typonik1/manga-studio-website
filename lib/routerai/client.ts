@@ -15,7 +15,7 @@ function imageFilename(blob: Blob, basename: string) {
 
 async function readError(response: Response, fallback: string) {
   if (response.status === 413) return 'Фрагмент слишком большой. Уменьшите выделение.';
-  const payload = await response.json().catch(() => null) as { error?: string } | null;
+  const payload = (await response.json().catch(() => null)) as { error?: string } | null;
   return payload?.error ?? fallback;
 }
 
@@ -29,14 +29,19 @@ export async function ocrTranslate(
   formData.append('target_lang', targetLang);
   const response = await fetch('/api/translate/ocr', { method: 'POST', body: formData, signal });
   if (!response.ok) throw new RouterAiClientError(await readError(response, 'Не удалось обработать фрагмент.'));
-  const payload = await response.json() as { original?: unknown; translation?: unknown };
+  const payload = (await response.json()) as { original?: unknown; translation?: unknown };
   return {
     original: typeof payload.original === 'string' ? payload.original : '',
     translation: typeof payload.translation === 'string' ? payload.translation : '',
   };
 }
 
-export async function redrawRegion(image: Blob, prompt: string, signal?: AbortSignal, options?: { seed?: number }): Promise<string> {
+export async function redrawRegion(
+  image: Blob,
+  prompt: string,
+  signal?: AbortSignal,
+  options?: { seed?: number },
+): Promise<string> {
   imageCalls += 1;
   const formData = new FormData();
   formData.append('image_file', image, imageFilename(image, 'region'));
@@ -54,14 +59,19 @@ export async function redrawRegion(image: Blob, prompt: string, signal?: AbortSi
   });
 }
 
-export interface PageTranslationBlock {
-  original: string;
-  translation: string;
+export interface PageBlockBox {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+export interface PageTranslationBlock extends PageBlockBox {
+  original: string;
+  translation: string;
   kind: 'speech' | 'thought' | 'narration' | 'sfx';
+  /** Границы всего бабла: в него вписываем перевод, а замываем только буквы. */
+  bubble?: PageBlockBox;
 }
 
 export async function translatePageBlocks(

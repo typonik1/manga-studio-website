@@ -121,9 +121,8 @@ export function TextPanel() {
   /**
    * Page auto-translate via AI vision model:
    * 1. Send full page to /api/translate/page
-   * 2. Detect background color under each block
-   * 3. Cover original with blocks matched to bubble background
-   * 4. Auto-fit translated text with proper line wrapping
+   * 2. Замываем ТОЛЬКО буквы оригинала (с небольшим запасом)
+   * 3. Перевод вписываем в бабл, а не в узкий бокс букв
    */
   async function handlePageTranslate() {
     if (!activeDoc || isPageTranslating) return;
@@ -142,6 +141,9 @@ export function TextPanel() {
         return;
       }
 
+      setPageProgress(60);
+      setPageStatus(`Размещаем перевод · блоков: ${blocks.length}`);
+
       const { fitTextToBox, ensureFontLoaded } = await import('@/utils/textFit');
       const fontFamily = useStore.getState().translationFontFamily;
       await ensureFontLoaded(fontFamily);
@@ -150,23 +152,33 @@ export function TextPanel() {
       const H = activeDoc.height;
       const translationBatchId = uid();
       const LINE_HEIGHT = 1.15;
+      const INSET = 0.08; // поля внутри бабла, чтобы текст не липнул к контуру
 
-      blocks.forEach((block, index) => {
-        setPageProgress(60 + Math.round(((index + 1) / blocks.length) * 38));
-        const box = clampOcrBox(block);
-        if (!box) return;
+      let placed = 0;
 
-        // 1) Замывка оригинала цветом фона бабла (вместо белого)
-        const rows = Math.max(1, Math.ceil(box.height / 0.03));
-        const size = (box.height * H) / rows;
-        const capX = (size / 2) / W;
+      blocks.forEach((block) => {
+        const textBox = clampOcrBox(block);
+        if (!textBox) return;
+
+        // 1) Замывка строго по буквам оригинала + небольшой запас на хвосты глифов
+        const wipe =
+          clampOcrBox({
+            x: textBox.x - textBox.width * 0.04,
+            y: textBox.y - textBox.height * 0.1,
+            width: textBox.width * 1.08,
+            height: textBox.height * 1.2,
+          }) ?? textBox;
+        const rows = Math.max(1, Math.ceil(wipe.height / 0.03));
+        const size = (wipe.height * H) / rows;
+        const capX = size / 2 / W;
         for (let row = 0; row < rows; row++) {
-          let x0 = box.x + capX;
-          let x1 = box.x + box.width - capX;
-          if (x1 < x0) x0 = x1 = box.x + box.width / 2;
+          let x0 = wipe.x + capX;
+          let x1 = wipe.x + wipe.width - capX;
+          if (x1 < x0) x0 = x1 = wipe.x + wipe.width / 2;
+          const yc = wipe.y + (size / H) * (row + 0.5);
           addStroke({
             id: uid(),
-            points: [x0, box.y + (size / H) * (row + 0.5), x1, box.y + (size / H) * (row + 0.5)],
+            points: [x0, yc, x1, yc],
             size: size / H,
             color: block.background,
             opacity: 1,
@@ -174,18 +186,38 @@ export function TextPanel() {
           });
         }
 
-        // 2) Перевод с подобранным кеглем, по центру блока
-        const padX = box.width * 0.06;
-        const innerWidth = Math.max(0.02, box.width - padX * 2);
+        // 2) Область под перевод — весь бабл. Если модель его не дала,
+        // расширяем бокс букв: русский длиннее английского примерно на 30%.
+        const area =
+          (block.bubble ? clampOcrBox(block.bubble) : null) ??
+          clampOcrBox({
+            x: textBox.x - textBox.width * 0.15,
+            y: textBox.y - textBox.height * 0.12,
+            width: textBox.width * 1.3,
+            height: textBox.height * 1.24,
+          }) ??
+          textBox;
+
+        const innerWidth = Math.max(0.03, area.width * (1 - INSET * 2));
+        const innerHeight = Math.max(0.02, area.height * (1 - INSET * 2));
+
         const fitted = fitTextToBox(block.translation, {
           boxWidthPx: innerWidth * W,
-          boxHeightPx: box.height * H,
+          boxHeightPx: innerHeight * H,
           fontFamily,
           lineHeight: LINE_HEIGHT,
-          maxFontSizePx: Math.max(12, box.height * H),
-          minFontSizePx: 9,
+          maxFontSizePx: Math.max(14, innerHeight * H),
+          // Ниже 11px на странице читать невозможно — лучше слегка вылезти за бабл
+          minFontSizePx: Math.max(11, Math.round(H * 0.012)),
+          maxWidthScale: block.bubble ? 1.15 : 1.45,
+          maxHeightScale: 1.2,
         });
+        if (fitted.lines.length === 0) return;
+
+        const widthNorm = Math.min(1, innerWidth * fitted.widthScale);
         const textHeight = (fitted.lines.length * fitted.fontSizePx * LINE_HEIGHT) / H;
+        const centerX = area.x + area.width / 2;
+        const centerY = area.y + area.height / 2;
 
         addText({
           id: uid(),
@@ -199,9 +231,9 @@ export function TextPanel() {
           shadowBlur: 0,
           lineHeight: LINE_HEIGHT,
           align: 'center',
-          width: innerWidth,
-          x: box.x + padX,
-          y: Math.max(0, box.y + (box.height - textHeight) / 2),
+          width: widthNorm,
+          x: Math.max(0, Math.min(1 - widthNorm, centerX - widthNorm / 2)),
+          y: Math.max(0, Math.min(1 - textHeight, centerY - textHeight / 2)),
           scaleX: 1,
           scaleY: 1,
           rotation: 0,
@@ -210,11 +242,12 @@ export function TextPanel() {
           translationBatchId,
           isTranslated: true,
         });
+        placed += 1;
       });
 
       setPageProgress(100);
-      setTranslatedBlocks(blocks.length);
-      setPageStatus(`Готово · переведено блоков: ${blocks.length}`);
+      setTranslatedBlocks(placed);
+      setPageStatus(`Готово · переведено блоков: ${placed}`);
     } catch {
       setPageProgress(0);
       setTranslatedBlocks(null);

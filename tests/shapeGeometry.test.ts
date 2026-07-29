@@ -25,4 +25,12 @@ describe('pointer geometry', () => {
     const high = getShapeGeometry('curved-arrow', 180, 90, 0.8);
     expect(low.strokePath).not.toBe(high.strokePath);
   });
+
+  it('changes straight and double arrow heads after vertical resize', () => {
+    for (const kind of ['arrow', 'double-arrow'] as const) {
+      const short = getShapeGeometry(kind, 180, 24);
+      const tall = getShapeGeometry(kind, 180, 96);
+      expect(short.fillPath, kind).not.toBe(tall.fillPath);
+    }
+  });
 });

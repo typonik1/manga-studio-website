@@ -3,9 +3,8 @@
 import { useState, useCallback } from 'react';
 import { useStore } from '@/store/useStore';
 import type { ImageDocument } from '@/types';
-import { buildCleanupSourceCanvas } from '@/utils/cleanupRaster';
-import { resolveLayerOrder } from '@/utils/layerOrder';
-import { getBubblePath, tailTipPixels } from '@/utils/bubbleGeometry';
+import { drawRasterReferenceToContext } from '@/utils/cleanupRaster';
+import { resolveVisualLayerOrder } from '@/utils/layerOrder';
 import { drawBrushStroke } from '@/utils/brushRaster';
 import { drawBubbleToContext, drawShapeToContext } from '@/utils/drawVectorObject';
 
@@ -17,18 +16,6 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
   canvas.height = doc.height;
   const ctx = canvas.getContext('2d')!;
 
-  // Raster stack (base + AI) rendered by the shared pipeline: it follows the
-  // unified layer order and applies adjustments, erase masks, crop and transforms.
-  const raster = await buildCleanupSourceCanvas(doc);
-  ctx.drawImage(raster, 0, 0, doc.width, doc.height);
-
-  // Brush strokes use the same color/hardness rasterizer as the editor preview.
-  for (const stroke of doc.cleanup.strokes.filter(item => item.purpose !== 'mask')) {
-    drawBrushStroke(ctx, stroke, doc.width, doc.height);
-  }
-
-  // Watermarks, texts and shapes drawn bottom → top following the unified
-  // layer order, so the exported file matches the canvas exactly.
   const drawWatermark = async (wm: (typeof doc.watermarks)[number]) => {
     if (!wm.visible) return;
     ctx.save();
@@ -93,121 +80,16 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.restore();
   };
 
-  const drawShape = (shape: NonNullable<typeof doc.shapes>[number]) => {
-    if (!shape.visible) return;
-    ctx.save();
-    ctx.globalAlpha = shape.opacity;
-    const cx = shape.x * doc.width;
-    const cy = shape.y * doc.height;
-    const w = shape.width * doc.width;
-    const h = shape.height * doc.height;
-    ctx.translate(cx, cy);
-    ctx.rotate((shape.rotation * Math.PI) / 180);
-    ctx.scale(shape.scaleX, shape.scaleY);
-    ctx.lineWidth = shape.strokeWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    if (shape.kind === 'rect') {
-      ctx.beginPath();
-      const r = Math.min(shape.cornerRadius, w / 2, h / 2);
-      ctx.roundRect(-w / 2, -h / 2, w, h, r);
-      if (shape.fill) { ctx.fillStyle = shape.fill; ctx.fill(); }
-      if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.stroke(); }
-    } else if (shape.kind === 'ellipse') {
-      ctx.beginPath();
-      ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
-      if (shape.fill) { ctx.fillStyle = shape.fill; ctx.fill(); }
-      if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.stroke(); }
-    } else if (shape.kind === 'line' || shape.kind === 'arrow') {
-      ctx.beginPath();
-      ctx.moveTo(-w / 2, 0);
-      ctx.lineTo(w / 2, 0);
-      ctx.strokeStyle = shape.stroke || '#000';
-      ctx.stroke();
-      if (shape.kind === 'arrow') {
-        const head = Math.max(8, shape.strokeWidth * 3);
-        ctx.beginPath();
-        ctx.moveTo(w / 2, 0);
-        ctx.lineTo(w / 2 - head, -head / 2);
-        ctx.lineTo(w / 2 - head, head / 2);
-        ctx.closePath();
-        ctx.fillStyle = shape.stroke || '#000';
-        ctx.fill();
+  // Render every content type through one bottom → top sequence so a pasted
+  // raster can sit above a bubble (or vice versa) in both preview and export.
+  for (const ref of resolveVisualLayerOrder(doc)) {
+    if (ref.type === 'base' || ref.type === 'ai') {
+      await drawRasterReferenceToContext(ctx, doc, ref);
+    } else if (ref.type === 'strokes') {
+      for (const stroke of doc.cleanup.strokes.filter(item => item.purpose !== 'mask')) {
+        drawBrushStroke(ctx, stroke, doc.width, doc.height);
       }
-    } else if (shape.kind === 'star') {
-      const outer = Math.min(w, h) / 2;
-      const inner = outer / 2;
-      ctx.beginPath();
-      for (let i = 0; i < 10; i++) {
-        const r = i % 2 === 0 ? outer : inner;
-        const a = (Math.PI / 5) * i - Math.PI / 2;
-        const px = Math.cos(a) * r;
-        const py = Math.sin(a) * r;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      if (shape.fill) { ctx.fillStyle = shape.fill; ctx.fill(); }
-      if (shape.stroke && shape.strokeWidth > 0) { ctx.strokeStyle = shape.stroke; ctx.stroke(); }
-    }
-    ctx.restore();
-  };
-
-  const drawBubble = (bubble: NonNullable<typeof doc.bubbles>[number]) => {
-    if (!bubble.visible) return;
-    ctx.save();
-    ctx.globalAlpha = 1;
-    const cx = bubble.x * doc.width;
-    const cy = bubble.y * doc.height;
-    const w = bubble.width * doc.width;
-    const h = bubble.height * doc.height;
-    ctx.translate(cx, cy);
-    ctx.rotate((bubble.rotation * Math.PI) / 180);
-
-    // Get bubble path in local pixel space (centered at 0,0).
-    // Use the new tail model directly — no legacy tipX/tipY needed.
-    const pathData = getBubblePath(bubble.kind, {
-      x: 0,
-      y: 0,
-      width: w,
-      height: h,
-      rotation: bubble.rotation,
-      tail: bubble.tail ?? null,
-    });
-
-    try {
-      const path = new Path2D(pathData);
-      if (bubble.fill) { ctx.fillStyle = bubble.fill; ctx.fill(path); }
-      if (bubble.stroke && bubble.strokeWidth > 0) {
-        ctx.strokeStyle = bubble.stroke;
-        ctx.lineWidth = bubble.strokeWidth;
-        if (bubble.kind === 'whisper') {
-          ctx.setLineDash([6, 4]);
-        }
-        ctx.stroke(path);
-        ctx.setLineDash([]);
-      }
-    } catch { /* Path2D not supported, skip bubble */ }
-
-    // Draw text inside bubble
-    const fontSize = bubble.text.fontSize;
-    ctx.font = `${fontSize}px "${bubble.text.fontFamily}"`;
-    ctx.fillStyle = bubble.text.fill;
-    ctx.textAlign = bubble.text.align;
-    ctx.textBaseline = 'middle';
-    const lines = bubble.text.content.split('\n');
-    const lineH = fontSize * bubble.text.lineHeight;
-    for (let i = 0; i < lines.length; i++) {
-      const y = (i - lines.length / 2 + 0.5) * lineH;
-      ctx.fillText(lines[i], 0, y);
-    }
-
-    ctx.restore();
-  };
-
-  for (const ref of resolveLayerOrder(doc)) {
-    if (ref.type === 'watermark') {
+    } else if (ref.type === 'watermark') {
       const wm = doc.watermarks.find(item => item.id === ref.id);
       if (wm) await drawWatermark(wm);
     } else if (ref.type === 'text') {

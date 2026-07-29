@@ -14,6 +14,7 @@ interface PaintedShapeProps {
   fallbackStroke?: string;
   strokeWidth?: number;
   glow?: GlowStyle;
+  glowScale?: number;
   dash?: number[];
   dashEnabled?: boolean;
   listening?: boolean;
@@ -29,6 +30,7 @@ export function PaintedShape({
   fallbackStroke = '#000000',
   strokeWidth = 0,
   glow,
+  glowScale = 1,
   dash,
   dashEnabled,
   listening = true,
@@ -41,7 +43,14 @@ export function PaintedShape({
     ? toKonvaPaintProps(strokeStyle, bounds, 'stroke', fallbackStroke)
     : fallbackStroke ? { stroke: fallbackStroke } : {};
   const glowStyle = normalizeGlowStyle(glow);
-  const glowPasses = glowStyle.enabled && strokeWidth > 0 ? glowStyle.intensity : 0;
+  const scaledGlowBlur = glowStyle.blur * glowScale;
+  const hasVisibleFill = fillStyle
+    ? fillStyle.type !== 'solid' || fillStyle.color !== 'transparent'
+    : Boolean(fallbackFill && fallbackFill !== 'transparent');
+  const hasVisibleStroke = strokeWidth > 0 && Boolean(strokeStyle || fallbackStroke);
+  const glowPasses = glowStyle.enabled && (hasVisibleFill || hasVisibleStroke)
+    ? glowStyle.intensity
+    : 0;
 
   return (
     <Fragment>
@@ -49,12 +58,15 @@ export function PaintedShape({
         <Path
           key={`glow-${index}`}
           data={data}
+          {...fillProps}
           {...strokeProps}
-          strokeWidth={strokeWidth + glowStyle.blur * (0.4 + index * 0.15)}
+          strokeWidth={hasVisibleStroke
+            ? strokeWidth + scaledGlowBlur * (0.4 + index * 0.15)
+            : 0}
           shadowColor={glowStyle.color}
-          shadowBlur={glowStyle.blur * (1 + index * 0.35)}
-          shadowOpacity={glowStyle.opacity / glowPasses}
-          opacity={opacity}
+          shadowBlur={scaledGlowBlur * (1 + index * 0.35)}
+          shadowOpacity={1}
+          opacity={opacity * glowStyle.opacity / glowPasses}
           dash={dash}
           dashEnabled={dashEnabled}
           listening={false}

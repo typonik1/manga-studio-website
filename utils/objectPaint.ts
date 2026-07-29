@@ -97,6 +97,19 @@ export function normalizePaintStyle(
   return { type: 'solid', color: fallback };
 }
 
+export function normalizeStrokePaintStyle(
+  style: PaintStyle | null | undefined,
+  fallbackColor: string,
+): PaintStyle {
+  const normalized = normalizePaintStyle(style, fallbackColor);
+  if (normalized.type !== 'radial') return normalized;
+  return {
+    type: 'linear',
+    angle: 0,
+    stops: normalized.stops.map(stop => ({ ...stop })),
+  };
+}
+
 export function clonePaintStyle(style: PaintStyle): PaintStyle {
   if (style.type === 'solid') return { ...style };
   if (style.type === 'linear') {
@@ -194,23 +207,22 @@ export function toKonvaPaintProps(
   channel: 'fill' | 'stroke',
   fallbackColor = '#ffffff',
 ): Record<string, unknown> {
-  const normalized = normalizePaintStyle(style, fallbackColor);
+  const normalized = channel === 'stroke'
+    ? normalizeStrokePaintStyle(style, fallbackColor)
+    : normalizePaintStyle(style, fallbackColor);
   const prefix = gradientChannelPrefix(channel);
   if (normalized.type === 'solid') {
     return { [channel]: normalized.color };
   }
 
-  if (normalized.type === 'linear' || channel === 'stroke') {
-    const linear = normalized.type === 'linear'
-      ? normalized
-      : { type: 'linear' as const, angle: 0, stops: normalized.stops };
-    const points = getLinearGradientPoints(linear.angle, bounds);
+  if (normalized.type === 'linear') {
+    const points = getLinearGradientPoints(normalized.angle, bounds);
     return {
       [prefix]: undefined,
       [`${prefix}Priority`]: 'linear-gradient',
       [`${prefix}LinearGradientStartPoint`]: points.start,
       [`${prefix}LinearGradientEndPoint`]: points.end,
-      [`${prefix}LinearGradientColorStops`]: konvaStops(linear.stops),
+      [`${prefix}LinearGradientColorStops`]: konvaStops(normalized.stops),
     };
   }
 

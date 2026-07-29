@@ -543,7 +543,9 @@ export const useStore = create<AppState>((set, get) => ({
       masks: doc.masks.map(mask => mask.id === layer.maskId ? { ...mask, resultLayerId: layer.id } : mask),
       selectedLayer: { id: layer.id, type: 'ai' },
     };
-    return { documents: docs };
+    return index === state.activeDocIndex
+      ? { documents: docs, selectedObject: null }
+      : { documents: docs };
   }),
 
   updateAiLayer: (id, updates, options) => set(state => {
@@ -951,7 +953,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const doc = withHistory(docs[state.activeDocIndex]);
-      const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id: bubble.id }];
+      const newLayerOrder = [...resolveLayerOrder(doc), { type: 'bubble' as const, id: bubble.id }];
       docs[state.activeDocIndex] = { ...doc, bubbles: [...(doc.bubbles ?? []), bubble], layerOrder: newLayerOrder };
       return { documents: docs, selectedObject: { id: bubble.id, type: 'bubble' as const } };
     }),
@@ -996,7 +998,7 @@ export const useStore = create<AppState>((set, get) => ({
         text: { ...source.text },
         tail: source.tail ? { ...source.tail } : null,
       };
-      const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id: newId }];
+      const newLayerOrder = [...resolveLayerOrder(doc), { type: 'bubble' as const, id: newId }];
       docs[state.activeDocIndex] = { ...doc, bubbles: [...(doc.bubbles ?? []), newBubble], layerOrder: newLayerOrder };
       return { documents: docs, selectedObject: { id: newId, type: 'bubble' as const } };
     }),

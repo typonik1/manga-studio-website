@@ -155,8 +155,11 @@ export function sanitizeShape(shape: ShapeObject): ShapeObject | null {
     y: clamp01(shape.y),
     width: Math.max(0.005, Math.min(1, Math.abs(shape.width))),
     height: Math.max(0.005, Math.min(1, Math.abs(shape.height))),
-    fillStyle: normalizePaintStyle(shape.fillStyle, shape.fill || '#ffffff'),
-    strokeStyle: normalizePaintStyle(shape.strokeStyle, shape.stroke || '#000000'),
+    fillStyle: normalizePaintStyle(shape.fillStyle, shape.fill || 'transparent'),
+    strokeStyle: normalizePaintStyle(
+      shape.strokeStyle,
+      shape.stroke === '' ? 'transparent' : shape.stroke || '#000000',
+    ),
     glow: normalizeGlowStyle(shape.glow),
     lineStyle: shape.lineStyle === 'dashed' || shape.lineStyle === 'dotted' ? shape.lineStyle : 'solid',
     curve: Number.isFinite(shape.curve) ? Math.max(-1, Math.min(1, shape.curve!)) : 0.35,
@@ -173,8 +176,11 @@ export function sanitizeBubble(bubble: BubbleObject): BubbleObject | null {
     width: Math.max(0.005, Math.min(1, Math.abs(bubble.width))),
     height: Math.max(0.005, Math.min(1, Math.abs(bubble.height))),
     text: { ...bubble.text },
-    fillStyle: normalizePaintStyle(bubble.fillStyle, bubble.fill || '#ffffff'),
-    strokeStyle: normalizePaintStyle(bubble.strokeStyle, bubble.stroke || '#000000'),
+    fillStyle: normalizePaintStyle(bubble.fillStyle, bubble.fill || 'transparent'),
+    strokeStyle: normalizePaintStyle(
+      bubble.strokeStyle,
+      bubble.stroke === '' ? 'transparent' : bubble.stroke || '#000000',
+    ),
     glow: normalizeGlowStyle(bubble.glow),
     tail: bubble.tail ? {
       ...bubble.tail,

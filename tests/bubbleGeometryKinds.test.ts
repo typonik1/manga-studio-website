@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getBubblePath } from '@/utils/bubbleGeometry';
+import { bubbleSupportsTail, getBubblePath } from '@/utils/bubbleGeometry';
 import type { BubbleKind } from '@/types';
 
 const params = {
@@ -38,5 +38,13 @@ describe('decorative bubble geometry', () => {
         expect(path, `${kind}:${size.width}x${size.height}`).not.toMatch(/NaN|Infinity/);
       }
     }
+  });
+
+  it('supports a visible scream tail but keeps caption and narration tail-free', () => {
+    expect(bubbleSupportsTail('scream')).toBe(true);
+    expect(bubbleSupportsTail('caption')).toBe(false);
+    expect(bubbleSupportsTail('narration')).toBe(false);
+    expect(getBubblePath('scream', params)).not.toBe(getBubblePath('scream', { ...params, tail: null }));
+    expect(getBubblePath('caption', params)).toBe(getBubblePath('caption', { ...params, tail: null }));
   });
 });

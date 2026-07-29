@@ -83,4 +83,16 @@ describe('vector style migration', () => {
     expect(sanitizeShape({ ...legacyShape, kind: 'unknown-shape' as never })).toBeNull();
     expect(sanitizeBubble({ ...legacyBubble, kind: 'unknown-bubble' as never })).toBeNull();
   });
+
+  it('keeps an empty legacy shape fill transparent', () => {
+    expect(sanitizeShape({ ...legacyShape, fill: '', fillStyle: undefined })?.fillStyle)
+      .toEqual({ type: 'solid', color: 'transparent' });
+  });
+
+  it('keeps explicitly empty legacy strokes transparent', () => {
+    expect(sanitizeShape({ ...legacyShape, stroke: '', strokeStyle: undefined })?.strokeStyle)
+      .toEqual({ type: 'solid', color: 'transparent' });
+    expect(sanitizeBubble({ ...legacyBubble, stroke: '', strokeStyle: undefined })?.strokeStyle)
+      .toEqual({ type: 'solid', color: 'transparent' });
+  });
 });

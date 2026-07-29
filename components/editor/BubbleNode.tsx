@@ -214,6 +214,7 @@ export function BubbleNode({
           dash={isDashed ? [6 * previewScale, 4 * previewScale] : undefined}
           dashEnabled={isDashed}
           glow={bubble.glow}
+          glowScale={previewScale}
         />
 
         {/* ── Thought tail circles ─────────────────────────────────────── */}

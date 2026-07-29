@@ -6,7 +6,7 @@ import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject, PerspectiveQuad } from '@/types';
-import { resolveLayerOrder } from '@/utils/layerOrder';
+import { resolveVisualLayerOrder } from '@/utils/layerOrder';
 import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask, bakeStrokeIntoLayerSrc } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
 import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
@@ -800,6 +800,7 @@ function ShapeNode({
             fallbackStroke={shape.stroke}
             strokeWidth={strokeW}
             glow={shape.glow}
+            glowScale={previewScale}
             dash={dash}
             dashEnabled={Boolean(dash)}
           />
@@ -814,6 +815,7 @@ function ShapeNode({
             fallbackStroke={open ? '' : shape.stroke}
             strokeWidth={open ? 0 : strokeW}
             glow={shape.glow}
+            glowScale={previewScale}
           />
         )}
       </>
@@ -1949,8 +1951,10 @@ export function CanvasArea() {
               />
             )}
 
-            {/* Raster stack (base + AI) rendered bottom → top following the unified layer order */}
-            {resolveLayerOrder(activeDoc).map(ref => {
+            <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
+            {/* One bottom → top sequence for rasters, brush strokes and vector
+                objects. This is the same order used by export. */}
+            {resolveVisualLayerOrder(activeDoc).map(ref => {
               if (ref.type === 'base') {
                 if (!layerVisibility.base || baseReplaced || activeDoc.baseLayer?.visible === false) return null;
                 return (
@@ -1988,50 +1992,18 @@ export function CanvasArea() {
                   />
                 );
               }
-              return null;
-            })}
-
-            <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
-
-            {/* Committed brush strokes — rendered offscreen so erase-mode strokes
-                only affect the strokes themselves, never the layers below. */}
-            {layerVisibility.cleanup && (
-              <CleanupStrokesNode
-                strokes={activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask')}
-                width={imgW}
-                height={imgH}
-                lineScale={activeDoc.height * previewScale}
-              />
-            )}
-
-            {/* Persistent editor-only mask overlays */}
-            {(activeDoc.masks ?? []).filter(mask => mask.visible).map(mask => (
-              <MaskOverlayNode key={mask.id} elements={mask.elements} strokes={mask.strokes} width={imgW} height={imgH} opacity={mask.opacity} />
-            ))}
-
-            {/* Live lasso contour */}
-            <Line ref={liveLassoRef} points={[]} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} closed fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
-
-            {/* Live rectangular selection */}
-            <Rect ref={liveRectRef} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
-
-            {/* Live stroke while drawing (updated imperatively) */}
-            <Line
-              ref={liveLineRef}
-              points={livePoints.current}
-              stroke={cleanupSettings.brushColor}
-              strokeWidth={activeDoc ? cleanupSettings.brushSize * activeDoc.height * previewScale : 10}
-              lineCap="round"
-              lineJoin="round"
-              tension={0.3}
-              perfectDrawEnabled={false}
-              listening={false}
-              visible={false}
-            />
-
-            {/* Watermarks, texts and shapes rendered bottom → top following the
-                unified layer order, so panel order always matches the canvas. */}
-            {resolveLayerOrder(activeDoc).map(ref => {
+              if (ref.type === 'strokes') {
+                if (!layerVisibility.cleanup) return null;
+                return (
+                  <CleanupStrokesNode
+                    key={ref.id}
+                    strokes={activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask')}
+                    width={imgW}
+                    height={imgH}
+                    lineScale={activeDoc.height * previewScale}
+                  />
+                );
+              }
               if (ref.type === 'watermark') {
                 const wm = activeDoc.watermarks.find(item => item.id === ref.id);
                 if (!wm || !layerVisibility.watermarks) return null;
@@ -2065,9 +2037,6 @@ export function CanvasArea() {
                     onChange={updates => updateText(txt.id, updates)}
                     onBeforeChange={pushHistory}
                     onEditRequest={() => {
-                      // While a selection tool is active, a double click is a
-                      // selection gesture (e.g. closing the polygonal lasso) —
-                      // don't drop into text editing.
                       if (activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'rectSelect' || activeTool === 'wand') return;
                       setSelectedObject({ id: txt.id, type: 'text' });
                       isNewTextRef.current = false;
@@ -2116,6 +2085,31 @@ export function CanvasArea() {
               }
               return null;
             })}
+
+            {/* Persistent editor-only mask overlays */}
+            {(activeDoc.masks ?? []).filter(mask => mask.visible).map(mask => (
+              <MaskOverlayNode key={mask.id} elements={mask.elements} strokes={mask.strokes} width={imgW} height={imgH} opacity={mask.opacity} />
+            ))}
+
+            {/* Live lasso contour */}
+            <Line ref={liveLassoRef} points={[]} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} closed fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
+
+            {/* Live rectangular selection */}
+            <Rect ref={liveRectRef} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
+
+            {/* Live stroke while drawing (updated imperatively) */}
+            <Line
+              ref={liveLineRef}
+              points={livePoints.current}
+              stroke={cleanupSettings.brushColor}
+              strokeWidth={activeDoc ? cleanupSettings.brushSize * activeDoc.height * previewScale : 10}
+              lineCap="round"
+              lineJoin="round"
+              tension={0.3}
+              perfectDrawEnabled={false}
+              listening={false}
+              visible={false}
+            />
 
             {/* Crop overlay */}
             {activeTool === 'crop' && cropRect && (

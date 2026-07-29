@@ -4,6 +4,8 @@ import { createBaseLayerState } from '@/types';
 import type { ImageDocument } from '@/types';
 import { createDefaultBubble } from '@/components/editor/panels/BubblePanel';
 import { createShapeFromSettings } from '@/utils/shapePresets';
+import { createPastedImageLayer } from '@/utils/pastedImageLayers';
+import { resolveLayerOrder } from '@/utils/layerOrder';
 
 function makeDocument(): ImageDocument {
   const shape = createShapeFromSettings('rect', useStore.getState().shapeSettings);
@@ -62,5 +64,36 @@ describe('vector history gesture options', () => {
     const shape = store.documents[0].shapes[0];
     store.updateShape(shape.id, { strokeWidth: 9 }, { history: true });
     expect(useStore.getState().documents[0].past).toHaveLength(1);
+  });
+
+  it('selects a pasted raster layer without leaving a vector transformer active', () => {
+    const state = useStore.getState();
+    const doc = state.documents[0];
+    useStore.setState({ selectedObject: { id: doc.shapes[0].id, type: 'shape' } });
+    const layer = createPastedImageLayer(doc, {
+      src: 'data:image/png;base64,x',
+      width: 400,
+      height: 300,
+      name: 'paste.png',
+    });
+    useStore.getState().addAiLayer(doc.id, layer);
+
+    const next = useStore.getState();
+    expect(next.selectedObject).toBeNull();
+    expect(next.documents[0].selectedLayer).toEqual({ id: layer.id, type: 'ai' });
+  });
+
+  it('puts a new and duplicated bubble on top in a legacy document without layer order', () => {
+    const legacy = { ...makeDocument(), layerOrder: undefined };
+    useStore.setState({ documents: [legacy], activeDocIndex: 0, selectedObject: null });
+    const bubble = createDefaultBubble('comic');
+    useStore.getState().addBubble(bubble);
+    expect(resolveLayerOrder(useStore.getState().documents[0]).at(-1))
+      .toEqual({ type: 'bubble', id: bubble.id });
+
+    useStore.getState().duplicateBubble(bubble.id);
+    const top = resolveLayerOrder(useStore.getState().documents[0]).at(-1);
+    expect(top?.type).toBe('bubble');
+    expect(top?.id).not.toBe(bubble.id);
   });
 });

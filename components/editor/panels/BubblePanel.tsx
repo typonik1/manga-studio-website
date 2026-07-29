@@ -3,7 +3,11 @@
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import type { BubbleObject, BubbleKind, BubbleTail } from '@/types';
-import { getBubblePath, getThoughtTailCircles } from '@/utils/bubbleGeometry';
+import {
+  bubbleSupportsTail,
+  getBubblePath,
+  getThoughtTailCircles,
+} from '@/utils/bubbleGeometry';
 import { DEFAULT_GLOW } from '@/utils/objectPaint';
 import { PaintEditor } from './PaintEditor';
 
@@ -35,7 +39,7 @@ export const BUBBLE_PRESETS: PreviewDef[] = [
   {
     kind: 'scream',
     label: 'Крик',
-    defaultTail: null,
+    defaultTail: { enabled: true, side: 'bottom', anchor: 0.5, length: 0.34, width: 0.1, curve: 0.2 },
   },
   {
     kind: 'whisper',
@@ -404,7 +408,7 @@ export function BubblePanel() {
           </div>
 
           {/* ── Tail settings ───────────────────────────────────────────── */}
-          {selectedBubble.kind !== 'narration' && (
+          {bubbleSupportsTail(selectedBubble.kind) && (
             <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 2px 6px' }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500 }}>Хвост</div>

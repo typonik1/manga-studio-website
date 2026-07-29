@@ -231,4 +231,32 @@ describe('PaintEditor', () => {
     expect(onGlowChange).toHaveBeenCalledWith(expect.objectContaining({ intensity: 3 }));
     expect(onGestureStart).toHaveBeenCalled();
   });
+
+  it('converts a saved radial preset when radial strokes are disabled', () => {
+    localStorage.setItem('manga-studio:paint-presets:v1', JSON.stringify([{
+      id: 'radial-stroke',
+      name: 'Радиальный пользовательский',
+      style: {
+        type: 'radial',
+        centerX: 0.5,
+        centerY: 0.5,
+        radius: 1,
+        stops: [
+          { id: 'a', offset: 0, color: '#000000' },
+          { id: 'b', offset: 1, color: '#ffffff' },
+        ],
+      },
+    }]));
+    const onChange = vi.fn();
+    render(
+      <PaintEditor
+        label="Обводка"
+        value={solid}
+        allowRadial={false}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Применить градиент Радиальный пользовательский' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ type: 'linear', angle: 0 }));
+  });
 });

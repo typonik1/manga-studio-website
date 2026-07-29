@@ -65,3 +65,23 @@ export function strokesInsertionIndex(order: LayerReference[]): number {
   }
   return index;
 }
+
+export type VisualLayerReference =
+  | LayerReference
+  | { type: 'strokes'; id: 'cleanup-strokes' };
+
+/**
+ * Resolves every visible-canvas content slot in one bottom → top sequence.
+ * Brush strokes do not have a user-facing layer row yet, so they stay directly
+ * above the highest raster while vector objects can still be ordered above or
+ * below individual raster layers.
+ */
+export function resolveVisualLayerOrder(doc: ImageDocument): VisualLayerReference[] {
+  const order = resolveLayerOrder(doc);
+  const index = strokesInsertionIndex(order);
+  return [
+    ...order.slice(0, index),
+    { type: 'strokes', id: 'cleanup-strokes' },
+    ...order.slice(index),
+  ];
+}

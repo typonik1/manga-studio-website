@@ -7,6 +7,7 @@ import {
   DEFAULT_GLOW,
   normalizeGlowStyle,
   normalizePaintStyle,
+  normalizeStrokePaintStyle,
   paintToCss,
 } from '@/utils/objectPaint';
 import {
@@ -185,7 +186,9 @@ export function PaintEditor({
 
   const applyPreset = (preset: GradientPreset) => {
     onGestureStart?.();
-    update(preset.style);
+    update(allowRadial
+      ? preset.style
+      : normalizeStrokePaintStyle(preset.style, '#000000'));
   };
 
   const renamePreset = (preset: GradientPreset) => {

@@ -20,4 +20,10 @@ describe('bubble presets', () => {
     expect(first.fillStyle).not.toBe(second.fillStyle);
     expect(first.glow?.enabled).toBe(false);
   });
+
+  it('creates tails only for bubble kinds that render them', () => {
+    expect(createDefaultBubble('scream').tail).not.toBeNull();
+    expect(createDefaultBubble('caption').tail).toBeNull();
+    expect(createDefaultBubble('narration').tail).toBeNull();
+  });
 });

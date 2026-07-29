@@ -9,25 +9,28 @@ const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
 function arrowHead(x: number, y: number, angle: number, length: number, width: number) {
-  const left = angle + Math.PI * 0.78;
-  const right = angle - Math.PI * 0.78;
+  const baseX = x - Math.cos(angle) * length;
+  const baseY = y - Math.sin(angle) * length;
+  const perpX = -Math.sin(angle) * width / 2;
+  const perpY = Math.cos(angle) * width / 2;
   return [
     `M ${x} ${y}`,
-    `L ${x + Math.cos(left) * length} ${y + Math.sin(left) * length}`,
-    `L ${x + Math.cos(right) * length} ${y + Math.sin(right) * length}`,
+    `L ${baseX + perpX} ${baseY + perpY}`,
+    `L ${baseX - perpX} ${baseY - perpY}`,
     'Z',
   ].join(' ');
 }
 
-function straightArrow(width: number, doubleEnded = false): ShapeGeometry {
+function straightArrow(width: number, height: number, doubleEnded = false): ShapeGeometry {
   const x1 = -width / 2, x2 = width / 2;
-  const head = Math.max(10, Math.min(width * 0.22, 32));
+  const headLength = Math.max(10, Math.min(width * 0.22, 32));
+  const headWidth = Math.max(8, Math.min(height * 0.9, 64));
   const strokePath = `M ${x1} 0 L ${x2} 0`;
-  const end = arrowHead(x2, 0, 0, head, head * 0.8);
+  const end = arrowHead(x2, 0, 0, headLength, headWidth);
   if (!doubleEnded) return { strokePath, fillPath: end };
   return {
     strokePath,
-    fillPath: `${end} ${arrowHead(x1, 0, Math.PI, head, head * 0.8)}`,
+    fillPath: `${end} ${arrowHead(x1, 0, Math.PI, headLength, headWidth)}`,
   };
 }
 
@@ -40,9 +43,11 @@ function curvedArrow(width: number, height: number, curve: number): ShapeGeometr
   const tangentX = x2 - 0;
   const tangentY = 0 - controlY;
   const angle = Math.atan2(tangentY, tangentX);
+  const headLength = Math.max(10, Math.min(width * 0.2, 32));
+  const headWidth = Math.max(8, Math.min(height * 0.5, 48));
   return {
     strokePath: `M ${x1} 0 Q 0 ${controlY} ${x2} 0`,
-    fillPath: arrowHead(tipX, tipY, angle, Math.max(10, Math.min(width * 0.2, 32)), 1),
+    fillPath: arrowHead(tipX, tipY, angle, headLength, headWidth),
   };
 }
 
@@ -52,7 +57,13 @@ function elbowArrow(width: number, height: number): ShapeGeometry {
   const y = height * 0.28;
   return {
     strokePath: `M ${x1} ${y} L 0 ${y} L 0 ${-y} L ${x2} ${-y}`,
-    fillPath: arrowHead(x2, -y, 0, Math.max(10, Math.min(width * 0.2, 32)), 1),
+    fillPath: arrowHead(
+      x2,
+      -y,
+      0,
+      Math.max(10, Math.min(width * 0.2, 32)),
+      Math.max(8, Math.min(height * 0.5, 48)),
+    ),
   };
 }
 
@@ -97,8 +108,8 @@ export function getShapeGeometry(
   curve = 0.35,
 ): ShapeGeometry {
   switch (kind) {
-    case 'arrow': return straightArrow(width);
-    case 'double-arrow': return straightArrow(width, true);
+    case 'arrow': return straightArrow(width, height);
+    case 'double-arrow': return straightArrow(width, height, true);
     case 'curved-arrow': return curvedArrow(width, height, curve);
     case 'elbow-arrow': return elbowArrow(width, height);
     case 'block-arrow': return blockArrow(width, height);

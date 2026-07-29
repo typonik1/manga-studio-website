@@ -1,4 +1,4 @@
-import type { AiRasterLayer, ImageDocument, MaskElement, PerspectiveQuad, StrokeData } from '@/types';
+import type { AiRasterLayer, ImageDocument, LayerReference, MaskElement, PerspectiveQuad, StrokeData } from '@/types';
 import { resolveLayerOrder } from './layerOrder';
 import { drawBrushStroke } from './brushRaster';
 import { drawPerspectiveImage, isValidPerspectiveQuad, mapDocumentPointToLayerPoint } from './perspective';
@@ -267,35 +267,60 @@ export function drawPlacedLayer(
   ctx.restore();
 }
 
+export async function drawRasterReferenceToContext(
+  ctx: CanvasRenderingContext2D,
+  doc: ImageDocument,
+  ref: Extract<LayerReference, { type: 'base' | 'ai' }>,
+): Promise<void> {
+  if (ref.type === 'base') {
+    const replacing = [...(doc.aiLayers ?? [])].reverse().find(layer => layer.visible && layer.replacesBase);
+    if (replacing || doc.baseLayer?.visible === false) return;
+    const base = await buildBaseCanvas(doc);
+    const state = doc.baseLayer;
+    drawPlacedLayer(ctx, base, {
+      x: state?.x,
+      y: state?.y,
+      scaleX: state?.scaleX,
+      scaleY: state?.scaleY,
+      rotation: state?.rotation,
+      crop: state?.crop,
+      opacity: state?.opacity ?? 1,
+      perspective: state?.perspective,
+    }, doc.width, doc.height);
+    return;
+  }
+
+  const layer = (doc.aiLayers ?? []).find(item => item.id === ref.id);
+  if (!layer || !layer.visible) return;
+  try {
+    const image = await buildRasterLayerCanvas(layer, doc.width, doc.height);
+    drawPlacedLayer(ctx, image, {
+      x: layer.x,
+      y: layer.y,
+      scaleX: layer.scaleX,
+      scaleY: layer.scaleY,
+      rotation: layer.rotation,
+      crop: layer.crop,
+      opacity: layer.opacity,
+      perspective: layer.perspective,
+    }, doc.width, doc.height);
+  } catch {
+    // Optional pasted/AI layers may reference a missing local blob. Keep the
+    // rest of the document compositable instead of failing every export/action.
+  }
+}
+
 export async function buildCleanupSourceCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   canvas.width = doc.width;
   canvas.height = doc.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas недоступен.');
-  const replacing = [...(doc.aiLayers ?? [])].reverse().find(layer => layer.visible && layer.replacesBase);
-  const baseVisible = doc.baseLayer?.visible !== false;
   // Follow the document's unified z-order so previews, exports and AI sources match.
   const order = resolveLayerOrder(doc);
   for (const ref of order) {
-    if (ref.type === 'base') {
-      if (replacing || !baseVisible) continue;
-      const base = await buildBaseCanvas(doc);
-      const state = doc.baseLayer;
-      drawPlacedLayer(ctx, base, {
-        x: state?.x, y: state?.y, scaleX: state?.scaleX, scaleY: state?.scaleY, rotation: state?.rotation,
-        crop: state?.crop, opacity: state?.opacity ?? 1, perspective: state?.perspective,
-      }, doc.width, doc.height);
-    } else if (ref.type === 'ai') {
-      const layer = (doc.aiLayers ?? []).find(item => item.id === ref.id);
-      if (!layer || !layer.visible) continue;
-      try {
-        const image = await buildRasterLayerCanvas(layer, doc.width, doc.height);
-        drawPlacedLayer(ctx, image, {
-          x: layer.x, y: layer.y, scaleX: layer.scaleX, scaleY: layer.scaleY, rotation: layer.rotation,
-          crop: layer.crop, opacity: layer.opacity, perspective: layer.perspective,
-        }, doc.width, doc.height);
-      } catch { /* ignore broken optional layers */ }
+    if (ref.type === 'base' || ref.type === 'ai') {
+      await drawRasterReferenceToContext(ctx, doc, ref);
     }
     // text/watermark/shape refs are not part of the cleanup source.
   }

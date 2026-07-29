@@ -3,6 +3,7 @@ import {
   clonePaintStyle,
   normalizeGlowStyle,
   normalizePaintStyle,
+  normalizeStrokePaintStyle,
 } from '@/utils/objectPaint';
 
 describe('normalizePaintStyle', () => {
@@ -42,6 +43,29 @@ describe('normalizePaintStyle', () => {
     expect(clone).toEqual(source);
     expect(clone).not.toBe(source);
     if (clone.type === 'linear') expect(clone.stops).not.toBe(source.stops);
+  });
+});
+
+describe('normalizeStrokePaintStyle', () => {
+  it('converts radial strokes to a matching linear gradient', () => {
+    const result = normalizeStrokePaintStyle({
+      type: 'radial',
+      centerX: 0.5,
+      centerY: 0.5,
+      radius: 1,
+      stops: [
+        { id: 'a', offset: 0, color: '#000000' },
+        { id: 'b', offset: 1, color: '#ffffff' },
+      ],
+    }, '#ff0000');
+    expect(result).toEqual({
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { id: 'a', offset: 0, color: '#000000' },
+        { id: 'b', offset: 1, color: '#ffffff' },
+      ],
+    });
   });
 });
 

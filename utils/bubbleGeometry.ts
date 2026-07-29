@@ -16,6 +16,10 @@ export interface BubbleGeometryParams {
   tailWidth?: number;
 }
 
+export function bubbleSupportsTail(kind: BubbleKind): boolean {
+  return kind !== 'narration' && kind !== 'caption';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tail constraint helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -409,7 +413,7 @@ export function getBubblePath(kind: BubbleKind, params: BubbleGeometryParams, op
     case 'speech':    return speechBubblePath(params, resolvedTail);
     case 'whisper':   return speechBubblePath(params, resolvedTail); // styled differently outside
     case 'thought':   return thoughtBubblePath(params);
-    case 'scream':    return screamBubblePath(params, opts);
+    case 'scream':    return appendTail(screamBubblePath(params, opts), params, resolvedTail);
     case 'narration': return narrationPath(params, opts?.cornerRadius);
     case 'soft':      return appendTail(softSuperellipsePath(params), params, resolvedTail);
     case 'cloud':     return appendTail(cloudPath(params), params, resolvedTail);

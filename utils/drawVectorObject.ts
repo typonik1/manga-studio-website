@@ -5,7 +5,11 @@ import type {
   ShapeObject,
 } from '@/types';
 import { getBubblePath, getThoughtTailCircles } from '@/utils/bubbleGeometry';
-import { createCanvasPaint, normalizeGlowStyle } from '@/utils/objectPaint';
+import {
+  createCanvasPaint,
+  normalizeGlowStyle,
+  normalizeStrokePaintStyle,
+} from '@/utils/objectPaint';
 import { getShapeGeometry } from '@/utils/shapeGeometry';
 import { isOpenShape } from '@/utils/shapePresets';
 
@@ -57,7 +61,10 @@ function drawPaintedPath(
       if (stroke) {
         ctx.strokeStyle = createCanvasPaint(
           ctx,
-          options.strokeStyle ?? { type: 'solid', color: options.fallbackStroke || '#000000' },
+          normalizeStrokePaintStyle(
+            options.strokeStyle,
+            options.fallbackStroke || '#000000',
+          ),
           bounds,
           options.fallbackStroke || '#000000',
         );
@@ -80,7 +87,10 @@ function drawPaintedPath(
   if (stroke) {
     ctx.strokeStyle = createCanvasPaint(
       ctx,
-      options.strokeStyle ?? { type: 'solid', color: options.fallbackStroke || '#000000' },
+      normalizeStrokePaintStyle(
+        options.strokeStyle,
+        options.fallbackStroke || '#000000',
+      ),
       bounds,
       options.fallbackStroke || '#000000',
     );

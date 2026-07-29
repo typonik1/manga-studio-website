@@ -1,4 +1,5 @@
 import type { AiRasterLayer, CropRect } from '@/types';
+import { useStore } from '@/store/useStore';
 
 export interface PastedImageInfo {
   src: string;
@@ -71,4 +72,94 @@ export function createPastedImageLayer(
     scaleY: 1,
     rotation: 0,
   };
+}
+
+export function shouldKeepNativePaste(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const tag = target.tagName.toUpperCase();
+  return tag === 'INPUT'
+    || tag === 'TEXTAREA'
+    || tag === 'SELECT'
+    || (target as HTMLElement).isContentEditable
+    || (target as HTMLElement).contentEditable === 'true'
+    || target.getAttribute('contenteditable') === 'true';
+}
+
+export function extractClipboardImageFiles(data: DataTransfer): File[] {
+  const files: File[] = [];
+  const seen = new Set<string>();
+  const add = (file: File | null) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    const key = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+  for (const file of Array.from(data.files ?? [])) add(file);
+  for (const item of Array.from(data.items ?? [])) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) add(item.getAsFile());
+  }
+  return files;
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Не удалось прочитать ${file.name || 'изображение'}.`));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Не удалось декодировать вставленное изображение.'));
+    image.src = src;
+  });
+}
+
+export async function decodePastedImage(file: File): Promise<PastedImageInfo> {
+  const src = await fileToDataUrl(file);
+  const image = await loadImage(src);
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  if (!width || !height) throw new Error('Вставленное изображение имеет нулевой размер.');
+  return { src, width, height, name: file.name || undefined };
+}
+
+export async function pasteExternalImagesAsLayers(
+  files: File[],
+  documentId: string,
+): Promise<string[]> {
+  const store = useStore.getState();
+  const doc = store.documents.find(item => item.id === documentId);
+  if (!doc) throw new Error('Активная страница не найдена.');
+  const ids: string[] = [];
+
+  for (let index = 0; index < files.length; index++) {
+    const decoded = await decodePastedImage(files[index]);
+    const image = await loadImage(decoded.src);
+    const crop = planPastedImagePlacement(doc.width, doc.height, decoded.width, decoded.height, index);
+    const canvas = document.createElement('canvas');
+    canvas.width = doc.width;
+    canvas.height = doc.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas недоступен для вставки изображения.');
+    ctx.drawImage(
+      image,
+      crop.x * doc.width,
+      crop.y * doc.height,
+      crop.width * doc.width,
+      crop.height * doc.height,
+    );
+    const layer = createPastedImageLayer(doc, {
+      ...decoded,
+      src: canvas.toDataURL('image/png'),
+    }, index);
+    store.addAiLayer(doc.id, layer);
+    ids.push(layer.id);
+  }
+  return ids;
 }

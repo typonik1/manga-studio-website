@@ -23,6 +23,11 @@ import { getShapeGeometry } from '@/utils/shapeGeometry';
 import { isOpenShape } from '@/utils/shapePresets';
 import { normalizeGlowStyle, toKonvaPaintProps } from '@/utils/objectPaint';
 import { PaintedShape } from './PaintedShape';
+import {
+  extractClipboardImageFiles,
+  pasteExternalImagesAsLayers,
+  shouldKeepNativePaste,
+} from '@/utils/pastedImageLayers';
 
 const MAX_PREVIEW_SIDE = 1800;
 
@@ -1595,17 +1600,15 @@ export function CanvasArea() {
   // 1) A fragment copied with Ctrl+C from a selection is inserted as a NEW
   //    LAYER of the active document (not as a new page).
   // 2) Image files copied from the desktop, Finder/Explorer or another image
-  //    editor are still added as new pages. Text clipboard contents are left
-  //    untouched so normal text inputs and browser shortcuts keep their
-  //    native behaviour.
+  //    editor become NEW LAYERS when a page is open. With no page they create
+  //    a new document. Text inputs keep native paste behaviour.
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
       const data = event.clipboardData;
       if (!data) return;
-      const target = event.target as HTMLElement | null;
       // Keep native paste behaviour in text fields (including the inline text
       // editor); image paste is intended for the canvas/workspace itself.
-      if (target?.isContentEditable || (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      if (shouldKeepNativePaste(event.target)) return;
 
       // Our own copied selection fragment → paste as a new layer in place.
       const store = useStore.getState();
@@ -1619,17 +1622,23 @@ export function CanvasArea() {
         return;
       }
 
-      const files = Array.from(data.files).filter(file => file.type.startsWith('image/'));
-      if (files.length === 0) {
-        for (const item of Array.from(data.items)) {
-          if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
-          const file = item.getAsFile();
-          if (file) files.push(file);
-        }
-      }
+      const files = extractClipboardImageFiles(data);
       if (files.length === 0) return;
       event.preventDefault();
-      void handleFiles(files);
+      if (hasDoc) {
+        const activeDoc = store.documents[store.activeDocIndex];
+        void pasteExternalImagesAsLayers(files, activeDoc.id)
+          .then(ids => setClipboardInfo(ids.length > 1
+            ? `Вставлено слоёв: ${ids.length}`
+            : 'Изображение вставлено новым слоем'))
+          .catch(error => {
+            const message = error instanceof Error ? error.message : 'Не удалось вставить изображение.';
+            setClipboardInfo(message);
+            console.warn('[v0] pasteExternalImagesAsLayers:', error);
+          });
+      } else {
+        void handleFiles(files);
+      }
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);

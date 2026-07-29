@@ -235,11 +235,11 @@ export interface AppState {
   deleteText: (id: string) => void;
   restorePageSourceText: () => void;
   addShape: (shape: ShapeObject) => void;
-  updateShape: (id: string, updates: Partial<ShapeObject>) => void;
+  updateShape: (id: string, updates: Partial<ShapeObject>, options?: { history?: boolean }) => void;
   deleteShape: (id: string) => void;
   updateShapeSettings: (updates: Partial<ShapeSettings>) => void;
   addBubble: (bubble: BubbleObject) => void;
-  updateBubble: (id: string, updates: Partial<BubbleObject>) => void;
+  updateBubble: (id: string, updates: Partial<BubbleObject>, options?: { history?: boolean }) => void;
   deleteBubble: (id: string) => void;
   duplicateBubble: (id: string) => void;
   addCustomFont: (name: string) => void;
@@ -918,11 +918,13 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs, selectedObject: { id: shape.id, type: 'shape' } };
     }),
 
-  updateShape: (id, updates) =>
+  updateShape: (id, updates, options) =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
-      const doc = { ...docs[state.activeDocIndex] };
+      const doc = options?.history
+        ? withHistory(docs[state.activeDocIndex])
+        : { ...docs[state.activeDocIndex], hasChanges: true };
       doc.shapes = (doc.shapes ?? []).flatMap(s => {
         if (s.id !== id) return [s];
         const sanitized = sanitizeShape({ ...s, ...updates });
@@ -954,11 +956,13 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs, selectedObject: { id: bubble.id, type: 'bubble' as const } };
     }),
 
-  updateBubble: (id, updates) =>
+  updateBubble: (id, updates, options) =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
-      const doc = withHistory(docs[state.activeDocIndex]);
+      const doc = options?.history === false
+        ? { ...docs[state.activeDocIndex], hasChanges: true }
+        : withHistory(docs[state.activeDocIndex]);
       docs[state.activeDocIndex] = { ...doc, bubbles: (doc.bubbles ?? []).map(b => b.id === id ? { ...b, ...updates } : b) };
       return { documents: docs };
     }),
@@ -981,7 +985,17 @@ export const useStore = create<AppState>((set, get) => ({
       const source = (doc.bubbles ?? []).find(b => b.id === id);
       if (!source) return {};
       const newId = `bubble-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const newBubble = { ...source, id: newId, x: Math.min(0.95, source.x + 0.05), y: Math.min(0.95, source.y + 0.05) };
+      const newBubble = {
+        ...source,
+        id: newId,
+        x: Math.min(0.95, source.x + 0.05),
+        y: Math.min(0.95, source.y + 0.05),
+        fillStyle: source.fillStyle ? clonePaintStyle(source.fillStyle) : undefined,
+        strokeStyle: source.strokeStyle ? clonePaintStyle(source.strokeStyle) : undefined,
+        glow: source.glow ? cloneGlowStyle(source.glow) : undefined,
+        text: { ...source.text },
+        tail: source.tail ? { ...source.tail } : null,
+      };
       const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id: newId }];
       docs[state.activeDocIndex] = { ...doc, bubbles: [...(doc.bubbles ?? []), newBubble], layerOrder: newLayerOrder };
       return { documents: docs, selectedObject: { id: newId, type: 'bubble' as const } };

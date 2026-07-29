@@ -259,7 +259,10 @@ export function PaintEditor({
             <input
               type="checkbox"
               checked={currentGlow.enabled}
-              onChange={event => onGlowChange({ ...currentGlow, enabled: event.target.checked })}
+              onChange={event => {
+                onGestureStart?.();
+                onGlowChange({ ...currentGlow, enabled: event.target.checked });
+              }}
             />
             Неон
           </label>
@@ -269,6 +272,7 @@ export function PaintEditor({
                 aria-label="Цвет неона"
                 type="color"
                 value={currentGlow.color.startsWith('#') ? currentGlow.color.slice(0, 7) : '#00e5ff'}
+                onPointerDown={() => onGestureStart?.()}
                 onChange={event => onGlowChange({ ...currentGlow, color: event.target.value })}
                 style={{ width: 32, height: 22, padding: 0 }}
               />
@@ -278,6 +282,7 @@ export function PaintEditor({
                 min={0}
                 max={120}
                 value={currentGlow.blur}
+                onPointerDown={() => onGestureStart?.()}
                 onChange={event => onGlowChange({ ...currentGlow, blur: Number(event.target.value) })}
                 style={{ flex: 1 }}
               />

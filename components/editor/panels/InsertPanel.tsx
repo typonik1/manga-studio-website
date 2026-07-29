@@ -39,7 +39,7 @@ export function InsertPanel() {
     activeDocIndex, documents,
     addWatermark, addShape, updateShape,
     shapeSettings, updateShapeSettings,
-    selectedObject, setSelectedObject,
+    selectedObject, setSelectedObject, pushHistory,
   } = useStore();
   const overlayInputRef = useRef<HTMLInputElement>(null);
 
@@ -61,8 +61,8 @@ export function InsertPanel() {
     curve: selectedShape.curve ?? 0.35,
   } : shapeSettings;
 
-  function updateCurrentSettings(updates: Partial<ShapeSettings>) {
-    if (selectedShape) updateShape(selectedShape.id, updates);
+  function updateCurrentSettings(updates: Partial<ShapeSettings>, options?: { history?: boolean }) {
+    if (selectedShape) updateShape(selectedShape.id, updates, { history: options?.history ?? true });
     else updateShapeSettings(updates);
   }
 
@@ -254,21 +254,23 @@ export function InsertPanel() {
           label="Стиль заливки"
           value={currentSettings.fillStyle}
           glow={currentSettings.glow}
+          onGestureStart={selectedShape ? pushHistory : undefined}
           onChange={paint => updateCurrentSettings({
             fillStyle: paint,
             ...(paint.type === 'solid' ? { fill: paint.color === 'transparent' ? '' : paint.color } : {}),
-          })}
-          onGlowChange={glow => updateCurrentSettings({ glow })}
+          }, { history: false })}
+          onGlowChange={glow => updateCurrentSettings({ glow }, { history: false })}
         />
 
         <PaintEditor
           label="Стиль обводки"
           value={currentSettings.strokeStyle}
           allowRadial={false}
+          onGestureStart={selectedShape ? pushHistory : undefined}
           onChange={paint => updateCurrentSettings({
             strokeStyle: paint,
             ...(paint.type === 'solid' ? { stroke: paint.color } : {}),
-          })}
+          }, { history: false })}
         />
 
         <div>

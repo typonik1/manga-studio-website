@@ -221,7 +221,7 @@ function SliderRow({
 // Main panel
 // ─────────────────────────────────────────────────────────────────────────────
 export function BubblePanel() {
-  const { activeDocIndex, documents, selectedObject, addBubble, updateBubble } = useStore();
+  const { activeDocIndex, documents, selectedObject, addBubble, updateBubble, pushHistory } = useStore();
 
   const hasDoc    = activeDocIndex >= 0;
   const activeDoc = hasDoc ? documents[activeDocIndex] : null;
@@ -332,20 +332,22 @@ export function BubblePanel() {
               label="Стиль заливки"
               value={selectedBubble.fillStyle ?? { type: 'solid', color: selectedBubble.fill }}
               glow={selectedBubble.glow}
+              onGestureStart={pushHistory}
               onChange={style => updateBubble(selectedBubble.id, {
                 fillStyle: style,
                 ...(style.type === 'solid' ? { fill: style.color } : {}),
-              })}
-              onGlowChange={glow => updateBubble(selectedBubble.id, { glow })}
+              }, { history: false })}
+              onGlowChange={glow => updateBubble(selectedBubble.id, { glow }, { history: false })}
             />
             <PaintEditor
               label="Стиль обводки"
               value={selectedBubble.strokeStyle ?? { type: 'solid', color: selectedBubble.stroke }}
               allowRadial={false}
+              onGestureStart={pushHistory}
               onChange={style => updateBubble(selectedBubble.id, {
                 strokeStyle: style,
                 ...(style.type === 'solid' ? { stroke: style.color } : {}),
-              })}
+              }, { history: false })}
             />
           </div>
 

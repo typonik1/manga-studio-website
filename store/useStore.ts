@@ -32,6 +32,7 @@ import type {
 import { DEFAULT_ANIME_FONT, DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
 import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
 import { clonePerspectiveQuad } from '@/utils/perspective';
+import { cloneGlowStyle, clonePaintStyle } from '@/utils/objectPaint';
 import { storeDefaultTranslationFont } from '@/utils/fonts';
 
 const MAX_HISTORY = 40;
@@ -92,6 +93,11 @@ const defaultShapeSettings: ShapeSettings = {
   strokeWidth: 4,
   opacity: 1,
   cornerRadius: 0,
+  fillStyle: { type: 'solid', color: '#ffffff' },
+  strokeStyle: { type: 'solid', color: '#000000' },
+  glow: { enabled: false, color: '#00e5ff', blur: 24, opacity: 0.8, intensity: 1 },
+  lineStyle: 'solid',
+  curve: 0.35,
 };
 
 function cloneElements(elements: MaskElement[] | undefined): MaskElement[] {
@@ -122,8 +128,20 @@ function snap(doc: ImageDocument): HistorySnapshot {
     selectedLayer: doc.selectedLayer ? { ...doc.selectedLayer } : null,
     watermarks: doc.watermarks.map(w => ({ ...w })),
     texts: doc.texts.map(t => ({ ...t })),
-    shapes: (doc.shapes ?? []).map(s => ({ ...s })),
-    bubbles: (doc.bubbles ?? []).map(b => ({ ...b, text: { ...b.text }, tail: b.tail ? { ...b.tail } : null })),
+    shapes: (doc.shapes ?? []).map(s => ({
+      ...s,
+      fillStyle: s.fillStyle ? clonePaintStyle(s.fillStyle) : undefined,
+      strokeStyle: s.strokeStyle ? clonePaintStyle(s.strokeStyle) : undefined,
+      glow: s.glow ? cloneGlowStyle(s.glow) : undefined,
+    })),
+    bubbles: (doc.bubbles ?? []).map(b => ({
+      ...b,
+      fillStyle: b.fillStyle ? clonePaintStyle(b.fillStyle) : undefined,
+      strokeStyle: b.strokeStyle ? clonePaintStyle(b.strokeStyle) : undefined,
+      glow: b.glow ? cloneGlowStyle(b.glow) : undefined,
+      text: { ...b.text },
+      tail: b.tail ? { ...b.tail } : null,
+    })),
     layerOrder: (doc.layerOrder ?? []).map(ref => ({ ...ref })),
   };
 }

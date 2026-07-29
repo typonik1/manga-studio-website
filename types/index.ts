@@ -362,6 +362,11 @@ export interface ShapeSettings {
   strokeWidth: number;
   opacity: number;
   cornerRadius: number;
+  fillStyle: PaintStyle;
+  strokeStyle: PaintStyle;
+  glow: GlowStyle;
+  lineStyle: 'solid' | 'dashed' | 'dotted';
+  curve: number;
 }
 
 export interface WatermarkSettings {

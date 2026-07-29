@@ -74,6 +74,17 @@ describe('vector export renderer', () => {
     expect(ctx.calls.filter(call => call === 'fill').length).toBeGreaterThan(1);
   });
 
+  it('draws a closed shape stroke only once when glow is disabled', () => {
+    const ctx = recordingContext();
+    drawShapeToContext(ctx as unknown as CanvasRenderingContext2D, createShapeFromSettings('rect', {
+      ...settings,
+      fillStyle: { type: 'solid', color: '#ffffff' },
+      glow: { ...settings.glow, enabled: false },
+      lineStyle: 'solid',
+    }), 1000, 800);
+    expect(ctx.calls.filter(call => call === 'stroke')).toHaveLength(1);
+  });
+
   it('draws every decorative bubble kind without invalid state', () => {
     for (const kind of ['soft', 'cloud', 'comic', 'electric', 'caption'] as const) {
       const ctx = recordingContext();

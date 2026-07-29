@@ -186,15 +186,6 @@ export function drawShapeToContext(
       glow: shape.glow,
     });
   }
-  if (paths.strokePath && !open && paths.fillPath) {
-    drawPaintedPath(ctx, new Path2D(paths.strokePath), bounds, {
-      strokeStyle,
-      fallbackStroke: shape.stroke,
-      strokeWidth: shape.strokeWidth,
-      glow: shape.glow,
-      fill: false,
-    });
-  }
   ctx.setLineDash([]);
   ctx.restore();
 }

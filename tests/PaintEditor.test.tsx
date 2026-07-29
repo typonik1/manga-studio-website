@@ -38,15 +38,92 @@ describe('PaintEditor', () => {
     }));
   });
 
+  it('moves a gradient stop directly on the preview bar', () => {
+    const onChange = vi.fn();
+    const onGestureStart = vi.fn();
+    const value = {
+      type: 'linear' as const,
+      angle: 0,
+      stops: [
+        { id: 'a', offset: 0.2, color: '#000000' },
+        { id: 'b', offset: 1, color: '#ffffff' },
+      ],
+    };
+    render(
+      <PaintEditor
+        label="Заливка"
+        value={value}
+        onGestureStart={onGestureStart}
+        onChange={onChange}
+      />,
+    );
+    const bar = screen.getByRole('button', { name: 'Добавить точку градиента' });
+    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 200,
+      bottom: 38,
+      width: 200,
+      height: 38,
+      toJSON: () => ({}),
+    });
+    const stop = screen.getByRole('button', { name: 'Точка градиента 20%' });
+    fireEvent.pointerDown(stop, { pointerId: 1, clientX: 40 });
+    fireEvent.pointerMove(stop, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerUp(stop, { pointerId: 1, clientX: 150 });
+
+    expect(onGestureStart).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      stops: expect.arrayContaining([expect.objectContaining({ id: 'a', offset: 0.75 })]),
+    }));
+  });
+
+  it('edits radial gradient center and radius', () => {
+    const onChange = vi.fn();
+    const value = {
+      type: 'radial' as const,
+      centerX: 0.5,
+      centerY: 0.5,
+      radius: 1,
+      stops: [
+        { id: 'a', offset: 0, color: '#ffffff' },
+        { id: 'b', offset: 1, color: '#000000' },
+      ],
+    };
+    render(<PaintEditor label="Заливка" value={value} onChange={onChange} />);
+
+    fireEvent.change(screen.getByLabelText('Центр градиента X'), { target: { value: '70' } });
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ centerX: 0.7 }));
+
+    fireEvent.change(screen.getByLabelText('Радиус градиента'), { target: { value: '125' } });
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ radius: 1.25 }));
+  });
+
   it('saves and applies a custom preset', () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('Мой неон');
     const onChange = vi.fn();
     render(<PaintEditor label="Заливка" value={solid} onChange={onChange} />);
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить градиент' }));
+    fireEvent.change(screen.getByLabelText('Название градиента'), { target: { value: 'Мой неон' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить пресет' }));
     const preset = screen.getByTitle('Мой неон');
     expect(preset).toBeTruthy();
     fireEvent.click(preset);
     expect(onChange).toHaveBeenCalledWith(solid);
+  });
+
+  it('renames a custom preset without a browser prompt', () => {
+    render(<PaintEditor label="Заливка" value={solid} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить градиент' }));
+    fireEvent.change(screen.getByLabelText('Название градиента'), { target: { value: 'Старое имя' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить пресет' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Переименовать Старое имя' }));
+    fireEvent.change(screen.getByLabelText('Название градиента'), { target: { value: 'Новое имя' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить пресет' }));
+
+    expect(screen.getByTitle('Новое имя')).toBeTruthy();
+    expect(screen.queryByTitle('Старое имя')).toBeNull();
   });
 
   it('toggles neon and reports the glow update', () => {

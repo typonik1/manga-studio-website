@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GlowStyle, GradientPreset, PaintStyle } from '@/types';
 import {
   clonePaintStyle,
@@ -45,6 +45,13 @@ export function PaintEditor({
 }: PaintEditorProps) {
   const [selectedStopId, setSelectedStopId] = useState<string | null>(null);
   const [presets, setPresets] = useState<GradientPreset[]>([]);
+  const [presetEditor, setPresetEditor] = useState<{
+    mode: 'save' | 'rename';
+    name: string;
+    presetId?: string;
+  } | null>(null);
+  const gradientBarRef = useRef<HTMLDivElement | null>(null);
+  const draggingStopIdRef = useRef<string | null>(null);
   const storage = useMemo(() => getBrowserPresetStorage(), []);
   const paint = normalizePaintStyle(value, '#ffffff');
   const stops = paint.type === 'solid' ? [] : paint.stops;
@@ -115,11 +122,45 @@ export function PaintEditor({
     addStop((event.clientX - rect.left) / Math.max(1, rect.width));
   };
 
+  const handleStopPointerDown = (event: React.PointerEvent<HTMLButtonElement>, id: string) => {
+    event.stopPropagation();
+    setSelectedStopId(id);
+    draggingStopIdRef.current = id;
+    onGestureStart?.();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {}
+  };
+
+  const handleStopPointerMove = (event: React.PointerEvent<HTMLButtonElement>, id: string) => {
+    if (draggingStopIdRef.current !== id) return;
+    const rect = gradientBarRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    updateStop(id, { offset: (event.clientX - rect.left) / Math.max(1, rect.width) });
+  };
+
+  const finishStopDrag = (event: React.PointerEvent<HTMLButtonElement>, id: string) => {
+    if (draggingStopIdRef.current !== id) return;
+    draggingStopIdRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {}
+  };
+
   const saveCurrent = () => {
-    const name = typeof window !== 'undefined' ? window.prompt('Название градиента', 'Мой градиент') : null;
+    setPresetEditor({ mode: 'save', name: 'Мой градиент' });
+  };
+
+  const commitPresetEditor = () => {
+    if (!presetEditor) return;
+    const name = presetEditor.name.trim();
     if (!name) return;
-    const next = saveGradientPreset(storage, presets, name, paint);
-    setPresets(next);
+    if (presetEditor.mode === 'rename' && presetEditor.presetId) {
+      setPresets(renameGradientPreset(storage, presets, presetEditor.presetId, name));
+    } else {
+      setPresets(saveGradientPreset(storage, presets, name, paint));
+    }
+    setPresetEditor(null);
   };
 
   const applyPreset = (preset: GradientPreset) => {
@@ -128,12 +169,11 @@ export function PaintEditor({
   };
 
   const renamePreset = (preset: GradientPreset) => {
-    const name = typeof window !== 'undefined' ? window.prompt('Новое название', preset.name) : null;
-    if (!name) return;
-    setPresets(renameGradientPreset(storage, presets, preset.id, name));
+    setPresetEditor({ mode: 'rename', presetId: preset.id, name: preset.name });
   };
 
   const removePreset = (preset: GradientPreset) => {
+    if (presetEditor?.presetId === preset.id) setPresetEditor(null);
     setPresets(deleteGradientPreset(storage, presets, preset.id));
   };
 
@@ -171,6 +211,7 @@ export function PaintEditor({
       ) : (
         <>
           <div
+            ref={gradientBarRef}
             role="button"
             tabIndex={0}
             aria-label="Добавить точку градиента"
@@ -189,13 +230,17 @@ export function PaintEditor({
                 type="button"
                 aria-label={`Точка градиента ${Math.round(stop.offset * 100)}%`}
                 onClick={event => { event.stopPropagation(); setSelectedStopId(stop.id); }}
+                onPointerDown={event => handleStopPointerDown(event, stop.id)}
+                onPointerMove={event => handleStopPointerMove(event, stop.id)}
+                onPointerUp={event => finishStopDrag(event, stop.id)}
+                onPointerCancel={event => finishStopDrag(event, stop.id)}
                 style={{
                   position: 'absolute', left: `${stop.offset * 100}%`, top: '50%',
                   width: 15, height: 15, padding: 0, borderRadius: '50%',
                   transform: 'translate(-50%, -50%)',
                   border: selectedStop?.id === stop.id ? '2px solid #fff' : '1px solid #333',
                   background: stop.color, boxShadow: '0 0 0 1px rgba(0,0,0,.35)',
-                  cursor: 'pointer',
+                  cursor: 'ew-resize',
                 }}
               />
             ))}
@@ -250,6 +295,38 @@ export function PaintEditor({
               {Math.round(paint.angle)}°
             </label>
           )}
+          {paint.type === 'radial' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {([
+                ['Центр X', 'Центр градиента X', 'centerX', paint.centerX * 100, 0, 100, '%'],
+                ['Центр Y', 'Центр градиента Y', 'centerY', paint.centerY * 100, 0, 100, '%'],
+                ['Радиус', 'Радиус градиента', 'radius', paint.radius * 100, 5, 200, '%'],
+              ] as const).map(([caption, ariaLabel, property, value, min, max, suffix]) => (
+                <label
+                  key={property}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--text-muted)' }}
+                >
+                  <span style={{ width: 48 }}>{caption}</span>
+                  <input
+                    aria-label={ariaLabel}
+                    type="range"
+                    min={min}
+                    max={max}
+                    value={Math.round(value)}
+                    onPointerDown={() => onGestureStart?.()}
+                    onChange={event => update({
+                      ...paint,
+                      [property]: Number(event.target.value) / 100,
+                    })}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ width: 34, textAlign: 'right' }}>
+                    {Math.round(value)}{suffix}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
         </>
       )}
 
@@ -292,6 +369,52 @@ export function PaintEditor({
       )}
 
       <PanelButton onClick={saveCurrent} fullWidth>Сохранить градиент</PanelButton>
+      {presetEditor && (
+        <form
+          onSubmit={event => {
+            event.preventDefault();
+            commitPresetEditor();
+          }}
+          style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+        >
+          <input
+            autoFocus
+            aria-label="Название градиента"
+            value={presetEditor.name}
+            maxLength={48}
+            onChange={event => setPresetEditor({ ...presetEditor, name: event.target.value })}
+            onKeyDown={event => {
+              if (event.key === 'Escape') setPresetEditor(null);
+            }}
+            style={{
+              minWidth: 0,
+              flex: 1,
+              padding: '5px 7px',
+              borderRadius: 4,
+              border: '1px solid var(--border-default)',
+              background: 'var(--bg-panel-raised)',
+              color: 'var(--text-primary)',
+              fontSize: 11,
+            }}
+          />
+          <button
+            type="submit"
+            aria-label="Сохранить пресет"
+            disabled={!presetEditor.name.trim()}
+            style={{ padding: '4px 7px' }}
+          >
+            ✓
+          </button>
+          <button
+            type="button"
+            aria-label="Отменить редактирование пресета"
+            onClick={() => setPresetEditor(null)}
+            style={{ padding: '4px 7px' }}
+          >
+            ×
+          </button>
+        </form>
+      )}
       {presets.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {presets.map(preset => (
@@ -299,6 +422,7 @@ export function PaintEditor({
               <button
                 type="button"
                 title={preset.name}
+                aria-label={`Применить градиент ${preset.name}`}
                 onClick={() => applyPreset(preset)}
                 style={{
                   width: 58, height: 22, borderRadius: 4, border: '1px solid var(--border-default)',

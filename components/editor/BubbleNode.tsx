@@ -1,15 +1,25 @@
 'use client';
 
 import { useRef, useEffect, useCallback } from 'react';
-import { Group, Path, Circle, Text as KonvaText, Transformer } from 'react-konva';
+import { Group, Circle, Text as KonvaText, Transformer } from 'react-konva';
 import Konva from 'konva';
 import type { BubbleObject, BubbleTail } from '@/types';
 import { getBubblePath, resolveTail, tailTipPixels, migrateTail, getThoughtTailCircles } from '@/utils/bubbleGeometry';
+import { PaintedShape } from './PaintedShape';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+function circlePath(cx: number, cy: number, radius: number) {
+  return [
+    `M ${cx + radius} ${cy}`,
+    `A ${radius} ${radius} 0 1 0 ${cx - radius} ${cy}`,
+    `A ${radius} ${radius} 0 1 0 ${cx + radius} ${cy}`,
+    'Z',
+  ].join(' ');
+}
 
 /** Convert local-pixel tip drag position back to structured tail params */
 function tipPixelToTail(
@@ -137,6 +147,10 @@ export function BubbleNode({
   const fontSize = bubble.text.fontSize * previewScale;
   const padding  = Math.max(8, bodyW * 0.08) * previewScale;
   const isDashed = bubble.kind === 'whisper';
+  const paintBounds = { x: -bodyW / 2, y: -bodyH / 2, width: bodyW, height: bodyH };
+  const fillStyle = bubble.fillStyle ?? { type: 'solid' as const, color: bubble.fill };
+  const strokeFallback = bubble.stroke === '' ? 'transparent' : bubble.stroke || '#000000';
+  const strokeStyle = bubble.strokeStyle ?? { type: 'solid' as const, color: strokeFallback };
 
   // ── Drag handlers ────────────────────────────────────────────────────────
   const handleGroupDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
@@ -198,28 +212,39 @@ export function BubbleNode({
         onTransformEnd={handleTransformEnd}
       >
         {/* ── Body ─────────────────────────────────────────────────────── */}
-        <Path
+        <PaintedShape
           data={pathString}
-          fill={bubble.fill}
-          stroke={bubble.stroke}
+          bounds={paintBounds}
+          fillStyle={fillStyle}
+          strokeStyle={strokeStyle}
+          fallbackFill={bubble.fill}
+          fallbackStroke={strokeFallback}
           strokeWidth={bubble.strokeWidth * previewScale}
           dash={isDashed ? [6 * previewScale, 4 * previewScale] : undefined}
           dashEnabled={isDashed}
+          glow={bubble.glow}
+          glowScale={previewScale}
         />
 
         {/* ── Thought tail circles ─────────────────────────────────────── */}
-        {thoughtCircles.map((c, i) => (
-          <Circle
-            key={i}
-            x={c.cx}
-            y={c.cy}
-            radius={c.r}
-            fill={bubble.fill}
-            stroke={bubble.stroke}
-            strokeWidth={bubble.strokeWidth * previewScale}
-            listening={false}
-          />
-        ))}
+        {thoughtCircles.map((c, i) => {
+          const circleBounds = { x: c.cx - c.r, y: c.cy - c.r, width: c.r * 2, height: c.r * 2 };
+          return (
+            <PaintedShape
+              key={i}
+              data={circlePath(c.cx, c.cy, c.r)}
+              bounds={circleBounds}
+              fillStyle={fillStyle}
+              strokeStyle={strokeStyle}
+              fallbackFill={bubble.fill}
+              fallbackStroke={strokeFallback}
+              strokeWidth={bubble.strokeWidth * previewScale}
+              glow={bubble.glow}
+              glowScale={previewScale}
+              listening={false}
+            />
+          );
+        })}
 
         {/* ── Text ─────────────────────────────────────────────────────── */}
         <KonvaText

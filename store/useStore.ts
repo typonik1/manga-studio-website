@@ -32,6 +32,7 @@ import type {
 import { DEFAULT_ANIME_FONT, DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
 import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
 import { clonePerspectiveQuad } from '@/utils/perspective';
+import { cloneGlowStyle, clonePaintStyle } from '@/utils/objectPaint';
 import { storeDefaultTranslationFont } from '@/utils/fonts';
 
 const MAX_HISTORY = 40;
@@ -92,6 +93,11 @@ const defaultShapeSettings: ShapeSettings = {
   strokeWidth: 4,
   opacity: 1,
   cornerRadius: 0,
+  fillStyle: { type: 'solid', color: '#ffffff' },
+  strokeStyle: { type: 'solid', color: '#000000' },
+  glow: { enabled: false, color: '#00e5ff', blur: 24, opacity: 0.8, intensity: 1 },
+  lineStyle: 'solid',
+  curve: 0.35,
 };
 
 function cloneElements(elements: MaskElement[] | undefined): MaskElement[] {
@@ -122,8 +128,20 @@ function snap(doc: ImageDocument): HistorySnapshot {
     selectedLayer: doc.selectedLayer ? { ...doc.selectedLayer } : null,
     watermarks: doc.watermarks.map(w => ({ ...w })),
     texts: doc.texts.map(t => ({ ...t })),
-    shapes: (doc.shapes ?? []).map(s => ({ ...s })),
-    bubbles: (doc.bubbles ?? []).map(b => ({ ...b, text: { ...b.text }, tail: b.tail ? { ...b.tail } : null })),
+    shapes: (doc.shapes ?? []).map(s => ({
+      ...s,
+      fillStyle: s.fillStyle ? clonePaintStyle(s.fillStyle) : undefined,
+      strokeStyle: s.strokeStyle ? clonePaintStyle(s.strokeStyle) : undefined,
+      glow: s.glow ? cloneGlowStyle(s.glow) : undefined,
+    })),
+    bubbles: (doc.bubbles ?? []).map(b => ({
+      ...b,
+      fillStyle: b.fillStyle ? clonePaintStyle(b.fillStyle) : undefined,
+      strokeStyle: b.strokeStyle ? clonePaintStyle(b.strokeStyle) : undefined,
+      glow: b.glow ? cloneGlowStyle(b.glow) : undefined,
+      text: { ...b.text },
+      tail: b.tail ? { ...b.tail } : null,
+    })),
     layerOrder: (doc.layerOrder ?? []).map(ref => ({ ...ref })),
   };
 }
@@ -217,11 +235,11 @@ export interface AppState {
   deleteText: (id: string) => void;
   restorePageSourceText: () => void;
   addShape: (shape: ShapeObject) => void;
-  updateShape: (id: string, updates: Partial<ShapeObject>) => void;
+  updateShape: (id: string, updates: Partial<ShapeObject>, options?: { history?: boolean }) => void;
   deleteShape: (id: string) => void;
   updateShapeSettings: (updates: Partial<ShapeSettings>) => void;
   addBubble: (bubble: BubbleObject) => void;
-  updateBubble: (id: string, updates: Partial<BubbleObject>) => void;
+  updateBubble: (id: string, updates: Partial<BubbleObject>, options?: { history?: boolean }) => void;
   deleteBubble: (id: string) => void;
   duplicateBubble: (id: string) => void;
   addCustomFont: (name: string) => void;
@@ -525,7 +543,9 @@ export const useStore = create<AppState>((set, get) => ({
       masks: doc.masks.map(mask => mask.id === layer.maskId ? { ...mask, resultLayerId: layer.id } : mask),
       selectedLayer: { id: layer.id, type: 'ai' },
     };
-    return { documents: docs };
+    return index === state.activeDocIndex
+      ? { documents: docs, selectedObject: null }
+      : { documents: docs };
   }),
 
   updateAiLayer: (id, updates, options) => set(state => {
@@ -900,11 +920,13 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs, selectedObject: { id: shape.id, type: 'shape' } };
     }),
 
-  updateShape: (id, updates) =>
+  updateShape: (id, updates, options) =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
-      const doc = { ...docs[state.activeDocIndex] };
+      const doc = options?.history
+        ? withHistory(docs[state.activeDocIndex])
+        : { ...docs[state.activeDocIndex], hasChanges: true };
       doc.shapes = (doc.shapes ?? []).flatMap(s => {
         if (s.id !== id) return [s];
         const sanitized = sanitizeShape({ ...s, ...updates });
@@ -931,16 +953,18 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const doc = withHistory(docs[state.activeDocIndex]);
-      const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id: bubble.id }];
+      const newLayerOrder = [...resolveLayerOrder(doc), { type: 'bubble' as const, id: bubble.id }];
       docs[state.activeDocIndex] = { ...doc, bubbles: [...(doc.bubbles ?? []), bubble], layerOrder: newLayerOrder };
       return { documents: docs, selectedObject: { id: bubble.id, type: 'bubble' as const } };
     }),
 
-  updateBubble: (id, updates) =>
+  updateBubble: (id, updates, options) =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
-      const doc = withHistory(docs[state.activeDocIndex]);
+      const doc = options?.history === false
+        ? { ...docs[state.activeDocIndex], hasChanges: true }
+        : withHistory(docs[state.activeDocIndex]);
       docs[state.activeDocIndex] = { ...doc, bubbles: (doc.bubbles ?? []).map(b => b.id === id ? { ...b, ...updates } : b) };
       return { documents: docs };
     }),
@@ -963,8 +987,18 @@ export const useStore = create<AppState>((set, get) => ({
       const source = (doc.bubbles ?? []).find(b => b.id === id);
       if (!source) return {};
       const newId = `bubble-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const newBubble = { ...source, id: newId, x: Math.min(0.95, source.x + 0.05), y: Math.min(0.95, source.y + 0.05) };
-      const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id: newId }];
+      const newBubble = {
+        ...source,
+        id: newId,
+        x: Math.min(0.95, source.x + 0.05),
+        y: Math.min(0.95, source.y + 0.05),
+        fillStyle: source.fillStyle ? clonePaintStyle(source.fillStyle) : undefined,
+        strokeStyle: source.strokeStyle ? clonePaintStyle(source.strokeStyle) : undefined,
+        glow: source.glow ? cloneGlowStyle(source.glow) : undefined,
+        text: { ...source.text },
+        tail: source.tail ? { ...source.tail } : null,
+      };
+      const newLayerOrder = [...resolveLayerOrder(doc), { type: 'bubble' as const, id: newId }];
       docs[state.activeDocIndex] = { ...doc, bubbles: [...(doc.bubbles ?? []), newBubble], layerOrder: newLayerOrder };
       return { documents: docs, selectedObject: { id: newId, type: 'bubble' as const } };
     }),

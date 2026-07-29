@@ -58,7 +58,50 @@ export interface TextObject {
   isTranslated?: boolean;
 }
 
-export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'arrow' | 'star';
+export type ShapeKind =
+  | 'rect'
+  | 'ellipse'
+  | 'line'
+  | 'arrow'
+  | 'star'
+  | 'double-arrow'
+  | 'curved-arrow'
+  | 'elbow-arrow'
+  | 'block-arrow'
+  | 'chevron'
+  | 'pointer';
+
+export interface GradientStop {
+  id: string;
+  offset: number;
+  color: string;
+}
+
+export type PaintStyle =
+  | { type: 'solid'; color: string }
+  | { type: 'linear'; angle: number; stops: GradientStop[] }
+  | {
+      type: 'radial';
+      centerX: number;
+      centerY: number;
+      radius: number;
+      stops: GradientStop[];
+    };
+
+export interface GlowStyle {
+  enabled: boolean;
+  color: string;
+  blur: number;
+  opacity: number;
+  intensity: number;
+}
+
+export interface GradientPreset {
+  id: string;
+  name: string;
+  style: PaintStyle;
+  builtIn?: boolean;
+}
 
 export interface ShapeObject {
   id: string;
@@ -76,9 +119,24 @@ export interface ShapeObject {
   scaleY: number;
   cornerRadius: number; // for rect, px at original resolution
   visible: boolean;
+  fillStyle?: PaintStyle;
+  strokeStyle?: PaintStyle;
+  glow?: GlowStyle;
+  lineStyle?: 'solid' | 'dashed' | 'dotted';
+  curve?: number;
 }
 
-export type BubbleKind = 'speech' | 'thought' | 'scream' | 'narration' | 'whisper';
+export type BubbleKind =
+  | 'speech'
+  | 'thought'
+  | 'scream'
+  | 'narration'
+  | 'whisper'
+  | 'soft'
+  | 'cloud'
+  | 'comic'
+  | 'electric'
+  | 'caption';
 
 export interface BubbleTail {
   enabled: boolean;
@@ -111,6 +169,9 @@ export interface BubbleObject {
   fill: string;
   stroke: string;
   strokeWidth: number;
+  fillStyle?: PaintStyle;
+  strokeStyle?: PaintStyle;
+  glow?: GlowStyle;
   text: {
     content: string;
     fontFamily: string;
@@ -301,6 +362,11 @@ export interface ShapeSettings {
   strokeWidth: number;
   opacity: number;
   cornerRadius: number;
+  fillStyle: PaintStyle;
+  strokeStyle: PaintStyle;
+  glow: GlowStyle;
+  lineStyle: 'solid' | 'dashed' | 'dotted';
+  curve: number;
 }
 
 export interface WatermarkSettings {

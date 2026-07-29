@@ -16,6 +16,10 @@ export interface BubbleGeometryParams {
   tailWidth?: number;
 }
 
+export function bubbleSupportsTail(kind: BubbleKind): boolean {
+  return kind !== 'narration' && kind !== 'caption';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tail constraint helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -302,6 +306,99 @@ function narrationPath(params: BubbleGeometryParams, cornerRadius?: number): str
   ].join(' ');
 }
 
+function roundedRectPath(params: BubbleGeometryParams, cornerRadius = 18): string {
+  const { width: W, height: H } = params;
+  const hw = W / 2, hh = H / 2;
+  const r = Math.min(cornerRadius, hw, hh);
+  return [
+    `M ${-hw + r} ${-hh}`,
+    `L ${hw - r} ${-hh}`,
+    `Q ${hw} ${-hh} ${hw} ${-hh + r}`,
+    `L ${hw} ${hh - r}`,
+    `Q ${hw} ${hh} ${hw - r} ${hh}`,
+    `L ${-hw + r} ${hh}`,
+    `Q ${-hw} ${hh} ${-hw} ${hh - r}`,
+    `L ${-hw} ${-hh + r}`,
+    `Q ${-hw} ${-hh} ${-hw + r} ${-hh}`,
+    'Z',
+  ].join(' ');
+}
+
+function softSuperellipsePath(params: BubbleGeometryParams): string {
+  const { width: W, height: H } = params;
+  const hw = W / 2, hh = H / 2;
+  const exponent = 3.6;
+  const points: string[] = [];
+  const count = 32;
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const x = hw * Math.sign(cos) * Math.pow(Math.abs(cos), 2 / exponent);
+    const y = hh * Math.sign(sin) * Math.pow(Math.abs(sin), 2 / exponent);
+    points.push(`${i === 0 ? 'M' : 'L'} ${x} ${y}`);
+  }
+  return `${points.join(' ')} Z`;
+}
+
+function cloudPath(params: BubbleGeometryParams): string {
+  const { width: W, height: H } = params;
+  const hw = W / 2, hh = H / 2;
+  const bumps = 12;
+  const parts: string[] = [];
+  for (let i = 0; i < bumps; i++) {
+    const a1 = (i / bumps) * Math.PI * 2;
+    const a2 = ((i + 1) / bumps) * Math.PI * 2;
+    const mid = (a1 + a2) / 2;
+    const bumpScale = 1.22 + (i % 3) * 0.035;
+    const cx = hw * bumpScale * Math.cos(mid);
+    const cy = hh * bumpScale * Math.sin(mid);
+    const x1 = hw * Math.cos(a1), y1 = hh * Math.sin(a1);
+    const x2 = hw * Math.cos(a2), y2 = hh * Math.sin(a2);
+    if (i === 0) parts.push(`M ${x1} ${y1}`);
+    parts.push(`Q ${cx} ${cy} ${x2} ${y2}`);
+  }
+  return `${parts.join(' ')} Z`;
+}
+
+function electricPath(params: BubbleGeometryParams): string {
+  return screamBubblePath(params, { rays: 18, spikiness: 0.2 });
+}
+
+function captionPath(params: BubbleGeometryParams): string {
+  const { width: W, height: H } = params;
+  const hw = W / 2, hh = H / 2;
+  const slant = Math.min(18, W * 0.12);
+  return [
+    `M ${-hw + slant} ${-hh}`,
+    `L ${hw} ${-hh}`,
+    `L ${hw - slant} ${hh}`,
+    `L ${-hw} ${hh}`,
+    'Z',
+  ].join(' ');
+}
+
+function tailWedgePath(params: BubbleGeometryParams, tail: BubbleTail | null): string {
+  if (!tail?.enabled) return '';
+  const shorter = Math.min(params.width, params.height);
+  const baseW = clamp(tail.width, WIDTH_MIN, WIDTH_MAX) * shorter * 0.5;
+  const tip = tailTipPixels(tail, params.width, params.height);
+  const bc = tailBaseCenter(tail, params.width, params.height);
+  const perp = tail.side === 'top' || tail.side === 'bottom'
+    ? { x: 1, y: 0 }
+    : { x: 0, y: 1 };
+  const lx = bc.x - perp.x * baseW;
+  const ly = bc.y - perp.y * baseW;
+  const rx = bc.x + perp.x * baseW;
+  const ry = bc.y + perp.y * baseW;
+  return `M ${lx} ${ly} L ${tip.x} ${tip.y} L ${rx} ${ry} Z`;
+}
+
+function appendTail(path: string, params: BubbleGeometryParams, tail: BubbleTail | null): string {
+  const wedge = tailWedgePath(params, tail);
+  return wedge ? `${path} ${wedge}` : path;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main dispatch
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,8 +413,13 @@ export function getBubblePath(kind: BubbleKind, params: BubbleGeometryParams, op
     case 'speech':    return speechBubblePath(params, resolvedTail);
     case 'whisper':   return speechBubblePath(params, resolvedTail); // styled differently outside
     case 'thought':   return thoughtBubblePath(params);
-    case 'scream':    return screamBubblePath(params, opts);
+    case 'scream':    return appendTail(screamBubblePath(params, opts), params, resolvedTail);
     case 'narration': return narrationPath(params, opts?.cornerRadius);
+    case 'soft':      return appendTail(softSuperellipsePath(params), params, resolvedTail);
+    case 'cloud':     return appendTail(cloudPath(params), params, resolvedTail);
+    case 'comic':     return appendTail(roundedRectPath(params, Math.min(params.width, params.height) * 0.18), params, resolvedTail);
+    case 'electric':  return appendTail(electricPath(params), params, resolvedTail);
+    case 'caption':   return captionPath(params);
     default:          return speechBubblePath(params, resolvedTail);
   }
 }

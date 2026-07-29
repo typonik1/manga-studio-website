@@ -1,12 +1,12 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Ellipse, Arrow, Star, Circle } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Circle } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject, PerspectiveQuad } from '@/types';
-import { resolveLayerOrder } from '@/utils/layerOrder';
+import { resolveVisualLayerOrder } from '@/utils/layerOrder';
 import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask, bakeStrokeIntoLayerSrc } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
 import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
@@ -19,6 +19,14 @@ import { BubbleNode } from './BubbleNode';
 import { InlineTextEditor } from './InlineTextEditor';
 import { drawBrushStroke } from '@/utils/brushRaster';
 import { clonePerspectiveQuad, drawPerspectiveImage, isValidPerspectiveQuad } from '@/utils/perspective';
+import { getShapeGeometry } from '@/utils/shapeGeometry';
+import { isOpenShape } from '@/utils/shapePresets';
+import { PaintedShape } from './PaintedShape';
+import {
+  extractClipboardImageFiles,
+  pasteExternalImagesAsLayers,
+  shouldKeepNativePaste,
+} from '@/utils/pastedImageLayers';
 
 const MAX_PREVIEW_SIDE = 1800;
 
@@ -659,7 +667,7 @@ function ShapeNode({
   onChange: (updates: Partial<ShapeObject>) => void;
   onBeforeChange: () => void;
 }) {
-  const nodeRef = useRef<Konva.Node>(null);
+  const nodeRef = useRef<Konva.Group>(null);
   const trRef = useRef<Konva.Transformer>(null);
 
   useEffect(() => {
@@ -686,25 +694,28 @@ function ShapeNode({
   const handleTransformEnd = () => {
     const node = nodeRef.current;
     if (!node) return;
+    const nextWidth = Math.max(0.005, shape.width * Math.abs(node.scaleX()));
+    const nextHeight = Math.max(0.005, shape.height * Math.abs(node.scaleY()));
+    node.scaleX(1);
+    node.scaleY(1);
     onChange({
       x: node.x() / pW,
       y: node.y() / pH,
-      scaleX: node.scaleX(),
-      scaleY: node.scaleY(),
+      width: nextWidth,
+      height: nextHeight,
+      scaleX: 1,
+      scaleY: 1,
       rotation: node.rotation(),
     });
   };
 
-  const common = {
+  const groupProps = {
     x: cx,
     y: cy,
     rotation: shape.rotation,
     scaleX: shape.scaleX,
     scaleY: shape.scaleY,
     opacity: shape.opacity,
-    fill: shape.fill || undefined,
-    stroke: shape.stroke || undefined,
-    strokeWidth: strokeW,
     draggable: true,
     onClick: onSelect,
     onTap: onSelect,
@@ -714,66 +725,89 @@ function ShapeNode({
     onTransformEnd: handleTransformEnd,
   };
 
-  let node: React.ReactNode = null;
-  if (shape.kind === 'rect') {
-    node = (
-      <Rect
-        {...common}
-        ref={nodeRef as React.RefObject<Konva.Rect>}
-        offsetX={w / 2}
-        offsetY={h / 2}
-        width={w}
-        height={h}
-        cornerRadius={shape.cornerRadius * previewScale}
-      />
-    );
-  } else if (shape.kind === 'ellipse') {
-    node = (
-      <Ellipse
-        {...common}
-        ref={nodeRef as React.RefObject<Konva.Ellipse>}
-        radiusX={w / 2}
-        radiusY={h / 2}
-      />
-    );
-  } else if (shape.kind === 'line') {
-    node = (
-      <Line
-        {...common}
-        ref={nodeRef as React.RefObject<Konva.Line>}
-        points={[-w / 2, 0, w / 2, 0]}
-        lineCap="round"
-        hitStrokeWidth={Math.max(16, strokeW)}
-      />
-    );
-  } else if (shape.kind === 'arrow') {
-    node = (
-      <Arrow
-        {...common}
-        ref={nodeRef as React.RefObject<Konva.Arrow>}
-        points={[-w / 2, 0, w / 2, 0]}
-        pointerLength={Math.max(8, strokeW * 3)}
-        pointerWidth={Math.max(8, strokeW * 3)}
-        fill={shape.stroke || '#000'}
-        lineCap="round"
-        hitStrokeWidth={Math.max(16, strokeW)}
-      />
-    );
-  } else if (shape.kind === 'star') {
-    node = (
-      <Star
-        {...common}
-        ref={nodeRef as React.RefObject<Konva.Star>}
-        numPoints={5}
-        innerRadius={Math.min(w, h) / 4}
-        outerRadius={Math.min(w, h) / 2}
-      />
-    );
-  }
+  const bounds = { x: -w / 2, y: -h / 2, width: w, height: h };
+  const fillStyle = shape.fillStyle ?? { type: 'solid' as const, color: shape.fill || 'transparent' };
+  const strokeFallback = shape.stroke === '' ? 'transparent' : shape.stroke || '#000000';
+  const strokeStyle = shape.strokeStyle ?? { type: 'solid' as const, color: strokeFallback };
+  const dash = shape.lineStyle === 'dashed'
+    ? [12 * previewScale, 8 * previewScale]
+    : shape.lineStyle === 'dotted'
+      ? [2 * previewScale, 7 * previewScale]
+      : undefined;
+  const geometry = getShapeGeometry(
+    shape.kind,
+    w,
+    h,
+    shape.curve ?? 0.35,
+    shape.cornerRadius * previewScale,
+  );
+  const open = isOpenShape(shape.kind);
+  const node = (
+    <>
+      {geometry.strokePath && (
+        <PaintedShape
+          data={geometry.strokePath}
+          bounds={bounds}
+          strokeStyle={strokeStyle}
+          fallbackStroke={strokeFallback}
+          strokeWidth={strokeW}
+          glow={shape.glow}
+          glowScale={previewScale}
+          dash={dash}
+          dashEnabled={Boolean(dash)}
+          hitStrokeWidth={shape.kind === 'line' ? Math.max(16, strokeW) : undefined}
+        />
+      )}
+      {geometry.fillPath && (
+        <PaintedShape
+          data={geometry.fillPath}
+          bounds={bounds}
+          fillStyle={open ? strokeStyle : fillStyle}
+          strokeStyle={open ? undefined : strokeStyle}
+          fallbackFill={open ? strokeFallback : shape.fill}
+          fallbackStroke={open ? '' : strokeFallback}
+          strokeWidth={open ? 0 : strokeW}
+          glow={shape.glow}
+          glowScale={previewScale}
+        />
+      )}
+    </>
+  );
+
+  const curve = shape.curve ?? 0.35;
+  const curveLocalY = -curve * h * 0.8;
+  const rotation = shape.rotation * Math.PI / 180;
+  const curveHandleX = cx - Math.sin(rotation) * curveLocalY;
+  const curveHandleY = cy + Math.cos(rotation) * curveLocalY;
 
   return (
     <>
-      {node}
+      <Group ref={nodeRef} {...groupProps}>
+        {node}
+      </Group>
+      {isSelected && shape.kind === 'curved-arrow' && (
+        <Circle
+          x={curveHandleX}
+          y={curveHandleY}
+          radius={7}
+          fill="#ff6b6b"
+          stroke="#ffffff"
+          strokeWidth={2}
+          draggable
+          onDragStart={event => {
+            event.cancelBubble = true;
+            onBeforeChange();
+          }}
+          onDragMove={event => {
+            event.cancelBubble = true;
+            const dx = event.target.x() - cx;
+            const dy = event.target.y() - cy;
+            const localY = -Math.sin(rotation) * dx + Math.cos(rotation) * dy;
+            onChange({ curve: Math.max(-1, Math.min(1, -localY / Math.max(1, h * 0.8))) });
+          }}
+          onClick={event => { event.cancelBubble = true; }}
+        />
+      )}
       {isSelected && (
         <Transformer
           ref={trRef}
@@ -782,6 +816,12 @@ function ShapeNode({
             return newBox;
           }}
           rotateEnabled
+          keepRatio={false}
+          enabledAnchors={[
+            'top-left', 'top-center', 'top-right',
+            'middle-left', 'middle-right',
+            'bottom-left', 'bottom-center', 'bottom-right',
+          ]}
         />
       )}
     </>
@@ -1514,17 +1554,15 @@ export function CanvasArea() {
   // 1) A fragment copied with Ctrl+C from a selection is inserted as a NEW
   //    LAYER of the active document (not as a new page).
   // 2) Image files copied from the desktop, Finder/Explorer or another image
-  //    editor are still added as new pages. Text clipboard contents are left
-  //    untouched so normal text inputs and browser shortcuts keep their
-  //    native behaviour.
+  //    editor become NEW LAYERS when a page is open. With no page they create
+  //    a new document. Text inputs keep native paste behaviour.
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
       const data = event.clipboardData;
       if (!data) return;
-      const target = event.target as HTMLElement | null;
       // Keep native paste behaviour in text fields (including the inline text
       // editor); image paste is intended for the canvas/workspace itself.
-      if (target?.isContentEditable || (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      if (shouldKeepNativePaste(event.target)) return;
 
       // Our own copied selection fragment → paste as a new layer in place.
       const store = useStore.getState();
@@ -1538,17 +1576,23 @@ export function CanvasArea() {
         return;
       }
 
-      const files = Array.from(data.files).filter(file => file.type.startsWith('image/'));
-      if (files.length === 0) {
-        for (const item of Array.from(data.items)) {
-          if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
-          const file = item.getAsFile();
-          if (file) files.push(file);
-        }
-      }
+      const files = extractClipboardImageFiles(data);
       if (files.length === 0) return;
       event.preventDefault();
-      void handleFiles(files);
+      if (hasDoc) {
+        const activeDoc = store.documents[store.activeDocIndex];
+        void pasteExternalImagesAsLayers(files, activeDoc.id)
+          .then(ids => setClipboardInfo(ids.length > 1
+            ? `Вставлено слоёв: ${ids.length}`
+            : 'Изображение вставлено новым слоем'))
+          .catch(error => {
+            const message = error instanceof Error ? error.message : 'Не удалось вставить изображение.';
+            setClipboardInfo(message);
+            console.warn('[v0] pasteExternalImagesAsLayers:', error);
+          });
+      } else {
+        void handleFiles(files);
+      }
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
@@ -1859,8 +1903,10 @@ export function CanvasArea() {
               />
             )}
 
-            {/* Raster stack (base + AI) rendered bottom → top following the unified layer order */}
-            {resolveLayerOrder(activeDoc).map(ref => {
+            <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
+            {/* One bottom → top sequence for rasters, brush strokes and vector
+                objects. This is the same order used by export. */}
+            {resolveVisualLayerOrder(activeDoc).map(ref => {
               if (ref.type === 'base') {
                 if (!layerVisibility.base || baseReplaced || activeDoc.baseLayer?.visible === false) return null;
                 return (
@@ -1898,50 +1944,18 @@ export function CanvasArea() {
                   />
                 );
               }
-              return null;
-            })}
-
-            <Group clipX={0} clipY={0} clipWidth={imgW} clipHeight={imgH}>
-
-            {/* Committed brush strokes — rendered offscreen so erase-mode strokes
-                only affect the strokes themselves, never the layers below. */}
-            {layerVisibility.cleanup && (
-              <CleanupStrokesNode
-                strokes={activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask')}
-                width={imgW}
-                height={imgH}
-                lineScale={activeDoc.height * previewScale}
-              />
-            )}
-
-            {/* Persistent editor-only mask overlays */}
-            {(activeDoc.masks ?? []).filter(mask => mask.visible).map(mask => (
-              <MaskOverlayNode key={mask.id} elements={mask.elements} strokes={mask.strokes} width={imgW} height={imgH} opacity={mask.opacity} />
-            ))}
-
-            {/* Live lasso contour */}
-            <Line ref={liveLassoRef} points={[]} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} closed fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
-
-            {/* Live rectangular selection */}
-            <Rect ref={liveRectRef} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
-
-            {/* Live stroke while drawing (updated imperatively) */}
-            <Line
-              ref={liveLineRef}
-              points={livePoints.current}
-              stroke={cleanupSettings.brushColor}
-              strokeWidth={activeDoc ? cleanupSettings.brushSize * activeDoc.height * previewScale : 10}
-              lineCap="round"
-              lineJoin="round"
-              tension={0.3}
-              perfectDrawEnabled={false}
-              listening={false}
-              visible={false}
-            />
-
-            {/* Watermarks, texts and shapes rendered bottom → top following the
-                unified layer order, so panel order always matches the canvas. */}
-            {resolveLayerOrder(activeDoc).map(ref => {
+              if (ref.type === 'strokes') {
+                if (!layerVisibility.cleanup) return null;
+                return (
+                  <CleanupStrokesNode
+                    key={ref.id}
+                    strokes={activeDoc.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask')}
+                    width={imgW}
+                    height={imgH}
+                    lineScale={activeDoc.height * previewScale}
+                  />
+                );
+              }
               if (ref.type === 'watermark') {
                 const wm = activeDoc.watermarks.find(item => item.id === ref.id);
                 if (!wm || !layerVisibility.watermarks) return null;
@@ -1975,9 +1989,6 @@ export function CanvasArea() {
                     onChange={updates => updateText(txt.id, updates)}
                     onBeforeChange={pushHistory}
                     onEditRequest={() => {
-                      // While a selection tool is active, a double click is a
-                      // selection gesture (e.g. closing the polygonal lasso) —
-                      // don't drop into text editing.
                       if (activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'rectSelect' || activeTool === 'wand') return;
                       setSelectedObject({ id: txt.id, type: 'text' });
                       isNewTextRef.current = false;
@@ -2015,7 +2026,7 @@ export function CanvasArea() {
                     previewScale={previewScale}
                     isSelected={selectedObject?.id === bubble.id}
                     onSelect={() => setSelectedObject({ id: bubble.id, type: 'bubble' })}
-                    onChange={updates => updateBubble(bubble.id, updates)}
+                    onChange={updates => updateBubble(bubble.id, updates, { history: false })}
                     onBeforeChange={pushHistory}
                     onEditRequest={() => {
                       setSelectedObject({ id: bubble.id, type: 'bubble' });
@@ -2026,6 +2037,31 @@ export function CanvasArea() {
               }
               return null;
             })}
+
+            {/* Persistent editor-only mask overlays */}
+            {(activeDoc.masks ?? []).filter(mask => mask.visible).map(mask => (
+              <MaskOverlayNode key={mask.id} elements={mask.elements} strokes={mask.strokes} width={imgW} height={imgH} opacity={mask.opacity} />
+            ))}
+
+            {/* Live lasso contour */}
+            <Line ref={liveLassoRef} points={[]} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} closed fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
+
+            {/* Live rectangular selection */}
+            <Rect ref={liveRectRef} stroke="rgb(255, 128, 0)" strokeWidth={2 / viewport.scale} dash={[7, 5]} fill="rgba(255,128,0,0.22)" listening={false} visible={false} />
+
+            {/* Live stroke while drawing (updated imperatively) */}
+            <Line
+              ref={liveLineRef}
+              points={livePoints.current}
+              stroke={cleanupSettings.brushColor}
+              strokeWidth={activeDoc ? cleanupSettings.brushSize * activeDoc.height * previewScale : 10}
+              lineCap="round"
+              lineJoin="round"
+              tension={0.3}
+              perfectDrawEnabled={false}
+              listening={false}
+              visible={false}
+            />
 
             {/* Crop overlay */}
             {activeTool === 'crop' && cropRect && (

@@ -1,6 +1,17 @@
 import { createBaseLayerState, DEFAULT_BASE_ADJUSTMENTS } from '@/types';
-import type { CropRect, ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject, BubbleObject } from '@/types';
+import type {
+  BubbleKind,
+  BubbleObject,
+  CropRect,
+  ImageDocument,
+  ShapeKind,
+  ShapeObject,
+  StrokeData,
+  TextObject,
+  WatermarkObject,
+} from '@/types';
 import { sanitizePerspectiveQuad } from '@/utils/perspective';
+import { normalizeGlowStyle, normalizePaintStyle } from '@/utils/objectPaint';
 
 export interface CoordinateSpace {
   viewport: { x: number; y: number; scale: number };
@@ -10,6 +21,15 @@ export interface CoordinateSpace {
 
 const finite = (value: number) => Number.isFinite(value);
 export const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+const SHAPE_KINDS = new Set<ShapeKind>([
+  'rect', 'ellipse', 'line', 'arrow', 'star',
+  'double-arrow', 'curved-arrow', 'elbow-arrow',
+  'block-arrow', 'chevron', 'pointer',
+]);
+const BUBBLE_KINDS = new Set<BubbleKind>([
+  'speech', 'thought', 'scream', 'narration', 'whisper',
+  'soft', 'cloud', 'comic', 'electric', 'caption',
+]);
 
 export function screenToImage(point: { x: number; y: number }, space: CoordinateSpace) {
   const { viewport, imageWidth, imageHeight } = space;
@@ -127,11 +147,27 @@ export function sanitizeWatermark(wm: WatermarkObject): WatermarkObject | null {
 }
 
 export function sanitizeShape(shape: ShapeObject): ShapeObject | null {
+  if (!SHAPE_KINDS.has(shape.kind)) return null;
   if (![shape.x, shape.y, shape.width, shape.height].every(validPosition)) return null;
-  return { ...shape, x: clamp01(shape.x), y: clamp01(shape.y), width: Math.max(0.005, Math.min(1, Math.abs(shape.width))), height: Math.max(0.005, Math.min(1, Math.abs(shape.height))) };
+  return {
+    ...shape,
+    x: clamp01(shape.x),
+    y: clamp01(shape.y),
+    width: Math.max(0.005, Math.min(1, Math.abs(shape.width))),
+    height: Math.max(0.005, Math.min(1, Math.abs(shape.height))),
+    fillStyle: normalizePaintStyle(shape.fillStyle, shape.fill || 'transparent'),
+    strokeStyle: normalizePaintStyle(
+      shape.strokeStyle,
+      shape.stroke === '' ? 'transparent' : shape.stroke || '#000000',
+    ),
+    glow: normalizeGlowStyle(shape.glow),
+    lineStyle: shape.lineStyle === 'dashed' || shape.lineStyle === 'dotted' ? shape.lineStyle : 'solid',
+    curve: Number.isFinite(shape.curve) ? Math.max(-1, Math.min(1, shape.curve!)) : 0.35,
+  };
 }
 
 export function sanitizeBubble(bubble: BubbleObject): BubbleObject | null {
+  if (!BUBBLE_KINDS.has(bubble.kind)) return null;
   if (![bubble.x, bubble.y, bubble.width, bubble.height].every(validPosition)) return null;
   const sanitized: BubbleObject = {
     ...bubble,
@@ -140,6 +176,12 @@ export function sanitizeBubble(bubble: BubbleObject): BubbleObject | null {
     width: Math.max(0.005, Math.min(1, Math.abs(bubble.width))),
     height: Math.max(0.005, Math.min(1, Math.abs(bubble.height))),
     text: { ...bubble.text },
+    fillStyle: normalizePaintStyle(bubble.fillStyle, bubble.fill || 'transparent'),
+    strokeStyle: normalizePaintStyle(
+      bubble.strokeStyle,
+      bubble.stroke === '' ? 'transparent' : bubble.stroke || '#000000',
+    ),
+    glow: normalizeGlowStyle(bubble.glow),
     tail: bubble.tail ? {
       ...bubble.tail,
       tipX: bubble.tail.tipX != null ? clamp01(bubble.tail.tipX) : undefined,

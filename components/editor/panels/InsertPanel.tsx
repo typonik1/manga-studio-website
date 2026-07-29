@@ -3,8 +3,13 @@
 import { useRef } from 'react';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
-import type { ShapeKind, ShapeObject, WatermarkObject } from '@/types';
+import type { ShapeKind, ShapeSettings, WatermarkObject } from '@/types';
 import { PanelRow, PanelSlider, PanelLabel, PanelSection, PanelButton } from './PanelComponents';
+import { PaintEditor } from './PaintEditor';
+import {
+  POINTER_PRESETS,
+  createShapeFromSettings,
+} from '@/utils/shapePresets';
 
 const SHAPES: { kind: ShapeKind; label: string; icon: React.ReactNode }[] = [
   {
@@ -32,14 +37,34 @@ const SHAPES: { kind: ShapeKind; label: string; icon: React.ReactNode }[] = [
 export function InsertPanel() {
   const {
     activeDocIndex, documents,
-    addWatermark, addShape,
+    addWatermark, addShape, updateShape,
     shapeSettings, updateShapeSettings,
-    setSelectedObject,
+    selectedObject, setSelectedObject, pushHistory,
   } = useStore();
   const overlayInputRef = useRef<HTMLInputElement>(null);
 
   const hasDoc = activeDocIndex >= 0;
   const activeDoc = hasDoc ? documents[activeDocIndex] : null;
+  const selectedShape = selectedObject?.type === 'shape' && activeDoc
+    ? (activeDoc.shapes ?? []).find(shape => shape.id === selectedObject.id) ?? null
+    : null;
+  const currentSettings: ShapeSettings = selectedShape ? {
+    fill: selectedShape.fill,
+    stroke: selectedShape.stroke,
+    strokeWidth: selectedShape.strokeWidth,
+    opacity: selectedShape.opacity,
+    cornerRadius: selectedShape.cornerRadius,
+    fillStyle: selectedShape.fillStyle ?? { type: 'solid', color: selectedShape.fill || '#ffffff' },
+    strokeStyle: selectedShape.strokeStyle ?? { type: 'solid', color: selectedShape.stroke || '#000000' },
+    glow: selectedShape.glow ?? shapeSettings.glow,
+    lineStyle: selectedShape.lineStyle ?? 'solid',
+    curve: selectedShape.curve ?? 0.35,
+  } : shapeSettings;
+
+  function updateCurrentSettings(updates: Partial<ShapeSettings>, options?: { history?: boolean }) {
+    if (selectedShape) updateShape(selectedShape.id, updates, { history: options?.history ?? true });
+    else updateShapeSettings(updates);
+  }
 
   function handleOverlayFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -75,24 +100,7 @@ export function InsertPanel() {
 
   function handleAddShape(kind: ShapeKind) {
     if (!activeDoc) return;
-    const shape: ShapeObject = {
-      id: uid(),
-      kind,
-      x: 0.5,
-      y: 0.5,
-      width: kind === 'line' || kind === 'arrow' ? 0.3 : 0.25,
-      height: kind === 'line' ? 0.001 : kind === 'arrow' ? 0.001 : 0.2,
-      fill: kind === 'line' || kind === 'arrow' ? '' : shapeSettings.fill,
-      stroke: shapeSettings.stroke,
-      strokeWidth: shapeSettings.strokeWidth,
-      opacity: shapeSettings.opacity,
-      rotation: 0,
-      scaleX: 1,
-      scaleY: 1,
-      cornerRadius: shapeSettings.cornerRadius,
-      visible: true,
-    };
-    addShape(shape);
+    addShape(createShapeFromSettings(kind, shapeSettings));
   }
 
   return (
@@ -144,16 +152,57 @@ export function InsertPanel() {
           ))}
         </div>
 
+        <PanelLabel style={{ marginTop: 6 }}>Стрелки и указатели</PanelLabel>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4 }}>
+          {POINTER_PRESETS.map(preset => {
+            const symbol: Record<string, string> = {
+              arrow: '→',
+              'double-arrow': '↔',
+              'curved-arrow': '↷',
+              'elbow-arrow': '↱',
+              'block-arrow': '➜',
+              chevron: '❯',
+              pointer: '▶',
+            };
+            return (
+              <button
+                key={preset.kind}
+                type="button"
+                onClick={() => handleAddShape(preset.kind)}
+                disabled={!hasDoc}
+                title={preset.label}
+                style={{
+                  minHeight: 42,
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  gap: 2, borderRadius: 6, border: '1px solid var(--border-default)',
+                  background: 'var(--bg-panel-raised)',
+                  color: hasDoc ? 'var(--text-secondary)' : 'var(--text-muted)',
+                  cursor: hasDoc ? 'pointer' : 'not-allowed',
+                }}
+              >
+                <span style={{ fontSize: 19, lineHeight: 1 }}>{symbol[preset.kind]}</span>
+                <span style={{ fontSize: 8 }}>{preset.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
         <PanelRow label="Заливка">
           <input
             type="color"
-            value={shapeSettings.fill || '#ffffff'}
-            onChange={e => updateShapeSettings({ fill: e.target.value })}
+            value={currentSettings.fill || '#ffffff'}
+            onChange={e => updateCurrentSettings({
+              fill: e.target.value,
+              fillStyle: { type: 'solid', color: e.target.value },
+            })}
             style={{ width: 36, height: 28 }}
           />
           <button
-            onClick={() => updateShapeSettings({ fill: shapeSettings.fill ? '' : '#ffffff' })}
-            title={shapeSettings.fill ? 'Убрать заливку' : 'Включить заливку'}
+            onClick={() => updateCurrentSettings({
+              fill: currentSettings.fill ? '' : '#ffffff',
+              fillStyle: { type: 'solid', color: currentSettings.fill ? 'transparent' : '#ffffff' },
+            })}
+            title={currentSettings.fill ? 'Убрать заливку' : 'Включить заливку'}
             style={{
               padding: '3px 6px', fontSize: 10, borderRadius: 4,
               border: '1px solid var(--border-default)',
@@ -161,45 +210,99 @@ export function InsertPanel() {
               color: 'var(--text-muted)', cursor: 'pointer',
             }}
           >
-            {shapeSettings.fill ? 'выкл' : 'вкл'}
+            {currentSettings.fill ? 'выкл' : 'вкл'}
           </button>
         </PanelRow>
 
         <PanelRow label="Обводка">
           <input
             type="color"
-            value={shapeSettings.stroke || '#000000'}
-            onChange={e => updateShapeSettings({ stroke: e.target.value })}
+            value={currentSettings.stroke || '#000000'}
+            onChange={e => updateCurrentSettings({
+              stroke: e.target.value,
+              strokeStyle: { type: 'solid', color: e.target.value },
+            })}
             style={{ width: 36, height: 28 }}
           />
           <input
             type="number"
-            value={shapeSettings.strokeWidth}
+            value={currentSettings.strokeWidth}
             min={0}
             max={60}
-            onChange={e => updateShapeSettings({ strokeWidth: Number(e.target.value) })}
+            onChange={e => updateCurrentSettings({ strokeWidth: Number(e.target.value) })}
             style={{ width: 44 }}
           />
         </PanelRow>
 
         <PanelSlider
-          label={`Непрозрачность ${Math.round(shapeSettings.opacity * 100)}%`}
-          value={Math.round(shapeSettings.opacity * 100)}
+          label={`Непрозрачность ${Math.round(currentSettings.opacity * 100)}%`}
+          value={Math.round(currentSettings.opacity * 100)}
           min={5}
           max={100}
-          onChange={v => updateShapeSettings({ opacity: v / 100 })}
+          onChange={v => updateCurrentSettings({ opacity: v / 100 })}
         />
 
         <PanelSlider
-          label={`Скругление углов ${shapeSettings.cornerRadius}px`}
-          value={shapeSettings.cornerRadius}
+          label={`Скругление углов ${currentSettings.cornerRadius}px`}
+          value={currentSettings.cornerRadius}
           min={0}
           max={120}
-          onChange={v => updateShapeSettings({ cornerRadius: v })}
+          onChange={v => updateCurrentSettings({ cornerRadius: v })}
         />
 
+        <PaintEditor
+          label="Стиль заливки"
+          value={currentSettings.fillStyle}
+          glow={currentSettings.glow}
+          onGestureStart={selectedShape ? pushHistory : undefined}
+          onChange={paint => updateCurrentSettings({
+            fillStyle: paint,
+            ...(paint.type === 'solid' ? { fill: paint.color === 'transparent' ? '' : paint.color } : {}),
+          }, { history: false })}
+          onGlowChange={glow => updateCurrentSettings({ glow }, { history: false })}
+        />
+
+        <PaintEditor
+          label="Стиль обводки"
+          value={currentSettings.strokeStyle}
+          allowRadial={false}
+          onGestureStart={selectedShape ? pushHistory : undefined}
+          onChange={paint => updateCurrentSettings({
+            strokeStyle: paint,
+            ...(paint.type === 'solid' ? { stroke: paint.color } : {}),
+          }, { history: false })}
+        />
+
+        <div>
+          <PanelLabel>Линия</PanelLabel>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {([
+              ['solid', 'Сплошная'],
+              ['dashed', 'Пунктир'],
+              ['dotted', 'Точки'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => updateCurrentSettings({ lineStyle: value })}
+                style={{
+                  flex: 1, padding: '4px 3px', fontSize: 9, borderRadius: 4,
+                  border: currentSettings.lineStyle === value ? '1.5px solid var(--accent)' : '1px solid var(--border-default)',
+                  background: currentSettings.lineStyle === value ? 'var(--accent-dim)' : 'var(--bg-panel-raised)',
+                  color: 'var(--text-secondary)', cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-          Настройки применяются к новым фигурам. Выделенную фигуру можно двигать, масштабировать и вращать; Delete — удалить.
+          {selectedShape
+            ? 'Настройки применяются к выбранной фигуре.'
+            : 'Настройки применяются к новым фигурам.'}
+          {' '}Фигуру можно двигать, свободно растягивать и вращать; Delete — удалить.
         </div>
       </PanelSection>
     </div>

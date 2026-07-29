@@ -2105,7 +2105,7 @@ export function CanvasArea() {
                     previewScale={previewScale}
                     isSelected={selectedObject?.id === bubble.id}
                     onSelect={() => setSelectedObject({ id: bubble.id, type: 'bubble' })}
-                    onChange={updates => updateBubble(bubble.id, updates)}
+                    onChange={updates => updateBubble(bubble.id, updates, { history: false })}
                     onBeforeChange={pushHistory}
                     onEditRequest={() => {
                       setSelectedObject({ id: bubble.id, type: 'bubble' });

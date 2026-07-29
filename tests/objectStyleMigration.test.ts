@@ -78,4 +78,9 @@ describe('vector style migration', () => {
     expect(sanitized.fillStyle.radius).toBe(2);
     expect(sanitized.fillStyle.stops).toHaveLength(2);
   });
+
+  it('drops unknown shape and bubble kinds from corrupted documents', () => {
+    expect(sanitizeShape({ ...legacyShape, kind: 'unknown-shape' as never })).toBeNull();
+    expect(sanitizeBubble({ ...legacyBubble, kind: 'unknown-bubble' as never })).toBeNull();
+  });
 });

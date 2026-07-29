@@ -19,6 +19,13 @@ import {
 import { PanelButton, PanelLabel } from './PanelComponents';
 
 const PREVIEW_BOUNDS = { x: 0, y: 0, width: 220, height: 38 };
+const NEON_PRESETS = [
+  { name: 'Голубой', color: '#00e5ff' },
+  { name: 'Розовый', color: '#ff4fd8' },
+  { name: 'Фиолетовый', color: '#a855f7' },
+  { name: 'Зелёный', color: '#39ff88' },
+  { name: 'Золотой', color: '#ffd54a' },
+] as const;
 
 function newStopId() {
   return `stop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -103,6 +110,7 @@ export function PaintEditor({
 
   const addStop = (offset = 0.5) => {
     if (paint.type === 'solid') return;
+    onGestureStart?.();
     const left = [...paint.stops].sort((a, b) => Math.abs(a.offset - offset) - Math.abs(b.offset - offset))[0];
     const stop = { id: newStopId(), offset, color: left?.color ?? '#ffffff' };
     setSelectedStopId(stop.id);
@@ -111,9 +119,21 @@ export function PaintEditor({
 
   const removeSelectedStop = () => {
     if (paint.type === 'solid' || paint.stops.length <= 2 || !selectedStop) return;
+    onGestureStart?.();
     const next = paint.stops.filter(stop => stop.id !== selectedStop.id);
     setSelectedStopId(next[0]?.id ?? null);
     update({ ...paint, stops: next });
+  };
+
+  const reverseGradient = () => {
+    if (paint.type === 'solid') return;
+    onGestureStart?.();
+    update({
+      ...paint,
+      stops: paint.stops
+        .map(stop => ({ ...stop, offset: 1 - stop.offset }))
+        .sort((a, b) => a.offset - b.offset),
+    });
   };
 
   const handleGradientBarClick = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -277,6 +297,15 @@ export function PaintEditor({
               >
                 ×
               </button>
+              <button
+                type="button"
+                aria-label="Развернуть градиент"
+                title="Развернуть градиент"
+                onClick={reverseGradient}
+                style={{ padding: '3px 6px', fontSize: 11 }}
+              >
+                ⇄
+              </button>
             </div>
           )}
           {paint.type === 'linear' && (
@@ -344,26 +373,86 @@ export function PaintEditor({
             Неон
           </label>
           {currentGlow.enabled && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <input
-                aria-label="Цвет неона"
-                type="color"
-                value={currentGlow.color.startsWith('#') ? currentGlow.color.slice(0, 7) : '#00e5ff'}
-                onPointerDown={() => onGestureStart?.()}
-                onChange={event => onGlowChange({ ...currentGlow, color: event.target.value })}
-                style={{ width: 32, height: 22, padding: 0 }}
-              />
-              <input
-                aria-label="Сила неона"
-                type="range"
-                min={0}
-                max={120}
-                value={currentGlow.blur}
-                onPointerDown={() => onGestureStart?.()}
-                onChange={event => onGlowChange({ ...currentGlow, blur: Number(event.target.value) })}
-                style={{ flex: 1 }}
-              />
-            </div>
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  aria-label="Цвет неона"
+                  type="color"
+                  value={currentGlow.color.startsWith('#') ? currentGlow.color.slice(0, 7) : '#00e5ff'}
+                  onPointerDown={() => onGestureStart?.()}
+                  onChange={event => onGlowChange({ ...currentGlow, color: event.target.value })}
+                  style={{ width: 32, height: 22, padding: 0 }}
+                />
+                <input
+                  aria-label="Сила неона"
+                  type="range"
+                  min={0}
+                  max={120}
+                  value={currentGlow.blur}
+                  onPointerDown={() => onGestureStart?.()}
+                  onChange={event => onGlowChange({ ...currentGlow, blur: Number(event.target.value) })}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ width: 28, fontSize: 9, textAlign: 'right', color: 'var(--text-muted)' }}>
+                  {Math.round(currentGlow.blur)}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {NEON_PRESETS.map(preset => (
+                  <button
+                    key={preset.name}
+                    type="button"
+                    aria-label={`Неон ${preset.name}`}
+                    title={preset.name}
+                    onClick={() => {
+                      onGestureStart?.();
+                      onGlowChange({ ...currentGlow, color: preset.color });
+                    }}
+                    style={{
+                      width: 22,
+                      height: 22,
+                      padding: 0,
+                      borderRadius: '50%',
+                      border: currentGlow.color.toLowerCase() === preset.color
+                        ? '2px solid #ffffff'
+                        : '1px solid var(--border-default)',
+                      background: preset.color,
+                      boxShadow: `0 0 8px ${preset.color}`,
+                      cursor: 'pointer',
+                    }}
+                  />
+                ))}
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--text-muted)' }}>
+                <span style={{ width: 74 }}>Яркость</span>
+                <input
+                  aria-label="Яркость неона"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(currentGlow.opacity * 100)}
+                  onPointerDown={() => onGestureStart?.()}
+                  onChange={event => onGlowChange({ ...currentGlow, opacity: Number(event.target.value) / 100 })}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ width: 30, textAlign: 'right' }}>{Math.round(currentGlow.opacity * 100)}%</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--text-muted)' }}>
+                <span style={{ width: 74 }}>Интенсивность</span>
+                <input
+                  aria-label="Интенсивность неона"
+                  type="range"
+                  min={1}
+                  max={3}
+                  step={1}
+                  value={currentGlow.intensity}
+                  onPointerDown={() => onGestureStart?.()}
+                  onChange={event => onGlowChange({ ...currentGlow, intensity: Number(event.target.value) })}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ width: 30, textAlign: 'right' }}>×{currentGlow.intensity}</span>
+              </label>
+            </>
           )}
         </div>
       )}

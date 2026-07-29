@@ -50,8 +50,11 @@ describe('vector history gesture options', () => {
     const store = useStore.getState();
     const bubble = store.documents[0].bubbles[0];
     store.pushHistory();
-    useStore.getState().updateBubble(bubble.id, { strokeWidth: 7 }, { history: false });
+    for (const strokeWidth of [5, 6, 7]) {
+      useStore.getState().updateBubble(bubble.id, { strokeWidth }, { history: false });
+    }
     expect(useStore.getState().documents[0].past).toHaveLength(1);
+    expect(useStore.getState().documents[0].bubbles[0].strokeWidth).toBe(7);
   });
 
   it('can request one history entry for a panel shape change', () => {

@@ -80,6 +80,49 @@ describe('PaintEditor', () => {
     }));
   });
 
+  it('adds and removes gradient stops with one history gesture each', () => {
+    const onChange = vi.fn();
+    const onGestureStart = vi.fn();
+    const value = {
+      type: 'linear' as const,
+      angle: 0,
+      stops: [
+        { id: 'a', offset: 0, color: '#000000' },
+        { id: 'b', offset: 0.5, color: '#888888' },
+        { id: 'c', offset: 1, color: '#ffffff' },
+      ],
+    };
+    render(
+      <PaintEditor
+        label="Заливка"
+        value={value}
+        onGestureStart={onGestureStart}
+        onChange={onChange}
+      />,
+    );
+    const bar = screen.getByRole('button', { name: 'Добавить точку градиента' });
+    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 200,
+      bottom: 38,
+      width: 200,
+      height: 38,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.click(bar, { clientX: 50 });
+    expect(onGestureStart).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      stops: expect.arrayContaining([expect.objectContaining({ offset: 0.25 })]),
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить выбранную точку' }));
+    expect(onGestureStart).toHaveBeenCalledTimes(2);
+  });
+
   it('edits radial gradient center and radius', () => {
     const onChange = vi.fn();
     const value = {
@@ -99,6 +142,38 @@ describe('PaintEditor', () => {
 
     fireEvent.change(screen.getByLabelText('Радиус градиента'), { target: { value: '125' } });
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ radius: 1.25 }));
+  });
+
+  it('reverses gradient colors and offsets', () => {
+    const onChange = vi.fn();
+    const onGestureStart = vi.fn();
+    const value = {
+      type: 'linear' as const,
+      angle: 0,
+      stops: [
+        { id: 'a', offset: 0, color: '#000000' },
+        { id: 'b', offset: 0.25, color: '#ff0000' },
+        { id: 'c', offset: 1, color: '#ffffff' },
+      ],
+    };
+    render(
+      <PaintEditor
+        label="Заливка"
+        value={value}
+        onGestureStart={onGestureStart}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть градиент' }));
+
+    expect(onGestureStart).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      stops: [
+        expect.objectContaining({ offset: 0, color: '#ffffff' }),
+        expect.objectContaining({ offset: 0.75, color: '#ff0000' }),
+        expect.objectContaining({ offset: 1, color: '#000000' }),
+      ],
+    }));
   });
 
   it('saves and applies a custom preset', () => {
@@ -131,5 +206,29 @@ describe('PaintEditor', () => {
     render(<PaintEditor label="Заливка" value={solid} glow={{ enabled: false, color: '#00e5ff', blur: 24, opacity: 0.8, intensity: 1 }} onChange={vi.fn()} onGlowChange={onGlowChange} />);
     fireEvent.click(screen.getByLabelText('Неон'));
     expect(onGlowChange).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
+  });
+
+  it('applies neon color presets and intensity controls', () => {
+    const onGlowChange = vi.fn();
+    const onGestureStart = vi.fn();
+    render(
+      <PaintEditor
+        label="Заливка"
+        value={solid}
+        glow={{ enabled: true, color: '#00e5ff', blur: 24, opacity: 0.8, intensity: 1 }}
+        onGestureStart={onGestureStart}
+        onChange={vi.fn()}
+        onGlowChange={onGlowChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Неон Розовый' }));
+    expect(onGlowChange).toHaveBeenCalledWith(expect.objectContaining({ color: '#ff4fd8' }));
+
+    fireEvent.change(screen.getByLabelText('Яркость неона'), { target: { value: '60' } });
+    expect(onGlowChange).toHaveBeenCalledWith(expect.objectContaining({ opacity: 0.6 }));
+
+    fireEvent.change(screen.getByLabelText('Интенсивность неона'), { target: { value: '3' } });
+    expect(onGlowChange).toHaveBeenCalledWith(expect.objectContaining({ intensity: 3 }));
+    expect(onGestureStart).toHaveBeenCalled();
   });
 });

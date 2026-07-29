@@ -1,5 +1,15 @@
 import { createBaseLayerState, DEFAULT_BASE_ADJUSTMENTS } from '@/types';
-import type { CropRect, ImageDocument, ShapeObject, StrokeData, TextObject, WatermarkObject, BubbleObject } from '@/types';
+import type {
+  BubbleKind,
+  BubbleObject,
+  CropRect,
+  ImageDocument,
+  ShapeKind,
+  ShapeObject,
+  StrokeData,
+  TextObject,
+  WatermarkObject,
+} from '@/types';
 import { sanitizePerspectiveQuad } from '@/utils/perspective';
 import { normalizeGlowStyle, normalizePaintStyle } from '@/utils/objectPaint';
 
@@ -11,6 +21,15 @@ export interface CoordinateSpace {
 
 const finite = (value: number) => Number.isFinite(value);
 export const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+const SHAPE_KINDS = new Set<ShapeKind>([
+  'rect', 'ellipse', 'line', 'arrow', 'star',
+  'double-arrow', 'curved-arrow', 'elbow-arrow',
+  'block-arrow', 'chevron', 'pointer',
+]);
+const BUBBLE_KINDS = new Set<BubbleKind>([
+  'speech', 'thought', 'scream', 'narration', 'whisper',
+  'soft', 'cloud', 'comic', 'electric', 'caption',
+]);
 
 export function screenToImage(point: { x: number; y: number }, space: CoordinateSpace) {
   const { viewport, imageWidth, imageHeight } = space;
@@ -128,6 +147,7 @@ export function sanitizeWatermark(wm: WatermarkObject): WatermarkObject | null {
 }
 
 export function sanitizeShape(shape: ShapeObject): ShapeObject | null {
+  if (!SHAPE_KINDS.has(shape.kind)) return null;
   if (![shape.x, shape.y, shape.width, shape.height].every(validPosition)) return null;
   return {
     ...shape,
@@ -144,6 +164,7 @@ export function sanitizeShape(shape: ShapeObject): ShapeObject | null {
 }
 
 export function sanitizeBubble(bubble: BubbleObject): BubbleObject | null {
+  if (!BUBBLE_KINDS.has(bubble.kind)) return null;
   if (![bubble.x, bubble.y, bubble.width, bubble.height].every(validPosition)) return null;
   const sanitized: BubbleObject = {
     ...bubble,

@@ -3,8 +3,9 @@
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import type { BubbleObject, BubbleKind, BubbleTail } from '@/types';
-import { MANGA_FONTS } from '@/types';
 import { getBubblePath, getThoughtTailCircles } from '@/utils/bubbleGeometry';
+import { DEFAULT_GLOW } from '@/utils/objectPaint';
+import { PaintEditor } from './PaintEditor';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mini SVG preview for each bubble kind
@@ -20,7 +21,7 @@ interface PreviewDef {
   strokeDash?: string;
 }
 
-const PREVIEWS: PreviewDef[] = [
+export const BUBBLE_PRESETS: PreviewDef[] = [
   {
     kind: 'speech',
     label: 'Речь',
@@ -47,7 +48,69 @@ const PREVIEWS: PreviewDef[] = [
     label: 'Нарратив',
     defaultTail: null,
   },
+  {
+    kind: 'soft',
+    label: 'Мягкий',
+    defaultTail: { enabled: true, side: 'bottom', anchor: 0.35, length: 0.38, width: 0.11, curve: 0.4 },
+  },
+  {
+    kind: 'cloud',
+    label: 'Облако',
+    defaultTail: { enabled: true, side: 'bottom', anchor: 0.4, length: 0.4, width: 0.12, curve: 0.25 },
+  },
+  {
+    kind: 'comic',
+    label: 'Комикс',
+    defaultTail: { enabled: true, side: 'right', anchor: 0.5, length: 0.35, width: 0.1, curve: 0.2 },
+  },
+  {
+    kind: 'electric',
+    label: 'Электро',
+    defaultTail: { enabled: true, side: 'bottom', anchor: 0.5, length: 0.32, width: 0.1, curve: 0.25 },
+  },
+  {
+    kind: 'caption',
+    label: 'Титр',
+    defaultTail: null,
+  },
 ];
+
+export function createDefaultBubble(kind: BubbleKind): BubbleObject {
+  const defaultTail = BUBBLE_PRESETS.find(preset => preset.kind === kind)?.defaultTail;
+  return {
+    id: uid(),
+    kind,
+    visible: true,
+    x: 0.5,
+    y: 0.5,
+    width: 0.3,
+    height: 0.2,
+    rotation: 0,
+    autoSize: true,
+    tail: defaultTail !== undefined ? defaultTail : {
+      enabled: true,
+      side: 'bottom',
+      anchor: 0.35,
+      length: 0.4,
+      width: 0.12,
+      curve: 0.3,
+    },
+    fill: '#ffffff',
+    stroke: '#000000',
+    strokeWidth: 2,
+    fillStyle: { type: 'solid', color: '#ffffff' },
+    strokeStyle: { type: 'solid', color: '#000000' },
+    glow: { ...DEFAULT_GLOW },
+    text: {
+      content: '',
+      fontFamily: 'Russo One',
+      fontSize: 14,
+      fill: '#000000',
+      align: 'center',
+      lineHeight: 1.3,
+    },
+  };
+}
 
 function BubblePreview({ def, active, onClick }: { def: PreviewDef; active: boolean; onClick: () => void }) {
   const W = PREVIEW_W, H = PREVIEW_H;
@@ -168,32 +231,7 @@ export function BubblePanel() {
 
   function createBubble(kind: BubbleKind) {
     if (!activeDoc) return;
-    const defaultTail = PREVIEWS.find(p => p.kind === kind)?.defaultTail;
-    const bubble: BubbleObject = {
-      id: uid(),
-      kind,
-      visible: true,
-      x: 0.5, y: 0.5,
-      width: 0.3, height: 0.2,
-      rotation: 0,
-      autoSize: true,
-      tail: defaultTail !== undefined ? defaultTail : {
-        enabled: true, side: 'bottom', anchor: 0.35,
-        length: 0.4, width: 0.12, curve: 0.3,
-      },
-      fill: '#ffffff',
-      stroke: '#000000',
-      strokeWidth: 2,
-      text: {
-        content: '',
-        fontFamily: 'Russo One',
-        fontSize: 14,
-        fill: '#000000',
-        align: 'center',
-        lineHeight: 1.3,
-      },
-    };
-    addBubble(bubble);
+    addBubble(createDefaultBubble(kind));
   }
 
   function updateTail(updates: Partial<BubbleTail>) {
@@ -211,23 +249,31 @@ export function BubblePanel() {
       {/* ── Type cards ────────────────────────────────────────────────── */}
       <div>
         <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, padding: '0 2px 6px' }}>Тип бабла</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {PREVIEWS.map(def => (
-            <BubblePreview
-              key={def.kind}
-              def={def}
-              active={selectedBubble?.kind === def.kind}
-              onClick={() => {
-                if (selectedBubble) {
-                  const newTail = def.defaultTail !== undefined ? def.defaultTail : selectedBubble.tail;
-                  updateBubble(selectedBubble.id, { kind: def.kind, tail: newTail });
-                } else {
-                  createBubble(def.kind);
-                }
-              }}
-            />
-          ))}
-        </div>
+        {[
+          { label: 'Классические', items: BUBBLE_PRESETS.slice(0, 5) },
+          { label: 'Декоративные', items: BUBBLE_PRESETS.slice(5) },
+        ].map(group => (
+          <div key={group.label} style={{ marginBottom: 7 }}>
+            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>{group.label}</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {group.items.map(def => (
+                <BubblePreview
+                  key={def.kind}
+                  def={def}
+                  active={selectedBubble?.kind === def.kind}
+                  onClick={() => {
+                    if (selectedBubble) {
+                      const newTail = def.defaultTail !== undefined ? def.defaultTail : selectedBubble.tail;
+                      updateBubble(selectedBubble.id, { kind: def.kind, tail: newTail });
+                    } else {
+                      createBubble(def.kind);
+                    }
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
         {!selectedBubble && (
           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6, padding: '0 2px' }}>
             Нажмите на карточку, чтобы добавить бабл
@@ -260,7 +306,10 @@ export function BubblePanel() {
               <input
                 type="color"
                 value={selectedBubble.fill}
-                onChange={e => updateBubble(selectedBubble.id, { fill: e.target.value })}
+                onChange={e => updateBubble(selectedBubble.id, {
+                  fill: e.target.value,
+                  fillStyle: { type: 'solid', color: e.target.value },
+                })}
                 style={{ width: 28, height: 22, border: 'none', background: 'none', cursor: 'pointer' }}
               />
             </div>
@@ -269,10 +318,35 @@ export function BubblePanel() {
               <input
                 type="color"
                 value={selectedBubble.stroke}
-                onChange={e => updateBubble(selectedBubble.id, { stroke: e.target.value })}
+                onChange={e => updateBubble(selectedBubble.id, {
+                  stroke: e.target.value,
+                  strokeStyle: { type: 'solid', color: e.target.value },
+                })}
                 style={{ width: 28, height: 22, border: 'none', background: 'none', cursor: 'pointer' }}
               />
             </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <PaintEditor
+              label="Стиль заливки"
+              value={selectedBubble.fillStyle ?? { type: 'solid', color: selectedBubble.fill }}
+              glow={selectedBubble.glow}
+              onChange={style => updateBubble(selectedBubble.id, {
+                fillStyle: style,
+                ...(style.type === 'solid' ? { fill: style.color } : {}),
+              })}
+              onGlowChange={glow => updateBubble(selectedBubble.id, { glow })}
+            />
+            <PaintEditor
+              label="Стиль обводки"
+              value={selectedBubble.strokeStyle ?? { type: 'solid', color: selectedBubble.stroke }}
+              allowRadial={false}
+              onChange={style => updateBubble(selectedBubble.id, {
+                strokeStyle: style,
+                ...(style.type === 'solid' ? { stroke: style.color } : {}),
+              })}
+            />
           </div>
 
           <SliderRow

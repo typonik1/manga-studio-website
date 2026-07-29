@@ -3,10 +3,24 @@
 import { useRef, useState } from 'react';
 import { GripVertical } from 'lucide-react';
 import { useStore } from '@/store/useStore';
-import type { ImageDocument, LayerVisibility, BaseLayerAdjustments } from '@/types';
+import type { ImageDocument, LayerVisibility, BaseLayerAdjustments, ShapeKind } from '@/types';
 import { LayerContextMenu } from './LayerContextMenu';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { createDrawingLayer } from '@/utils/layerActions';
+
+const SHAPE_LABELS: Record<ShapeKind, string> = {
+  rect: 'Прямоугольник',
+  ellipse: 'Эллипс',
+  line: 'Линия',
+  arrow: 'Стрелка',
+  star: 'Звезда',
+  'double-arrow': 'Двойная стрелка',
+  'curved-arrow': 'Изогнутая стрелка',
+  'elbow-arrow': 'Угловая стрелка',
+  'block-arrow': 'Блочная стрелка',
+  chevron: 'Шеврон',
+  pointer: 'Указатель',
+};
 
 /** Pointer-capture range slider — prevents drag-ghost when dragging inside a layer row. */
 function LayerSlider({
@@ -439,12 +453,7 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                     {objDragHandle}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <ObjectRow
-                        label={
-                          shape.kind === 'rect' ? 'Прямоугольник' :
-                          shape.kind === 'ellipse' ? 'Эллипс' :
-                          shape.kind === 'line' ? 'Линия' :
-                          shape.kind === 'arrow' ? 'Стрелка' : 'Звезда'
-                        }
+                        label={SHAPE_LABELS[shape.kind]}
                         prefix="S"
                         isSelected={selectedObject?.id === shape.id}
                         visible={shape.visible}

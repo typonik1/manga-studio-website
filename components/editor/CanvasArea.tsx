@@ -755,6 +755,7 @@ function ShapeNode({
           glowScale={previewScale}
           dash={dash}
           dashEnabled={Boolean(dash)}
+          hitStrokeWidth={shape.kind === 'line' ? Math.max(16, strokeW) : undefined}
         />
       )}
       {geometry.fillPath && (

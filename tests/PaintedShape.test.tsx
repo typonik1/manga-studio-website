@@ -8,6 +8,8 @@ vi.mock('react-konva', () => ({
     shadowBlur?: number;
     shadowOpacity?: number;
     opacity?: number;
+    lineCap?: string;
+    hitStrokeWidth?: number;
     strokeWidth?: number;
   }) => (
     <div
@@ -16,6 +18,8 @@ vi.mock('react-konva', () => ({
       data-shadow-blur={props.shadowBlur}
       data-shadow-opacity={props.shadowOpacity}
       data-opacity={props.opacity}
+      data-line-cap={props.lineCap}
+      data-hit-stroke-width={props.hitStrokeWidth}
       data-stroke-width={props.strokeWidth}
     />
   ),
@@ -41,5 +45,19 @@ describe('PaintedShape glow', () => {
     expect(paths[0].getAttribute('data-shadow-blur')).toBe('10');
     expect(paths[0].getAttribute('data-shadow-opacity')).toBe('1');
     expect(paths[0].getAttribute('data-opacity')).toBe('0.4');
+    expect(paths.at(-1)?.getAttribute('data-line-cap')).toBe('round');
+  });
+
+  it('preserves a widened hit area for thin interactive lines', () => {
+    render(
+      <PaintedShape
+        data="M 0 0 L 10 0"
+        bounds={{ x: 0, y: 0, width: 10, height: 10 }}
+        strokeStyle={{ type: 'solid', color: '#ffffff' }}
+        strokeWidth={2}
+        hitStrokeWidth={16}
+      />,
+    );
+    expect(screen.getByTestId('painted-path').getAttribute('data-hit-stroke-width')).toBe('16');
   });
 });

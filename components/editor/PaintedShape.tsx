@@ -17,6 +17,7 @@ interface PaintedShapeProps {
   glowScale?: number;
   dash?: number[];
   dashEnabled?: boolean;
+  hitStrokeWidth?: number;
   listening?: boolean;
   opacity?: number;
 }
@@ -33,6 +34,7 @@ export function PaintedShape({
   glowScale = 1,
   dash,
   dashEnabled,
+  hitStrokeWidth,
   listening = true,
   opacity = 1,
 }: PaintedShapeProps) {
@@ -67,6 +69,8 @@ export function PaintedShape({
           shadowBlur={scaledGlowBlur * (1 + index * 0.35)}
           shadowOpacity={1}
           opacity={opacity * glowStyle.opacity / glowPasses}
+          lineCap="round"
+          lineJoin="round"
           dash={dash}
           dashEnabled={dashEnabled}
           listening={false}
@@ -79,7 +83,10 @@ export function PaintedShape({
         strokeWidth={strokeWidth}
         dash={dash}
         dashEnabled={dashEnabled}
+        hitStrokeWidth={hitStrokeWidth}
         opacity={opacity}
+        lineCap="round"
+        lineJoin="round"
         listening={listening}
       />
     </Fragment>

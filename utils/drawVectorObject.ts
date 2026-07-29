@@ -99,54 +99,14 @@ function drawPaintedPath(
   }
 }
 
-function roundedRectPath(width: number, height: number, radius: number) {
-  const hw = width / 2;
-  const hh = height / 2;
-  const r = Math.min(radius, hw, hh);
-  return [
-    `M ${-hw + r} ${-hh}`,
-    `L ${hw - r} ${-hh}`,
-    `Q ${hw} ${-hh} ${hw} ${-hh + r}`,
-    `L ${hw} ${hh - r}`,
-    `Q ${hw} ${hh} ${hw - r} ${hh}`,
-    `L ${-hw + r} ${hh}`,
-    `Q ${-hw} ${hh} ${-hw} ${hh - r}`,
-    `L ${-hw} ${-hh + r}`,
-    `Q ${-hw} ${-hh} ${-hw + r} ${-hh}`,
-    'Z',
-  ].join(' ');
-}
-
-function starPath(width: number, height: number) {
-  const outer = Math.min(width, height) / 2;
-  const inner = outer / 2;
-  const parts: string[] = [];
-  for (let i = 0; i < 10; i++) {
-    const radius = i % 2 === 0 ? outer : inner;
-    const angle = Math.PI / 5 * i - Math.PI / 2;
-    parts.push(`${i === 0 ? 'M' : 'L'} ${Math.cos(angle) * radius} ${Math.sin(angle) * radius}`);
-  }
-  return `${parts.join(' ')} Z`;
-}
-
 function shapePaths(shape: ShapeObject, width: number, height: number) {
-  if (shape.kind === 'rect') {
-    return { fillPath: roundedRectPath(width, height, shape.cornerRadius), strokePath: roundedRectPath(width, height, shape.cornerRadius) };
-  }
-  if (shape.kind === 'ellipse') {
-    const path = getBubblePath('speech', {
-      x: 0, y: 0, width, height, rotation: 0, tail: null,
-    });
-    return { fillPath: path, strokePath: path };
-  }
-  if (shape.kind === 'star') {
-    const path = starPath(width, height);
-    return { fillPath: path, strokePath: path };
-  }
-  if (shape.kind === 'line') {
-    return { strokePath: `M ${-width / 2} 0 L ${width / 2} 0` };
-  }
-  return getShapeGeometry(shape.kind, width, height, shape.curve ?? 0.35);
+  return getShapeGeometry(
+    shape.kind,
+    width,
+    height,
+    shape.curve ?? 0.35,
+    shape.cornerRadius,
+  );
 }
 
 export function drawShapeToContext(
@@ -161,7 +121,8 @@ export function drawShapeToContext(
   const bounds = { x: -width / 2, y: -height / 2, width, height };
   const paths = shapePaths(shape, width, height);
   const fillStyle = shape.fillStyle ?? { type: 'solid' as const, color: shape.fill || 'transparent' };
-  const strokeStyle = shape.strokeStyle ?? { type: 'solid' as const, color: shape.stroke || '#000000' };
+  const strokeFallback = shape.stroke === '' ? 'transparent' : shape.stroke || '#000000';
+  const strokeStyle = shape.strokeStyle ?? { type: 'solid' as const, color: strokeFallback };
   const open = isOpenShape(shape.kind) || shape.kind === 'line';
 
   ctx.save();
@@ -180,7 +141,7 @@ export function drawShapeToContext(
   if (paths.strokePath && (open || !paths.fillPath)) {
     drawPaintedPath(ctx, new Path2D(paths.strokePath), bounds, {
       strokeStyle,
-      fallbackStroke: shape.stroke,
+      fallbackStroke: strokeFallback,
       strokeWidth: shape.strokeWidth,
       glow: shape.glow,
       fill: false,
@@ -190,8 +151,8 @@ export function drawShapeToContext(
     drawPaintedPath(ctx, new Path2D(paths.fillPath), bounds, {
       fillStyle: open ? strokeStyle : fillStyle,
       strokeStyle: open ? undefined : strokeStyle,
-      fallbackFill: open ? shape.stroke : shape.fill,
-      fallbackStroke: shape.stroke,
+      fallbackFill: open ? strokeFallback : shape.fill,
+      fallbackStroke: strokeFallback,
       strokeWidth: open ? 0 : shape.strokeWidth,
       glow: shape.glow,
     });

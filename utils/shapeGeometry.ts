@@ -101,13 +101,58 @@ function pointer(width: number, height: number): ShapeGeometry {
   return { fillPath: `M ${-hw} ${-hh} L ${hw} 0 L ${-hw} ${hh} Z` };
 }
 
+function roundedRect(width: number, height: number, radius: number): ShapeGeometry {
+  const hw = width / 2;
+  const hh = height / 2;
+  const r = Math.max(0, Math.min(radius, hw, hh));
+  return {
+    fillPath: [
+      `M ${-hw + r} ${-hh}`,
+      `L ${hw - r} ${-hh}`,
+      `Q ${hw} ${-hh} ${hw} ${-hh + r}`,
+      `L ${hw} ${hh - r}`,
+      `Q ${hw} ${hh} ${hw - r} ${hh}`,
+      `L ${-hw + r} ${hh}`,
+      `Q ${-hw} ${hh} ${-hw} ${hh - r}`,
+      `L ${-hw} ${-hh + r}`,
+      `Q ${-hw} ${-hh} ${-hw + r} ${-hh}`,
+      'Z',
+    ].join(' '),
+  };
+}
+
+function ellipse(width: number, height: number): ShapeGeometry {
+  const rx = width / 2;
+  const ry = height / 2;
+  return {
+    fillPath: `M ${-rx} 0 A ${rx} ${ry} 0 1 0 ${rx} 0 A ${rx} ${ry} 0 1 0 ${-rx} 0 Z`,
+  };
+}
+
+function star(width: number, height: number): ShapeGeometry {
+  const outer = Math.min(width, height) / 2;
+  const inner = outer / 2;
+  const parts: string[] = [];
+  for (let index = 0; index < 10; index++) {
+    const radius = index % 2 === 0 ? outer : inner;
+    const angle = Math.PI / 5 * index - Math.PI / 2;
+    parts.push(`${index === 0 ? 'M' : 'L'} ${Math.cos(angle) * radius} ${Math.sin(angle) * radius}`);
+  }
+  return { fillPath: `${parts.join(' ')} Z` };
+}
+
 export function getShapeGeometry(
   kind: ShapeKind,
   width: number,
   height: number,
   curve = 0.35,
+  cornerRadius = 0,
 ): ShapeGeometry {
   switch (kind) {
+    case 'rect': return roundedRect(width, height, cornerRadius);
+    case 'ellipse': return ellipse(width, height);
+    case 'line': return { strokePath: `M ${-width / 2} 0 L ${width / 2} 0` };
+    case 'star': return star(width, height);
     case 'arrow': return straightArrow(width, height);
     case 'double-arrow': return straightArrow(width, height, true);
     case 'curved-arrow': return curvedArrow(width, height, curve);

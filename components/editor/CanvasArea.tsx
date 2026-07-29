@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Ellipse, Star, Circle } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Circle } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
@@ -21,7 +21,6 @@ import { drawBrushStroke } from '@/utils/brushRaster';
 import { clonePerspectiveQuad, drawPerspectiveImage, isValidPerspectiveQuad } from '@/utils/perspective';
 import { getShapeGeometry } from '@/utils/shapeGeometry';
 import { isOpenShape } from '@/utils/shapePresets';
-import { normalizeGlowStyle, toKonvaPaintProps } from '@/utils/objectPaint';
 import { PaintedShape } from './PaintedShape';
 import {
   extractClipboardImageFiles,
@@ -728,99 +727,51 @@ function ShapeNode({
 
   const bounds = { x: -w / 2, y: -h / 2, width: w, height: h };
   const fillStyle = shape.fillStyle ?? { type: 'solid' as const, color: shape.fill || 'transparent' };
-  const strokeStyle = shape.strokeStyle ?? { type: 'solid' as const, color: shape.stroke || '#000000' };
-  const fillProps = toKonvaPaintProps(fillStyle, bounds, 'fill', shape.fill || 'transparent');
-  const strokeProps = toKonvaPaintProps(strokeStyle, bounds, 'stroke', shape.stroke || '#000000');
-  const glow = normalizeGlowStyle(shape.glow);
+  const strokeFallback = shape.stroke === '' ? 'transparent' : shape.stroke || '#000000';
+  const strokeStyle = shape.strokeStyle ?? { type: 'solid' as const, color: strokeFallback };
   const dash = shape.lineStyle === 'dashed'
     ? [12 * previewScale, 8 * previewScale]
     : shape.lineStyle === 'dotted'
       ? [2 * previewScale, 7 * previewScale]
       : undefined;
-  const sharedVisual = {
-    ...fillProps,
-    ...strokeProps,
-    strokeWidth: strokeW,
-    dash,
-    dashEnabled: Boolean(dash),
-    shadowColor: glow.enabled ? glow.color : undefined,
-    shadowBlur: glow.enabled ? glow.blur * previewScale : 0,
-    shadowOpacity: glow.enabled ? glow.opacity : 0,
-  };
-
-  let node: React.ReactNode;
-  if (shape.kind === 'rect') {
-    node = (
-      <Rect
-        {...sharedVisual}
-        offsetX={w / 2}
-        offsetY={h / 2}
-        width={w}
-        height={h}
-        cornerRadius={shape.cornerRadius * previewScale}
-      />
-    );
-  } else if (shape.kind === 'ellipse') {
-    node = (
-      <Ellipse
-        {...sharedVisual}
-        radiusX={w / 2}
-        radiusY={h / 2}
-      />
-    );
-  } else if (shape.kind === 'line') {
-    node = (
-      <Line
-        {...sharedVisual}
-        fill={undefined}
-        points={[-w / 2, 0, w / 2, 0]}
-        lineCap="round"
-        hitStrokeWidth={Math.max(16, strokeW)}
-      />
-    );
-  } else if (shape.kind === 'star') {
-    node = (
-      <Star
-        {...sharedVisual}
-        numPoints={5}
-        innerRadius={Math.min(w, h) / 4}
-        outerRadius={Math.min(w, h) / 2}
-      />
-    );
-  } else {
-    const geometry = getShapeGeometry(shape.kind, w, h, shape.curve ?? 0.35);
-    const open = isOpenShape(shape.kind);
-    node = (
-      <>
-        {geometry.strokePath && (
-          <PaintedShape
-            data={geometry.strokePath}
-            bounds={bounds}
-            strokeStyle={strokeStyle}
-            fallbackStroke={shape.stroke}
-            strokeWidth={strokeW}
-            glow={shape.glow}
-            glowScale={previewScale}
-            dash={dash}
-            dashEnabled={Boolean(dash)}
-          />
-        )}
-        {geometry.fillPath && (
-          <PaintedShape
-            data={geometry.fillPath}
-            bounds={bounds}
-            fillStyle={open ? strokeStyle : fillStyle}
-            strokeStyle={open ? undefined : strokeStyle}
-            fallbackFill={open ? shape.stroke : shape.fill}
-            fallbackStroke={open ? '' : shape.stroke}
-            strokeWidth={open ? 0 : strokeW}
-            glow={shape.glow}
-            glowScale={previewScale}
-          />
-        )}
-      </>
-    );
-  }
+  const geometry = getShapeGeometry(
+    shape.kind,
+    w,
+    h,
+    shape.curve ?? 0.35,
+    shape.cornerRadius * previewScale,
+  );
+  const open = isOpenShape(shape.kind);
+  const node = (
+    <>
+      {geometry.strokePath && (
+        <PaintedShape
+          data={geometry.strokePath}
+          bounds={bounds}
+          strokeStyle={strokeStyle}
+          fallbackStroke={strokeFallback}
+          strokeWidth={strokeW}
+          glow={shape.glow}
+          glowScale={previewScale}
+          dash={dash}
+          dashEnabled={Boolean(dash)}
+        />
+      )}
+      {geometry.fillPath && (
+        <PaintedShape
+          data={geometry.fillPath}
+          bounds={bounds}
+          fillStyle={open ? strokeStyle : fillStyle}
+          strokeStyle={open ? undefined : strokeStyle}
+          fallbackFill={open ? strokeFallback : shape.fill}
+          fallbackStroke={open ? '' : strokeFallback}
+          strokeWidth={open ? 0 : strokeW}
+          glow={shape.glow}
+          glowScale={previewScale}
+        />
+      )}
+    </>
+  );
 
   const curve = shape.curve ?? 0.35;
   const curveLocalY = -curve * h * 0.8;

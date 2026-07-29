@@ -3,6 +3,13 @@ import { getShapeGeometry } from '@/utils/shapeGeometry';
 import type { ShapeKind } from '@/types';
 
 describe('pointer geometry', () => {
+  it('provides shared paths for every basic shape', () => {
+    expect(getShapeGeometry('rect', 100, 60, 0, 12).fillPath).toContain('Q');
+    expect(getShapeGeometry('ellipse', 100, 60).fillPath).toContain('A 50 30');
+    expect(getShapeGeometry('line', 100, 60).strokePath).toContain('L 50 0');
+    expect(getShapeGeometry('star', 100, 60).fillPath).toMatch(/Z$/);
+  });
+
   it('returns required paths for every pointer kind', () => {
     const kinds: ShapeKind[] = [
       'arrow',

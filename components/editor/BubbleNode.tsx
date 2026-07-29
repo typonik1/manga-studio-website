@@ -6,12 +6,20 @@ import Konva from 'konva';
 import type { BubbleObject, BubbleTail } from '@/types';
 import { getBubblePath, resolveTail, tailTipPixels, migrateTail, getThoughtTailCircles } from '@/utils/bubbleGeometry';
 import { PaintedShape } from './PaintedShape';
-import { toKonvaPaintProps } from '@/utils/objectPaint';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+function circlePath(cx: number, cy: number, radius: number) {
+  return [
+    `M ${cx + radius} ${cy}`,
+    `A ${radius} ${radius} 0 1 0 ${cx - radius} ${cy}`,
+    `A ${radius} ${radius} 0 1 0 ${cx + radius} ${cy}`,
+    'Z',
+  ].join(' ');
+}
 
 /** Convert local-pixel tip drag position back to structured tail params */
 function tipPixelToTail(
@@ -141,7 +149,8 @@ export function BubbleNode({
   const isDashed = bubble.kind === 'whisper';
   const paintBounds = { x: -bodyW / 2, y: -bodyH / 2, width: bodyW, height: bodyH };
   const fillStyle = bubble.fillStyle ?? { type: 'solid' as const, color: bubble.fill };
-  const strokeStyle = bubble.strokeStyle ?? { type: 'solid' as const, color: bubble.stroke };
+  const strokeFallback = bubble.stroke === '' ? 'transparent' : bubble.stroke || '#000000';
+  const strokeStyle = bubble.strokeStyle ?? { type: 'solid' as const, color: strokeFallback };
 
   // ── Drag handlers ────────────────────────────────────────────────────────
   const handleGroupDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
@@ -209,7 +218,7 @@ export function BubbleNode({
           fillStyle={fillStyle}
           strokeStyle={strokeStyle}
           fallbackFill={bubble.fill}
-          fallbackStroke={bubble.stroke}
+          fallbackStroke={strokeFallback}
           strokeWidth={bubble.strokeWidth * previewScale}
           dash={isDashed ? [6 * previewScale, 4 * previewScale] : undefined}
           dashEnabled={isDashed}
@@ -221,14 +230,17 @@ export function BubbleNode({
         {thoughtCircles.map((c, i) => {
           const circleBounds = { x: c.cx - c.r, y: c.cy - c.r, width: c.r * 2, height: c.r * 2 };
           return (
-            <Circle
+            <PaintedShape
               key={i}
-              x={c.cx}
-              y={c.cy}
-              radius={c.r}
-              {...toKonvaPaintProps(fillStyle, circleBounds, 'fill', bubble.fill)}
-              {...toKonvaPaintProps(strokeStyle, circleBounds, 'stroke', bubble.stroke)}
+              data={circlePath(c.cx, c.cy, c.r)}
+              bounds={circleBounds}
+              fillStyle={fillStyle}
+              strokeStyle={strokeStyle}
+              fallbackFill={bubble.fill}
+              fallbackStroke={strokeFallback}
               strokeWidth={bubble.strokeWidth * previewScale}
+              glow={bubble.glow}
+              glowScale={previewScale}
               listening={false}
             />
           );

@@ -129,8 +129,10 @@ export function cloneGlowStyle(glow: GlowStyle | undefined): GlowStyle {
 
 export function getLinearGradientPoints(angle: number, bounds: PaintBounds): GradientPoints {
   const radians = (((finite(angle, 0) % 360) + 360) % 360) * Math.PI / 180;
-  const length = Math.hypot(bounds.width, bounds.height);
-  const halfLength = length / 2;
+  const halfLength = (
+    Math.abs(bounds.width * Math.cos(radians))
+    + Math.abs(bounds.height * Math.sin(radians))
+  ) / 2;
   const cx = bounds.x + bounds.width / 2;
   const cy = bounds.y + bounds.height / 2;
   const dx = Math.cos(radians) * halfLength;

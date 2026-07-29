@@ -7,6 +7,7 @@ import { buildCleanupSourceCanvas } from '@/utils/cleanupRaster';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { getBubblePath, tailTipPixels } from '@/utils/bubbleGeometry';
 import { drawBrushStroke } from '@/utils/brushRaster';
+import { drawBubbleToContext, drawShapeToContext } from '@/utils/drawVectorObject';
 
 async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
   // Make sure web fonts are loaded before drawing text to canvas
@@ -214,10 +215,10 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
       if (txt) drawText(txt);
     } else if (ref.type === 'shape') {
       const shape = (doc.shapes ?? []).find(item => item.id === ref.id);
-      if (shape) drawShape(shape);
+      if (shape) drawShapeToContext(ctx, shape, doc.width, doc.height);
     } else if (ref.type === 'bubble') {
       const bubble = (doc.bubbles ?? []).find(item => item.id === ref.id);
-      if (bubble) drawBubble(bubble);
+      if (bubble) drawBubbleToContext(ctx, bubble, doc.width, doc.height);
     }
   }
 

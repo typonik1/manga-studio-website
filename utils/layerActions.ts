@@ -66,7 +66,9 @@ export async function deleteMaskedPixels(target?: { id?: string; type: 'base' | 
   const resolved = target ?? (doc.selectedLayer?.type === 'ai' ? { id: doc.selectedLayer.id, type: 'ai' as const } : { type: 'base' as const });
 
   if (resolved.type === 'ai' && resolved.id) {
-    if (!doc.aiLayers.some(layer => layer.id === resolved.id)) throw new Error('Слой не найден.');
+    const source = doc.aiLayers.find(layer => layer.id === resolved.id);
+    if (!source) throw new Error('Слой не найден.');
+    if (source.locked) throw new Error('Слой заблокирован. Сначала снимите замок.');
     state.addEraseElement({ id: resolved.id, type: 'ai' }, element);
     finishSelection();
     return;

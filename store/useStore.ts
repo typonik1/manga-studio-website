@@ -34,6 +34,9 @@ import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
 import { clonePerspectiveQuad } from '@/utils/perspective';
 import { cloneGlowStyle, clonePaintStyle } from '@/utils/objectPaint';
 import { storeDefaultTranslationFont } from '@/utils/fonts';
+import { filterLockedGeometryUpdates } from '@/utils/lockedUpdates';
+import { addRecentColor, loadStoredRecentColors, storeRecentColors } from '@/utils/recentColors';
+import { documentObjectUrlReferencesChanged, revokeUnusedDocumentObjectUrls } from '@/utils/objectUrls';
 
 const MAX_HISTORY = 40;
 
@@ -112,7 +115,7 @@ function cloneElements(elements: MaskElement[] | undefined): MaskElement[] {
 
 function snap(doc: ImageDocument): HistorySnapshot {
   return {
-    cleanup: { committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
+    cleanup: { ...doc.cleanup, committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
     baseLayer: doc.baseLayer
       ? { ...doc.baseLayer, eraseElements: cloneElements(doc.baseLayer.eraseElements), adjustments: { ...doc.baseLayer.adjustments }, perspective: clonePerspectiveQuad(doc.baseLayer.perspective) }
       : createBaseLayerState(doc.id),
@@ -163,6 +166,7 @@ export interface AppState {
   wmSettings: WatermarkSettings;
   cleanupSettings: CleanupSettings;
   textSettings: TextSettings;
+  recentColors: string[];
   exportSettings: ExportSettings;
   viewport: ViewportState;
   layerVisibility: LayerVisibility;
@@ -191,6 +195,7 @@ export interface AppState {
   cancelLayerCrop: () => void;
   addDocuments: (docs: ImageDocument[]) => void;
   removeDocument: (id: string) => void;
+  reorderDocuments: (sourceIndex: number, destinationIndex: number) => void;
   setActiveDoc: (index: number) => void;
   setActiveTool: (tool: ActiveTool) => void;
   setLeftTab: (tab: LeftTab) => void;
@@ -201,12 +206,14 @@ export interface AppState {
   moveSelectedObject: (direction: 'forward' | 'backward') => void;
   updateDocumentThumbnail: (id: string, dataUrl: string) => void;
   addStroke: (stroke: StrokeData) => void;
+  updateCleanupLayer: (updates: Partial<Pick<ImageDocument['cleanup'], 'locked'>>) => void;
   createMask: () => string | null;
   selectLayer: (layer: SelectedLayer | null) => void;
   addMaskStroke: (stroke: StrokeData) => void;
-  addMaskElement: (element: MaskElement, options?: { replace?: boolean }) => void;
+  addMaskElement: (element: MaskElement, options?: { replace?: boolean; documentId?: string; maskId?: string | null; preserveSelection?: boolean }) => void;
+  removeMaskElement: (documentId: string, maskId: string, elementId: string) => void;
   clearActiveMask: () => void;
-  updateMask: (id: string, updates: Partial<Pick<MaskLayer, 'name' | 'visible' | 'opacity'>>) => void;
+  updateMask: (id: string, updates: Partial<Pick<MaskLayer, 'name' | 'visible' | 'opacity' | 'locked'>>, options?: { history?: boolean }) => void;
   deleteMask: (id: string) => void;
   addAiLayer: (documentId: string, layer: AiRasterLayer) => void;
   updateAiLayer: (id: string, updates: Partial<Omit<AiRasterLayer, 'id' | 'operation'>>, options?: { history?: boolean }) => void;
@@ -231,7 +238,7 @@ export interface AppState {
   deleteWatermark: (id: string) => void;
   batchApplyWatermark: () => void;
   addText: (text: TextObject) => void;
-  updateText: (id: string, updates: Partial<TextObject>) => void;
+  updateText: (id: string, updates: Partial<TextObject>, options?: { history?: boolean }) => void;
   deleteText: (id: string) => void;
   restorePageSourceText: () => void;
   addShape: (shape: ShapeObject) => void;
@@ -259,6 +266,7 @@ export interface AppState {
   updateWmSettings: (updates: Partial<WatermarkSettings>) => void;
   updateCleanupSettings: (updates: Partial<CleanupSettings>) => void;
   updateTextSettings: (updates: Partial<TextSettings>) => void;
+  rememberTextColor: (color: string) => void;
   updateExportSettings: (updates: Partial<ExportSettings>) => void;
   setViewport: (vp: Partial<ViewportState>) => void;
   undo: () => void;
@@ -282,6 +290,7 @@ export const useStore = create<AppState>((set, get) => ({
   wmSettings: defaultWmSettings,
   cleanupSettings: defaultCleanupSettings,
   textSettings: defaultTextSettings,
+  recentColors: loadStoredRecentColors(),
   exportSettings: defaultExportSettings,
   viewport: { x: 0, y: 0, scale: 1 },
   layerVisibility: { base: true, cleanup: true, watermarks: true, texts: true, shapes: true },
@@ -312,15 +321,17 @@ export const useStore = create<AppState>((set, get) => ({
     const placement = target.type === 'base'
       ? doc?.baseLayer
       : doc?.aiLayers.find(layer => layer.id === target.id);
+    if (!placement || placement.locked) return;
     const localRect = doc && placement && !placement.perspective
       ? docRectToLocalRect(rect, placement, doc.width, doc.height)
       : rect;
-    // Unlock the layer so the cropped fragment can immediately be moved/scaled
-    // with the select tool — that's what users expect right after cropping.
+    // One history entry for the whole action. Locked layers are rejected above
+    // so this action cannot silently bypass the central geometry guard.
+    state.pushHistory();
     if (target.type === 'base') {
-      state.updateBaseLayer({ crop: localRect, locked: false });
+      state.updateBaseLayer({ crop: localRect }, { history: false });
     } else if (target.type === 'ai') {
-      state.updateAiLayer(target.id, { crop: localRect, locked: false });
+      state.updateAiLayer(target.id, { crop: localRect }, { history: false });
     }
     // Keep the layer selected so the transformer appears right away.
     state.selectLayer({ id: target.id, type: target.type as 'base' | 'ai' });
@@ -341,9 +352,29 @@ export const useStore = create<AppState>((set, get) => ({
 
   removeDocument: (id) =>
     set(state => {
+      const activeId = state.documents[state.activeDocIndex]?.id;
+      const removedIndex = state.documents.findIndex(document => document.id === id);
       const docs = state.documents.filter(d => d.id !== id);
-      const idx = Math.min(Math.max(0, state.activeDocIndex), docs.length - 1);
+      const preservedIndex = activeId === id ? -1 : docs.findIndex(document => document.id === activeId);
+      const idx = preservedIndex >= 0
+        ? preservedIndex
+        : Math.min(Math.max(0, removedIndex), docs.length - 1);
       return { documents: docs, activeDocIndex: docs.length === 0 ? -1 : idx, selectedObject: null };
+    }),
+
+  reorderDocuments: (sourceIndex, destinationIndex) =>
+    set(state => {
+      if (
+        sourceIndex < 0 || destinationIndex < 0
+        || sourceIndex >= state.documents.length || destinationIndex >= state.documents.length
+        || sourceIndex === destinationIndex
+      ) return {};
+      const activeId = state.documents[state.activeDocIndex]?.id;
+      const documents = [...state.documents];
+      const [moved] = documents.splice(sourceIndex, 1);
+      documents.splice(destinationIndex, 0, moved);
+      const activeDocIndex = activeId ? documents.findIndex(doc => doc.id === activeId) : -1;
+      return { documents, activeDocIndex };
     }),
 
   setActiveDoc: (index) =>
@@ -420,6 +451,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const doc = docs[state.activeDocIndex];
+      if (doc.cleanup.locked) return {};
       const withH = withHistory(doc);
       docs[state.activeDocIndex] = {
         ...withH,
@@ -427,6 +459,14 @@ export const useStore = create<AppState>((set, get) => ({
       };
       return { documents: docs };
     }),
+
+  updateCleanupLayer: (updates) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(docs[state.activeDocIndex]);
+    docs[state.activeDocIndex] = { ...doc, cleanup: { ...doc.cleanup, ...updates } };
+    return { documents: docs };
+  }),
 
   createMask: () => {
     const state = get();
@@ -455,6 +495,8 @@ export const useStore = create<AppState>((set, get) => ({
     const docs = [...state.documents];
     let doc = docs[state.activeDocIndex];
     let maskId = doc.activeMaskId;
+    const activeMask = maskId ? (doc.masks ?? []).find(mask => mask.id === maskId) : null;
+    if (activeMask?.locked) return {};
     if (!maskId || !(doc.masks ?? []).some(mask => mask.id === maskId)) {
       maskId = `mask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       doc = { ...doc, masks: [...(doc.masks ?? []), { id: maskId, name: `Маска ${(doc.masks?.length ?? 0) + 1}`, strokes: [], elements: [], visible: true, opacity: 0.55 }] };
@@ -474,16 +516,24 @@ export const useStore = create<AppState>((set, get) => ({
   }),
 
   addMaskElement: (element, options) => set(state => {
-    if (state.activeDocIndex < 0) return {};
+    const documentIndex = options?.documentId
+      ? state.documents.findIndex(document => document.id === options.documentId)
+      : state.activeDocIndex;
+    if (documentIndex < 0) return {};
     const docs = [...state.documents];
-    let doc = docs[state.activeDocIndex];
-    let maskId = doc.activeMaskId;
+    let doc = docs[documentIndex];
+    const hasExplicitMask = options ? Object.prototype.hasOwnProperty.call(options, 'maskId') : false;
+    let maskId = hasExplicitMask ? options?.maskId ?? null : doc.activeMaskId;
+    if (hasExplicitMask && maskId && !doc.masks.some(mask => mask.id === maskId)) return {};
+    const activeMask = maskId ? doc.masks.find(mask => mask.id === maskId) : null;
+    if (activeMask?.locked) return {};
     if (!maskId || !doc.masks.some(mask => mask.id === maskId)) {
       maskId = `mask-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       doc = { ...doc, masks: [...doc.masks, { id: maskId, name: `Маска ${doc.masks.length + 1}`, strokes: [], elements: [], visible: true, opacity: 0.55 }] };
     }
     const withH = withHistory(doc);
-    docs[state.activeDocIndex] = {
+    const preserveCurrentSelection = options?.preserveSelection === true && documentIndex === state.activeDocIndex;
+    docs[documentIndex] = {
       ...withH,
       masks: withH.masks.map(mask => mask.id === maskId
         ? {
@@ -492,10 +542,29 @@ export const useStore = create<AppState>((set, get) => ({
             elements: options?.replace ? [element] : [...(mask.elements ?? []), element],
           }
         : mask),
-      activeMaskId: maskId,
-      selectedLayer: { id: maskId, type: 'mask' },
+      activeMaskId: preserveCurrentSelection ? withH.activeMaskId : maskId,
+      selectedLayer: preserveCurrentSelection ? withH.selectedLayer : { id: maskId, type: 'mask' },
     };
-    return { documents: docs, selectedObject: null };
+    return documentIndex === state.activeDocIndex ? { documents: docs, selectedObject: null } : { documents: docs };
+  }),
+
+  removeMaskElement: (documentId, maskId, elementId) => set(state => {
+    const documentIndex = state.documents.findIndex(document => document.id === documentId);
+    if (documentIndex < 0) return {};
+    const current = state.documents[documentIndex];
+    const mask = current.masks.find(item => item.id === maskId);
+    // Exact rollback primitive for the wand confirmation: it may remove only
+    // the identified element even if the user locked the mask afterward.
+    if (!mask || !mask.elements.some(element => element.id === elementId)) return {};
+    const docs = [...state.documents];
+    const doc = withHistory(current);
+    docs[documentIndex] = {
+      ...doc,
+      masks: doc.masks.map(item => item.id === maskId
+        ? { ...item, elements: item.elements.filter(element => element.id !== elementId) }
+        : item),
+    };
+    return { documents: docs };
   }),
 
   clearActiveMask: () => set(state => {
@@ -504,16 +573,17 @@ export const useStore = create<AppState>((set, get) => ({
     const current = docs[state.activeDocIndex];
     if (!current.activeMaskId) return {};
     const mask = current.masks.find(item => item.id === current.activeMaskId);
-    if (!mask || (!mask.strokes.length && !(mask.elements?.length))) return {};
+    if (!mask || mask.locked || (!mask.strokes.length && !(mask.elements?.length))) return {};
     const doc = withHistory(current);
     docs[state.activeDocIndex] = { ...doc, masks: doc.masks.map(item => item.id === doc.activeMaskId ? { ...item, strokes: [], elements: [] } : item) };
     return { documents: docs };
   }),
 
-  updateMask: (id, updates) => set(state => {
+  updateMask: (id, updates, options) => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
-    const doc = withHistory(docs[state.activeDocIndex]);
+    const current = docs[state.activeDocIndex];
+    const doc = options?.history === false ? { ...current, hasChanges: true } : withHistory(current);
     docs[state.activeDocIndex] = { ...doc, masks: doc.masks.map(mask => mask.id === id ? { ...mask, ...updates } : mask) };
     return { documents: docs };
   }),
@@ -550,9 +620,14 @@ export const useStore = create<AppState>((set, get) => ({
 
   updateAiLayer: (id, updates, options) => set(state => {
     if (state.activeDocIndex < 0) return {};
+    const current = state.documents[state.activeDocIndex];
+    const target = current.aiLayers.find(layer => layer.id === id);
+    if (!target) return {};
+    const allowedUpdates = filterLockedGeometryUpdates(target.locked, updates);
+    if (Object.keys(allowedUpdates).length === 0) return {};
     const docs = [...state.documents];
-    const doc = options?.history === false ? { ...docs[state.activeDocIndex], hasChanges: true } : withHistory(docs[state.activeDocIndex]);
-    docs[state.activeDocIndex] = { ...doc, aiLayers: doc.aiLayers.map(layer => layer.id === id ? { ...layer, ...updates } : layer) };
+    const doc = options?.history === false ? { ...current, hasChanges: true } : withHistory(current);
+    docs[state.activeDocIndex] = { ...doc, aiLayers: doc.aiLayers.map(layer => layer.id === id ? { ...layer, ...allowedUpdates } : layer) };
     return { documents: docs };
   }),
 
@@ -636,15 +711,19 @@ export const useStore = create<AppState>((set, get) => ({
 
   updateBaseLayer: (updates, options) => set(state => {
     if (state.activeDocIndex < 0) return {};
+    const current = state.documents[state.activeDocIndex];
+    const currentBase = current.baseLayer ?? createBaseLayerState(current.id);
+    const allowedUpdates = filterLockedGeometryUpdates(currentBase.locked, updates);
+    if (Object.keys(allowedUpdates).length === 0) return {};
     const docs = [...state.documents];
-    const doc = options?.history === false ? { ...docs[state.activeDocIndex], hasChanges: true } : withHistory(docs[state.activeDocIndex]);
+    const doc = options?.history === false ? { ...current, hasChanges: true } : withHistory(current);
     const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
     docs[state.activeDocIndex] = {
       ...doc,
       baseLayer: {
         ...baseLayer,
-        ...updates,
-        adjustments: updates.adjustments ? { ...baseLayer.adjustments, ...updates.adjustments } : baseLayer.adjustments,
+        ...allowedUpdates,
+        adjustments: allowedUpdates.adjustments ? { ...baseLayer.adjustments, ...allowedUpdates.adjustments } : baseLayer.adjustments,
       },
     };
     return { documents: docs };
@@ -657,6 +736,8 @@ export const useStore = create<AppState>((set, get) => ({
   resetBaseLayerSettings: () => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
+    const currentBase = docs[state.activeDocIndex].baseLayer ?? createBaseLayerState(docs[state.activeDocIndex].id);
+    if (currentBase.locked) return {};
     const doc = withHistory(docs[state.activeDocIndex]);
     const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
     docs[state.activeDocIndex] = {
@@ -724,11 +805,16 @@ export const useStore = create<AppState>((set, get) => ({
   addEraseElement: (target, element) => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
-    const doc = withHistory(docs[state.activeDocIndex]);
+    const current = docs[state.activeDocIndex];
     if (target.type === 'base') {
+      const currentBase = current.baseLayer ?? createBaseLayerState(current.id);
+      if (currentBase.locked) return {};
+      const doc = withHistory(current);
       const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
       docs[state.activeDocIndex] = { ...doc, baseLayer: { ...baseLayer, eraseElements: [...baseLayer.eraseElements, element] } };
     } else if (target.type === 'ai' && 'id' in target) {
+      if (current.aiLayers.find(layer => layer.id === target.id)?.locked) return {};
+      const doc = withHistory(current);
       docs[state.activeDocIndex] = {
         ...doc,
         aiLayers: doc.aiLayers.map(layer => layer.id === target.id ? { ...layer, eraseElements: [...(layer.eraseElements ?? []), element] } : layer),
@@ -742,7 +828,15 @@ export const useStore = create<AppState>((set, get) => ({
   clearEraseElements: (target) => set(state => {
     if (state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
-    const doc = withHistory(docs[state.activeDocIndex]);
+    const current = docs[state.activeDocIndex];
+    if (target.type === 'base') {
+      const currentBase = current.baseLayer ?? createBaseLayerState(current.id);
+      if (currentBase.locked || currentBase.eraseElements.length === 0) return {};
+    } else if (target.type === 'ai' && 'id' in target) {
+      const currentLayer = current.aiLayers.find(layer => layer.id === target.id);
+      if (!currentLayer || currentLayer.locked || (currentLayer.eraseElements?.length ?? 0) === 0) return {};
+    }
+    const doc = withHistory(current);
     if (target.type === 'base') {
       const baseLayer = doc.baseLayer ?? createBaseLayerState(doc.id);
       docs[state.activeDocIndex] = { ...doc, baseLayer: { ...baseLayer, eraseElements: [] } };
@@ -765,7 +859,7 @@ export const useStore = create<AppState>((set, get) => ({
     const withH = withHistory(docs[state.activeDocIndex]);
     docs[state.activeDocIndex] = {
       ...withH,
-      cleanup: { committed: cleanupDataUrl, strokes: withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask') },
+      cleanup: { ...withH.cleanup, committed: cleanupDataUrl, strokes: withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask') },
       texts: [...withH.texts, ...texts],
     };
     return { documents: docs };
@@ -791,7 +885,7 @@ export const useStore = create<AppState>((set, get) => ({
       const doc = { ...docs[state.activeDocIndex] };
       doc.watermarks = doc.watermarks.flatMap(w => {
         if (w.id !== id) return [w];
-        const sanitized = sanitizeWatermark({ ...w, ...updates });
+        const sanitized = sanitizeWatermark({ ...w, ...filterLockedGeometryUpdates(w.locked, updates) });
         return sanitized ? [sanitized] : [];
       });
       doc.hasChanges = true;
@@ -871,14 +965,16 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs };
     }),
 
-  updateText: (id, updates) =>
+  updateText: (id, updates, options) =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
-      const doc = { ...docs[state.activeDocIndex] };
+      const doc = options?.history
+        ? withHistory(docs[state.activeDocIndex])
+        : { ...docs[state.activeDocIndex], hasChanges: true };
       doc.texts = doc.texts.flatMap(t => {
         if (t.id !== id) return [t];
-        const sanitized = sanitizeText({ ...t, ...updates });
+        const sanitized = sanitizeText({ ...t, ...filterLockedGeometryUpdates(t.locked, updates) });
         return sanitized ? [sanitized] : [];
       });
       doc.hasChanges = true;
@@ -929,7 +1025,7 @@ export const useStore = create<AppState>((set, get) => ({
         : { ...docs[state.activeDocIndex], hasChanges: true };
       doc.shapes = (doc.shapes ?? []).flatMap(s => {
         if (s.id !== id) return [s];
-        const sanitized = sanitizeShape({ ...s, ...updates });
+        const sanitized = sanitizeShape({ ...s, ...filterLockedGeometryUpdates(s.locked, updates) });
         return sanitized ? [sanitized] : [];
       });
       doc.hasChanges = true;
@@ -961,11 +1057,16 @@ export const useStore = create<AppState>((set, get) => ({
   updateBubble: (id, updates, options) =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
+      const current = state.documents[state.activeDocIndex];
+      const target = (current.bubbles ?? []).find(bubble => bubble.id === id);
+      if (!target) return {};
+      const allowedUpdates = filterLockedGeometryUpdates(target.locked, updates);
+      if (Object.keys(allowedUpdates).length === 0) return {};
       const docs = [...state.documents];
       const doc = options?.history === false
-        ? { ...docs[state.activeDocIndex], hasChanges: true }
-        : withHistory(docs[state.activeDocIndex]);
-      docs[state.activeDocIndex] = { ...doc, bubbles: (doc.bubbles ?? []).map(b => b.id === id ? { ...b, ...updates } : b) };
+        ? { ...current, hasChanges: true }
+        : withHistory(current);
+      docs[state.activeDocIndex] = { ...doc, bubbles: (doc.bubbles ?? []).map(b => b.id === id ? { ...b, ...allowedUpdates } : b) };
       return { documents: docs };
     }),
 
@@ -1073,6 +1174,11 @@ export const useStore = create<AppState>((set, get) => ({
   updateWmSettings: (u) => set(s => ({ wmSettings: { ...s.wmSettings, ...u } })),
   updateCleanupSettings: (u) => set(s => ({ cleanupSettings: { ...s.cleanupSettings, ...u } })),
   updateTextSettings: (u) => set(s => ({ textSettings: { ...s.textSettings, ...u } })),
+  rememberTextColor: (color) => set(state => {
+    const recentColors = addRecentColor(state.recentColors, color);
+    storeRecentColors(recentColors);
+    return { recentColors };
+  }),
   updateExportSettings: (u) => set(s => ({ exportSettings: { ...s.exportSettings, ...u } })),
 
   setViewport: (vp) => set(s => ({ viewport: { ...s.viewport, ...vp } })),
@@ -1123,7 +1229,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const withH = withHistory(docs[state.activeDocIndex]);
-      docs[state.activeDocIndex] = { ...withH, cleanup: { committed: dataURL, strokes: [] } };
+      docs[state.activeDocIndex] = { ...withH, cleanup: { ...withH.cleanup, committed: dataURL, strokes: [] } };
       return { documents: docs };
     }),
 
@@ -1136,6 +1242,7 @@ export const useStore = create<AppState>((set, get) => ({
       docs[index] = {
         ...withH,
         cleanup: {
+          ...withH.cleanup,
           committed: dataURL,
           strokes: clearMask
             ? withH.cleanup.strokes.filter(stroke => stroke.purpose !== 'mask')
@@ -1171,3 +1278,12 @@ export const useStore = create<AppState>((set, get) => ({
   setInpaintRunning: (running, progress = 0) =>
     set({ isInpaintRunning: running, inpaintProgress: progress }),
 }));
+
+// Persistent object URLs are retained while referenced by any current layer
+// or undo/redo snapshot, then released as soon as the last reference leaves
+// the store (page deletion, source replacement, or history eviction).
+useStore.subscribe((state, previous) => {
+  if (state.documents === previous.documents || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
+  if (!documentObjectUrlReferencesChanged(previous.documents, state.documents)) return;
+  revokeUnusedDocumentObjectUrls(previous.documents, state.documents);
+});

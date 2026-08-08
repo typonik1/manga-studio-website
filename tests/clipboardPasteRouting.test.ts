@@ -27,4 +27,31 @@ describe('clipboard paste routing', () => {
     };
     expect(extractClipboardImageFiles(data as unknown as DataTransfer)).toEqual([image]);
   });
+
+  it('deduplicates the same clipboard image when the item copy has a new lastModified', () => {
+    const fromFiles = new File(['same pixels'], 'image.png', {
+      type: 'image/png',
+      lastModified: 1,
+    });
+    const fromItems = new File(['same pixels'], 'image.png', {
+      type: 'image/png',
+      lastModified: Date.now(),
+    });
+    const data = {
+      files: [fromFiles],
+      items: [
+        { kind: 'file', type: 'image/png', getAsFile: () => fromItems },
+      ],
+    };
+
+    expect(extractClipboardImageFiles(data as unknown as DataTransfer)).toEqual([fromFiles]);
+  });
+
+  it('keeps distinct clipboard files with the same type and size', () => {
+    const first = new File(['1234'], 'page-1.png', { type: 'image/png' });
+    const second = new File(['5678'], 'page-2.png', { type: 'image/png' });
+    const data = { files: [first, second], items: [] };
+
+    expect(extractClipboardImageFiles(data as unknown as DataTransfer)).toEqual([first, second]);
+  });
 });

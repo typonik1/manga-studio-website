@@ -3,6 +3,7 @@
 import { useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { useStore } from '@/store/useStore';
+import { useShallow } from 'zustand/react/shallow';
 import { DEFAULT_ANIME_FONT, MANGA_FONTS, type ActiveTool } from '@/types';
 import { LeftPanel } from './LeftPanel';
 import { ToolRail } from './ToolRail';
@@ -10,6 +11,8 @@ import { RightPanel } from './RightPanel';
 import { ExportModal } from './ExportModal';
 import { Toaster } from '@/components/ui/toaster';
 import { toast } from '@/hooks/use-toast';
+import { resolveDeleteTarget, resolveEditableTargetShortcut, resolveEditorShortcut } from '@/utils/editorShortcuts';
+import { revokeUnusedDocumentObjectUrls } from '@/utils/objectUrls';
 
 // Konva's Stage relies on browser APIs and react-reconciler internals that
 // break during SSR ("getOwner is not a function"), so load it client-only.
@@ -36,7 +39,24 @@ const CanvasArea = dynamic(
 );
 
 export function EditorShell() {
-  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, documents, fontsReady, setShowExportModal, activeTool } = useStore();
+  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, deleteBubble, deleteAiLayer, deleteMask, documents, activeDocIndex, fontsReady, setShowExportModal, activeTool } = useStore(useShallow(state => ({
+    undo: state.undo,
+    redo: state.redo,
+    setActiveTool: state.setActiveTool,
+    setLeftTab: state.setLeftTab,
+    selectedObject: state.selectedObject,
+    deleteWatermark: state.deleteWatermark,
+    deleteText: state.deleteText,
+    deleteShape: state.deleteShape,
+    deleteBubble: state.deleteBubble,
+    deleteAiLayer: state.deleteAiLayer,
+    deleteMask: state.deleteMask,
+    documents: state.documents,
+    activeDocIndex: state.activeDocIndex,
+    fontsReady: state.fontsReady,
+    setShowExportModal: state.setShowExportModal,
+    activeTool: state.activeTool,
+  })));
   const prevToolRef = useRef<ActiveTool | null>(null);
 
   // Register hasChanges for beforeunload
@@ -45,6 +65,16 @@ export function EditorShell() {
       documents.some(d => d.hasChanges);
     return () => { delete (window as any).__mangaStudioHasChanges; };
   }, [documents]);
+
+  useEffect(() => {
+    const releaseOnPageHide = (event: PageTransitionEvent) => {
+      // Keep URLs alive for the browser back-forward cache; otherwise the
+      // whole editor is leaving and its blob-backed pages can be released.
+      if (!event.persisted) revokeUnusedDocumentObjectUrls(useStore.getState().documents, []);
+    };
+    window.addEventListener('pagehide', releaseOnPageHide);
+    return () => window.removeEventListener('pagehide', releaseOnPageHide);
+  }, []);
 
   // Register ALL fonts (built-in + saved custom from IndexedDB) BEFORE the
   // canvas first renders — otherwise Konva would paint text with a fallback
@@ -117,29 +147,19 @@ export function EditorShell() {
     (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const tag = target.tagName.toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable)
-        return;
-
-      const mod = e.ctrlKey || e.metaKey;
-
-      // Undo/Redo
-      if (mod && e.code === 'KeyZ') {
-        e.preventDefault();
-        e.shiftKey ? redo() : undo();
-        return;
-      }
-      if (mod && e.code === 'KeyY') {
-        e.preventDefault();
-        redo();
-        return;
-      }
-
-      // Export
-      if (mod && e.code === 'KeyE') {
+      const editable = tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
+      const shortcut = resolveEditorShortcut(e);
+      // Export remains global even while a form control is focused. Native
+      // text undo/redo and editing shortcuts stay owned by the control.
+      if (editable && resolveEditableTargetShortcut(e)?.type === 'export') {
         e.preventDefault();
         setShowExportModal(true);
         return;
       }
+      if (editable)
+        return;
+
+      const mod = e.ctrlKey || e.metaKey;
 
       // Space — toggle pan tool, restore on keyup (check NO modifiers)
       if (e.code === 'Space' && !mod) {
@@ -152,95 +172,34 @@ export function EditorShell() {
         return;
       }
 
+      if (shortcut) {
+        e.preventDefault();
+        if (shortcut.type === 'undo') undo();
+        else if (shortcut.type === 'redo') redo();
+        else if (shortcut.type === 'export') setShowExportModal(true);
+        else if (shortcut.type === 'tab') setLeftTab(shortcut.tab);
+        else {
+          setActiveTool(shortcut.tool);
+          if (shortcut.tab) setLeftTab(shortcut.tab);
+        }
+        return;
+      }
+
       if (mod) return; // Don't steal other Ctrl/Cmd shortcuts from the browser
 
-      // Tool hotkeys
-      if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey) {
-        setActiveTool('select');
-        return;
-      }
-      if (e.code === 'KeyH') {
-        setActiveTool('pan');
-        return;
-      }
-      if (e.code === 'KeyB') {
-        setActiveTool('brush');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyE') {
-        setActiveTool('eraser');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyL') {
-        setActiveTool('lasso');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyP') {
-        setActiveTool('polyLasso');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyM') {
-        setActiveTool('rectSelect');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyR') {
-        setActiveTool('rectSelect');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyW') {
-        setActiveTool('wand');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyG') {
-        setActiveTool('wand');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyK') {
-        setActiveTool('maskBrush');
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.code === 'KeyT') {
-        setActiveTool('text');
-        setLeftTab('text');
-        return;
-      }
-
-      // Tab numbers
-      if (e.key === '1') {
-        setLeftTab('watermark');
-        return;
-      }
-      if (e.key === '2') {
-        setLeftTab('cleanup');
-        return;
-      }
-      if (e.key === '3') {
-        setLeftTab('text');
-        return;
-      }
-      if (e.key === '4') {
-        setLeftTab('insert');
-        return;
-      }
-      if (e.key === '5') {
-        setLeftTab('transform');
-        return;
-      }
-
       // Delete/Backspace
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObject) {
-        if (selectedObject.type === 'watermark') deleteWatermark(selectedObject.id);
-        else if (selectedObject.type === 'shape') deleteShape(selectedObject.id);
-        else deleteText(selectedObject.id);
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const selectedLayer = activeDocIndex >= 0 ? documents[activeDocIndex]?.selectedLayer ?? null : null;
+        const deleteTarget = resolveDeleteTarget(activeTool, selectedObject, selectedLayer);
+        if (deleteTarget === 'contour') return;
+        if (!deleteTarget) return;
+        e.preventDefault();
+        if (deleteTarget.type === 'watermark') deleteWatermark(deleteTarget.id);
+        else if (deleteTarget.type === 'shape') deleteShape(deleteTarget.id);
+        else if (deleteTarget.type === 'bubble') deleteBubble(deleteTarget.id);
+        else if (deleteTarget.type === 'text') deleteText(deleteTarget.id);
+        else if (deleteTarget.type === 'ai') deleteAiLayer(deleteTarget.id);
+        else deleteMask(deleteTarget.id);
       }
     },
     [
@@ -253,6 +212,11 @@ export function EditorShell() {
       deleteWatermark,
       deleteText,
       deleteShape,
+      deleteBubble,
+      deleteAiLayer,
+      deleteMask,
+      documents,
+      activeDocIndex,
       activeTool,
     ],
   );
@@ -327,7 +291,13 @@ export function EditorShell() {
 }
 
 function TopBar() {
-  const { documents, activeDocIndex, setShowExportModal, undo, redo } = useStore();
+  const { documents, activeDocIndex, setShowExportModal, undo, redo } = useStore(useShallow(state => ({
+    documents: state.documents,
+    activeDocIndex: state.activeDocIndex,
+    setShowExportModal: state.setShowExportModal,
+    undo: state.undo,
+    redo: state.redo,
+  })));
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 
   return (

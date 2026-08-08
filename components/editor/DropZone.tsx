@@ -15,9 +15,9 @@ export function DropZone({ onFiles, loading, errors }: DropZoneProps) {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files).filter(f =>
-      ['image/jpeg', 'image/png', 'image/webp'].includes(f.type)
-    );
+    // Pass every file to the shared validator so unsupported and oversized
+    // files produce a visible error instead of silently disappearing.
+    const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) onFiles(files);
   }, [onFiles]);
 

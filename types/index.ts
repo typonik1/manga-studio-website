@@ -29,6 +29,7 @@ export interface WatermarkObject {
   opacity: number;     // 0..1
   visible: boolean;
   isBatch: boolean;
+  locked?: boolean;
 }
 
 export interface TextObject {
@@ -50,6 +51,7 @@ export interface TextObject {
   scaleY: number;
   rotation: number;
   visible: boolean;
+  locked?: boolean;
   /** OCR text exactly as it was seen before translation. */
   sourceText?: string;
   /** Identifies text created by a page auto-translation run. */
@@ -119,6 +121,7 @@ export interface ShapeObject {
   scaleY: number;
   cornerRadius: number; // for rect, px at original resolution
   visible: boolean;
+  locked?: boolean;
   fillStyle?: PaintStyle;
   strokeStyle?: PaintStyle;
   glow?: GlowStyle;
@@ -169,6 +172,7 @@ export interface BubbleObject {
   fill: string;
   stroke: string;
   strokeWidth: number;
+  locked?: boolean;
   fillStyle?: PaintStyle;
   strokeStyle?: PaintStyle;
   glow?: GlowStyle;
@@ -185,12 +189,13 @@ export interface BubbleObject {
 export interface CleanupLayerState {
   committed: string | null; // legacy dataURL kept for older documents
   strokes: StrokeData[];
+  locked?: boolean;
 }
 
 export type MaskElement =
-  | { type: 'brush'; stroke: StrokeData }
-  | { type: 'polygon'; points: number[]; mode?: 'add' | 'erase' }
-  | { type: 'bitmap'; src: string; mode?: 'add' | 'erase' };
+  | { id?: string; type: 'brush'; stroke: StrokeData }
+  | { id?: string; type: 'polygon'; points: number[]; mode?: 'add' | 'erase' }
+  | { id?: string; type: 'bitmap'; src: string; mode?: 'add' | 'erase' };
 
 export interface BaseLayerAdjustments {
   brightness: number; // 1 = neutral
@@ -263,6 +268,7 @@ export interface MaskLayer {
   elements: MaskElement[];
   visible: boolean;
   opacity: number;
+  locked?: boolean;
   resultLayerId?: string;
 }
 

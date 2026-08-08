@@ -13,7 +13,7 @@ export function TransformPanel() {
     cropRect, setCropRect,
     applyDocumentTransform,
     layerCropTarget, applyLayerCrop, cancelLayerCrop,
-    updateBasePerspective, updateAiLayerPerspective, updateBaseLayer, updateAiLayer,
+    updateBasePerspective, updateAiLayerPerspective, pushHistory,
   } = useStore();
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
@@ -116,21 +116,33 @@ export function TransformPanel() {
 
   function enablePerspective() {
     if (!selectedLayer || !selectedRaster) return;
+    if (selectedRaster.locked) {
+      setError('Слой заблокирован — сначала снимите замок.');
+      return;
+    }
     const quad = affineToPerspective(activeDoc!.width, activeDoc!.height, selectedRaster);
+    pushHistory();
     if (selectedLayer.type === 'base') {
-      updateBasePerspective(quad);
-      if (selectedRaster.locked) updateBaseLayer({ locked: false }, { history: false });
+      updateBasePerspective(quad, { history: false });
     } else if (selectedLayer.type === 'ai') {
-      updateAiLayerPerspective(selectedLayer.id, quad);
-      if (selectedRaster.locked) updateAiLayer(selectedLayer.id, { locked: false }, { history: false });
+      updateAiLayerPerspective(selectedLayer.id, quad, { history: false });
     }
     setActiveTool('select');
   }
 
   function resetPerspective() {
-    if (!selectedLayer) return;
-    if (selectedLayer.type === 'base') updateBasePerspective(null);
-    if (selectedLayer.type === 'ai') updateAiLayerPerspective(selectedLayer.id, null);
+    if (!selectedLayer || !selectedRaster) return;
+    if (selectedRaster.locked) {
+      setError('Слой заблокирован — сначала снимите замок.');
+      return;
+    }
+    pushHistory();
+    if (selectedLayer.type === 'base') {
+      updateBasePerspective(null, { history: false });
+    }
+    if (selectedLayer.type === 'ai') {
+      updateAiLayerPerspective(selectedLayer.id, null, { history: false });
+    }
     setActiveTool('select');
   }
 
@@ -161,15 +173,15 @@ export function TransformPanel() {
                 : activeDoc.aiLayers.find(layer => layer.id === selectedLayer?.id)?.name ?? 'Растровый слой'}. В режиме перспективы потяните любой из четырёх углов на холсте.
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
-              <PanelButton variant={perspectiveEnabled ? 'secondary' : 'primary'} fullWidth onClick={resetPerspective} disabled={!perspectiveEnabled}>
+              <PanelButton variant={perspectiveEnabled ? 'secondary' : 'primary'} fullWidth onClick={resetPerspective} disabled={!perspectiveEnabled || selectedRaster.locked}>
                 Обычная
               </PanelButton>
-              <PanelButton variant={perspectiveEnabled ? 'primary' : 'secondary'} fullWidth onClick={enablePerspective} disabled={perspectiveEnabled}>
+              <PanelButton variant={perspectiveEnabled ? 'primary' : 'secondary'} fullWidth onClick={enablePerspective} disabled={perspectiveEnabled || selectedRaster.locked}>
                 Перспектива
               </PanelButton>
             </div>
             {perspectiveEnabled && (
-              <PanelButton variant="secondary" fullWidth onClick={resetPerspective}>
+              <PanelButton variant="secondary" fullWidth onClick={resetPerspective} disabled={selectedRaster.locked}>
                 Сбросить перспективу
               </PanelButton>
             )}

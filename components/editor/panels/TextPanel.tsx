@@ -1,6 +1,7 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import { saveCustomFont, hasCustomFont, deleteCustomFont } from '@/utils/fonts';
@@ -12,12 +13,62 @@ import { clampOcrBox } from '@/utils/coordinates';
 import { TEXT_PRESET_LABELS } from '@/lib/strings.ru';
 import { toast } from '@/hooks/use-toast';
 
+function DeferredColorInput({ label, value, onCommit }: {
+  label: string;
+  value: string;
+  onCommit: (color: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const commitRef = useRef(onCommit);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => { commitRef.current = onCommit; }, [onCommit]);
+  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const handleChange = () => commitRef.current(input.value);
+    input.addEventListener('change', handleChange);
+    return () => input.removeEventListener('change', handleChange);
+  }, []);
+
+  return (
+    <input
+      ref={inputRef}
+      aria-label={label}
+      type="color"
+      value={draft}
+      onInput={event => setDraft(event.currentTarget.value)}
+      onBlur={() => onCommit(draft)}
+      style={{ width: 36, height: 28 }}
+    />
+  );
+}
+
 export function TextPanel() {
   const {
-    textSettings, updateTextSettings, addText, activeDocIndex, documents,
+    textSettings, updateTextSettings, recentColors, rememberTextColor, addText, activeDocIndex, documents,
     selectedObject, updateText, customFonts, addCustomFont, removeCustomFont, bumpFontsVersion,
     addStroke, restorePageSourceText, setActiveTool, translationFontFamily,
-  } = useStore();
+  } = useStore(useShallow(state => ({
+    textSettings: state.textSettings,
+    updateTextSettings: state.updateTextSettings,
+    recentColors: state.recentColors,
+    rememberTextColor: state.rememberTextColor,
+    addText: state.addText,
+    activeDocIndex: state.activeDocIndex,
+    documents: state.documents,
+    selectedObject: state.selectedObject,
+    updateText: state.updateText,
+    customFonts: state.customFonts,
+    addCustomFont: state.addCustomFont,
+    removeCustomFont: state.removeCustomFont,
+    bumpFontsVersion: state.bumpFontsVersion,
+    addStroke: state.addStroke,
+    restorePageSourceText: state.restorePageSourceText,
+    setActiveTool: state.setActiveTool,
+    translationFontFamily: state.translationFontFamily,
+  })));
   const customFontRef = useRef<HTMLInputElement>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [translateError, setTranslateError] = useState<string | null>(null);
@@ -224,7 +275,7 @@ export function TextPanel() {
           text: fitted.text,
           fontFamily,
           fontSize: fitted.fontSizePx / H,
-          fill: '#000000',
+          fill: textSettings.fill,
           stroke: '',
           strokeWidth: 0,
           shadowColor: '#000000',
@@ -272,9 +323,21 @@ export function TextPanel() {
     width: selectedText.width,
   } : textSettings;
 
-  function update(updates: Partial<typeof textSettings>) {
+  function update(updates: Partial<typeof textSettings>, options?: { history?: boolean }) {
+    const persistentColors = (['fill', 'stroke', 'shadowColor'] as const)
+      .filter(key => typeof updates[key] === 'string');
+    if (persistentColors.length > 0) {
+      const settingsUpdate: Partial<typeof textSettings> = {};
+      for (const key of persistentColors) {
+        const color = updates[key] as string;
+        settingsUpdate[key] = color;
+        rememberTextColor(color);
+      }
+      updateTextSettings(settingsUpdate);
+    }
     if (selectedText) {
-      updateText(selectedText.id, updates);
+      const changed = Object.entries(updates).some(([key, value]) => selectedText[key as keyof TextObject] !== value);
+      if (changed) updateText(selectedText.id, updates, options);
     } else {
       updateTextSettings(updates);
     }
@@ -534,19 +597,31 @@ export function TextPanel() {
 
       {/* Colors */}
       <PanelRow label="Цвет текста">
-        <input
-          type="color"
+        <DeferredColorInput
+          label="Цвет текста"
           value={settings.fill}
-          onChange={e => update({ fill: e.target.value })}
-          style={{ width: 36, height: 28 }}
+          onCommit={color => update({ fill: color }, { history: true })}
         />
       </PanelRow>
+      {recentColors.length > 0 && (
+        <div aria-label="Недавние цвета" style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: -4 }}>
+          {recentColors.map(color => (
+            <button
+              key={color}
+              type="button"
+              aria-label={`Применить цвет ${color}`}
+              title={color}
+              onClick={() => update({ fill: color }, { history: true })}
+              style={{ width: 20, height: 20, borderRadius: 4, border: '1px solid var(--border-default)', background: color, cursor: 'pointer' }}
+            />
+          ))}
+        </div>
+      )}
       <PanelRow label="Обводка">
-        <input
-          type="color"
+        <DeferredColorInput
+          label="Цвет обводки"
           value={settings.stroke || '#000000'}
-          onChange={e => update({ stroke: e.target.value })}
-          style={{ width: 36, height: 28 }}
+          onCommit={color => update({ stroke: color }, { history: true })}
         />
         <input
           type="number"
@@ -558,11 +633,10 @@ export function TextPanel() {
         />
       </PanelRow>
       <PanelRow label="Тень">
-        <input
-          type="color"
+        <DeferredColorInput
+          label="Цвет тени"
           value={settings.shadowColor === 'transparent' ? '#000000' : settings.shadowColor}
-          onChange={e => update({ shadowColor: e.target.value })}
-          style={{ width: 36, height: 28 }}
+          onCommit={color => update({ shadowColor: color }, { history: true })}
         />
       </PanelRow>
 

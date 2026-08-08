@@ -7,14 +7,16 @@ import { drawRasterReferenceToContext } from '@/utils/cleanupRaster';
 import { resolveVisualLayerOrder } from '@/utils/layerOrder';
 import { drawBrushStroke } from '@/utils/brushRaster';
 import { drawBubbleToContext, drawShapeToContext } from '@/utils/drawVectorObject';
+import { initializeExportCanvas, renderTextObjectToContext } from '@/utils/textRenderer';
 
-async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasElement> {
+async function renderDocumentToCanvas(doc: ImageDocument, format: 'png' | 'jpg'): Promise<HTMLCanvasElement> {
   // Make sure web fonts are loaded before drawing text to canvas
   try { await document.fonts.ready; } catch { /* ignore */ }
   const canvas = document.createElement('canvas');
   canvas.width = doc.width;
   canvas.height = doc.height;
   const ctx = canvas.getContext('2d')!;
+  initializeExportCanvas(ctx, doc.width, doc.height, format);
 
   const drawWatermark = async (wm: (typeof doc.watermarks)[number]) => {
     if (!wm.visible) return;
@@ -50,36 +52,6 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
     ctx.restore();
   };
 
-  const drawText = (txt: (typeof doc.texts)[number]) => {
-    if (!txt.visible) return;
-    ctx.save();
-    ctx.globalAlpha = 1;
-    const x = txt.x * doc.width;
-    const y = txt.y * doc.height;
-    ctx.translate(x, y);
-    ctx.rotate((txt.rotation * Math.PI) / 180);
-    ctx.scale(txt.scaleX, txt.scaleY);
-    const fontSize = txt.fontSize * doc.height;
-    ctx.font = `${fontSize}px "${txt.fontFamily}"`;
-    ctx.fillStyle = txt.fill;
-    if (txt.shadowBlur > 0) {
-      ctx.shadowColor = txt.shadowColor;
-      ctx.shadowBlur = txt.shadowBlur;
-    }
-    const lines = txt.text.split('\n');
-    const lineH = fontSize * txt.lineHeight;
-    for (let li = 0; li < lines.length; li++) {
-      const lineY = li * lineH;
-      if (txt.stroke && txt.strokeWidth > 0) {
-        ctx.strokeStyle = txt.stroke;
-        ctx.lineWidth = txt.strokeWidth;
-        ctx.strokeText(lines[li], 0, lineY);
-      }
-      ctx.fillText(lines[li], 0, lineY);
-    }
-    ctx.restore();
-  };
-
   // Render every content type through one bottom → top sequence so a pasted
   // raster can sit above a bubble (or vice versa) in both preview and export.
   for (const ref of resolveVisualLayerOrder(doc)) {
@@ -94,7 +66,7 @@ async function renderDocumentToCanvas(doc: ImageDocument): Promise<HTMLCanvasEle
       if (wm) await drawWatermark(wm);
     } else if (ref.type === 'text') {
       const txt = doc.texts.find(item => item.id === ref.id);
-      if (txt) drawText(txt);
+      if (txt) renderTextObjectToContext(ctx, txt, doc.width, doc.height);
     } else if (ref.type === 'shape') {
       const shape = (doc.shapes ?? []).find(item => item.id === ref.id);
       if (shape) drawShapeToContext(ctx, shape, doc.width, doc.height);
@@ -133,7 +105,7 @@ export function ExportModal() {
     setIsExporting(true);
     setError(null);
     try {
-      const canvas = await renderDocumentToCanvas(activeDoc);
+      const canvas = await renderDocumentToCanvas(activeDoc, exportSettings.format);
       const mime = exportSettings.format === 'jpg' ? 'image/jpeg' : 'image/png';
       const dataURL = canvas.toDataURL(mime, exportSettings.quality);
       const a = document.createElement('a');
@@ -160,7 +132,7 @@ export function ExportModal() {
 
       for (let i = 0; i < documents.length; i++) {
         const doc = documents[i];
-        const canvas = await renderDocumentToCanvas(doc);
+        const canvas = await renderDocumentToCanvas(doc, exportSettings.format);
         const dataURL = canvas.toDataURL(mime, exportSettings.quality);
         const base64 = dataURL.split(',')[1];
         const filename = getExportName(doc.name, exportSettings.format, usedNames);

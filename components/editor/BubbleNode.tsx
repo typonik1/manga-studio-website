@@ -102,11 +102,11 @@ export function BubbleNode({
   const didPushRef = useRef(false);
 
   useEffect(() => {
-    if (isSelected && trRef.current && groupRef.current) {
+    if (isSelected && !bubble.locked && trRef.current && groupRef.current) {
       trRef.current.nodes([groupRef.current]);
       trRef.current.getLayer()?.batchDraw();
     }
-  }, [isSelected]);
+  }, [isSelected, bubble.locked]);
 
   if (!bubble.visible) return null;
 
@@ -201,13 +201,13 @@ export function BubbleNode({
         scaleX={1}
         scaleY={1}
         rotation={bubble.rotation}
-        draggable
+        draggable={!bubble.locked}
         onClick={onSelect}
         onTap={onSelect}
         onDblClick={onEditRequest}
         onDblTap={onEditRequest}
-        onDragStart={onBeforeChange}
-        onTransformStart={onBeforeChange}
+        onDragStart={bubble.locked ? undefined : onBeforeChange}
+        onTransformStart={bubble.locked ? undefined : onBeforeChange}
         onDragEnd={handleGroupDragEnd}
         onTransformEnd={handleTransformEnd}
       >
@@ -265,7 +265,7 @@ export function BubbleNode({
         />
 
         {/* ── Tail tip handle (large, grab-friendly) ───────────────────── */}
-        {isSelected && hasTail && resolvedTail && (
+        {isSelected && !bubble.locked && hasTail && resolvedTail && (
           <Circle
             ref={tipRef}
             x={tipLocal.x}
@@ -305,7 +305,7 @@ export function BubbleNode({
       </Group>
 
       {/* ── Transformer ──────────────────────────────────────────────────── */}
-      {isSelected && (
+      {isSelected && !bubble.locked && (
         <Transformer
           ref={trRef}
           boundBoxFunc={(oldBox, newBox) => {

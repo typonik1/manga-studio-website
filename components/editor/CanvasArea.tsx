@@ -4,15 +4,15 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Circle } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
-import { uid } from '@/utils/imageUtils';
-import type { AiRasterLayer, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject, PerspectiveQuad } from '@/types';
+import { useShallow } from 'zustand/react/shallow';
+import { loadImagesFromFiles, uid, validateFile } from '@/utils/imageUtils';
+import type { AiRasterLayer, BaseLayerAdjustments, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject, PerspectiveQuad } from '@/types';
 import { resolveVisualLayerOrder } from '@/utils/layerOrder';
 import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask, bakeStrokeIntoLayerSrc } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
 import { LayerContextMenu, type ContextMenuState } from './LayerContextMenu';
 import { ToolOptionsBar } from './ToolOptionsBar';
 import { screenToImage } from '@/utils/coordinates';
-import { loadImagesFromFiles } from '@/utils/imageUtils';
 import { createLayerFromSelection, hasActiveSelection } from '@/utils/layerActions';
 import { copySelectionFragment, pasteFragmentAsLayer, shouldPasteFragment } from '@/utils/fragmentClipboard';
 import { BubbleNode } from './BubbleNode';
@@ -24,6 +24,7 @@ import {
   getCurvedArrowHandlePosition,
   getShapeGeometry,
 } from '@/utils/shapeGeometry';
+import { createTextNodeConfig } from '@/utils/textRenderer';
 import { isOpenShape } from '@/utils/shapePresets';
 import { PaintedShape } from './PaintedShape';
 import {
@@ -31,8 +32,23 @@ import {
   pasteExternalImagesAsLayers,
   shouldKeepNativePaste,
 } from '@/utils/pastedImageLayers';
+import {
+  loadImageImportPreference,
+  resolveImageImportDestination,
+  storeImageImportPreference,
+  type ImageImportDestination,
+} from '@/utils/pageImportPreference';
+import { toKonvaAdjustmentValues } from '@/utils/konvaAdjustments';
+import { toast } from '@/hooks/use-toast';
 
 const MAX_PREVIEW_SIDE = 1800;
+const NEUTRAL_RASTER_ADJUSTMENTS: BaseLayerAdjustments = { brightness: 1, contrast: 1, saturation: 1 };
+const RASTER_FILTERS = [Konva.Filters.Brightness, Konva.Filters.Contrast, Konva.Filters.HSL];
+
+interface PendingImageImport {
+  files: File[];
+  source: 'paste' | 'drop' | 'picker';
+}
 
 function scaleToFit(w: number, h: number, maxSide: number): number {
   return Math.min(1, maxSide / Math.max(w, h));
@@ -177,13 +193,14 @@ function PerspectiveHandles({ quad, width, height, onBeforeChange, onChange }: {
  * Wraps a raster image with its non-destructive transform + crop and, when
  * selected with the select tool and unlocked, makes it draggable/transformable.
  */
-function PlacedRasterImage({ nodeName, image, width, height, opacity, placement, interactive, isSelected, onSelect, onContextMenu, onBeforeChange, onChange }: {
+function PlacedRasterImage({ nodeName, image, width, height, opacity, placement, adjustments, interactive, isSelected, onSelect, onContextMenu, onBeforeChange, onChange }: {
   nodeName: string;
   image: CanvasImageSource;
   width: number;
   height: number;
   opacity: number;
   placement: RasterNodePlacement;
+  adjustments?: BaseLayerAdjustments;
   interactive: boolean;
   isSelected: boolean;
   onSelect: () => void;
@@ -193,6 +210,7 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
 }) {
   const groupRef = useRef<Konva.Group>(null);
   const trRef = useRef<Konva.Transformer>(null);
+  const imageRef = useRef<Konva.Image>(null);
   const [perspectiveCanvas, setPerspectiveCanvas] = useState<HTMLCanvasElement | null>(null);
   const draggable = interactive && isSelected;
 
@@ -207,6 +225,7 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
   const perspective = placement.perspective && isValidPerspectiveQuad(placement.perspective) ? placement.perspective : null;
   const naturalW = (image as HTMLImageElement).naturalWidth || (image as HTMLCanvasElement).width || width;
   const naturalH = (image as HTMLImageElement).naturalHeight || (image as HTMLCanvasElement).height || height;
+  const filterValues = toKonvaAdjustmentValues(adjustments);
 
   useEffect(() => {
     if (!perspective) { setPerspectiveCanvas(null); return; }
@@ -219,11 +238,30 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
     setPerspectiveCanvas(next);
   }, [image, width, height, opacity, crop, perspective]);
 
+  useEffect(() => {
+    const node = imageRef.current;
+    if (!node) return;
+    if (filterValues.enabled) node.cache({ pixelRatio: 1 });
+    else if (node.isCached()) node.clearCache();
+    node.getLayer()?.batchDraw();
+    // Re-cache only when the source/crop changes or filters are toggled. Konva
+    // invalidates its filtered cache itself for live brightness/contrast/HSL.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image, perspectiveCanvas, width, height, crop, filterValues.enabled]);
+
+  const filterProps = filterValues.enabled ? {
+    filters: RASTER_FILTERS,
+    brightness: filterValues.brightness,
+    contrast: filterValues.contrast,
+    saturation: filterValues.saturation,
+  } : { filters: [] };
+
   if (perspective) {
     return (
       <>
         {perspectiveCanvas && (
           <KonvaImage
+            ref={imageRef}
             name={nodeName}
             image={perspectiveCanvas}
             width={width}
@@ -232,6 +270,7 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
             onClick={onSelect}
             onTap={onSelect}
             onContextMenu={onContextMenu}
+            {...filterProps}
           />
         )}
         {draggable && (
@@ -278,6 +317,7 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
       >
         {crop ? (
           <KonvaImage
+            ref={imageRef}
             name={nodeName}
             image={image}
             x={crop.x * width}
@@ -286,9 +326,10 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
             height={crop.height * height}
             crop={{ x: crop.x * naturalW, y: crop.y * naturalH, width: crop.width * naturalW, height: crop.height * naturalH }}
             opacity={opacity}
+            {...filterProps}
           />
         ) : (
-          <KonvaImage name={nodeName} image={image} width={width} height={height} opacity={opacity} />
+          <KonvaImage ref={imageRef} name={nodeName} image={image} width={width} height={height} opacity={opacity} {...filterProps} />
         )}
       </Group>
       {draggable && (
@@ -311,24 +352,22 @@ function RasterLayerNode({ layer, width, height, interactive, isSelected, onSele
   onSelect: () => void;
   onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
 }) {
-  const { updateAiLayer, pushHistory } = useStore();
+  const updateAiLayer = useStore(state => state.updateAiLayer);
+  const pushHistory = useStore(state => state.pushHistory);
   const adjustments = layer.adjustments;
-  const needsProcessing = Boolean(
-    (layer.eraseElements?.length ?? 0) > 0 ||
-    (adjustments && (adjustments.brightness !== 1 || adjustments.contrast !== 1 || adjustments.saturation !== 1))
-  );
+  const needsProcessing = (layer.eraseElements?.length ?? 0) > 0;
   const plainImage = useImage(needsProcessing ? null : layer.src);
   const [erased, setErased] = useState<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     if (!needsProcessing) { setErased(null); return; }
     let cancelled = false;
-    void buildRasterLayerCanvas(layer, Math.max(1, Math.round(width)), Math.max(1, Math.round(height)))
+    void buildRasterLayerCanvas({ ...layer, adjustments: NEUTRAL_RASTER_ADJUSTMENTS }, Math.max(1, Math.round(width)), Math.max(1, Math.round(height)))
       .then(canvas => { if (!cancelled) setErased(canvas); })
       .catch(() => { if (!cancelled) setErased(null); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layer.src, layer.eraseElements, adjustments, needsProcessing, width, height]);
+  }, [layer.src, layer.eraseElements, needsProcessing, width, height]);
 
   const image = needsProcessing ? erased : plainImage;
   if (!image) return null;
@@ -340,6 +379,7 @@ function RasterLayerNode({ layer, width, height, interactive, isSelected, onSele
       height={height}
       opacity={layer.opacity}
       placement={layer}
+      adjustments={adjustments}
       interactive={interactive && layer.locked !== true}
       isSelected={isSelected}
       onSelect={onSelect}
@@ -359,25 +399,26 @@ function BaseLayerNode({ doc, width, height, interactive, isSelected, onSelect, 
   onSelect: () => void;
   onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
 }) {
-  const { updateBaseLayer, pushHistory } = useStore();
+  const updateBaseLayer = useStore(state => state.updateBaseLayer);
+  const pushHistory = useStore(state => state.pushHistory);
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const adjustments = doc.baseLayer?.adjustments;
   const eraseElements = doc.baseLayer?.eraseElements;
-  const needsProcessing = Boolean(
-    (eraseElements?.length ?? 0) > 0 ||
-    (adjustments && (adjustments.brightness !== 1 || adjustments.contrast !== 1 || adjustments.saturation !== 1))
-  );
+  const needsProcessing = (eraseElements?.length ?? 0) > 0;
   const plainImage = useImage(needsProcessing ? null : (doc.cleanup.committed ?? doc.originalSrc));
 
   useEffect(() => {
     if (!needsProcessing) { setCanvas(null); return; }
     let cancelled = false;
-    void buildBaseCanvas(doc)
+    void buildBaseCanvas({
+      ...doc,
+      baseLayer: doc.baseLayer ? { ...doc.baseLayer, adjustments: NEUTRAL_RASTER_ADJUSTMENTS } : doc.baseLayer,
+    })
       .then(result => { if (!cancelled) setCanvas(result); })
       .catch(() => { if (!cancelled) setCanvas(null); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc.originalSrc, doc.cleanup.committed, adjustments, eraseElements, needsProcessing]);
+  }, [doc.originalSrc, doc.cleanup.committed, eraseElements, needsProcessing]);
 
   const image = needsProcessing ? canvas : plainImage;
   if (!image) return null;
@@ -390,6 +431,7 @@ function BaseLayerNode({ doc, width, height, interactive, isSelected, onSelect, 
       height={height}
       opacity={state?.opacity ?? 1}
       placement={state ?? {}}
+      adjustments={adjustments}
       interactive={interactive && state?.locked === false}
       isSelected={isSelected}
       onSelect={onSelect}
@@ -458,11 +500,11 @@ function WatermarkNode({
   const logoImg = useImage(wm.type === 'image' ? wm.imageSrc : null);
 
   useEffect(() => {
-    if (isSelected && trRef.current && nodeRef.current) {
+    if (isSelected && !wm.locked && trRef.current && nodeRef.current) {
       trRef.current.nodes([nodeRef.current]);
       trRef.current.getLayer()?.batchDraw();
     }
-  }, [isSelected]);
+  }, [isSelected, wm.locked]);
 
   const pW = docWidth * previewScale;
   const pH = docHeight * previewScale;
@@ -495,11 +537,11 @@ function WatermarkNode({
     scaleY: wm.scaleY,
     rotation: wm.rotation,
     opacity,
-    draggable: true,
+    draggable: !wm.locked,
     onClick: onSelect,
     onTap: onSelect,
-    onDragStart: onBeforeChange,
-    onTransformStart: onBeforeChange,
+    onDragStart: wm.locked ? undefined : onBeforeChange,
+    onTransformStart: wm.locked ? undefined : onBeforeChange,
     onDragEnd: handleDragEnd,
     onTransformEnd: handleTransformEnd,
     offsetX: 0,
@@ -533,7 +575,7 @@ function WatermarkNode({
           height={logoH}
         />
       ) : null}
-      {isSelected && (
+      {isSelected && !wm.locked && (
         <Transformer
           ref={trRef}
           boundBoxFunc={(oldBox, newBox) => {
@@ -577,14 +619,15 @@ function TextNode({
   const trRef = useRef<Konva.Transformer>(null);
 
   useEffect(() => {
-    if (isSelected && !isEditing && trRef.current && nodeRef.current) {
+    if (isSelected && !isEditing && !txt.locked && trRef.current && nodeRef.current) {
       trRef.current.nodes([nodeRef.current]);
       trRef.current.getLayer()?.batchDraw();
     }
-  }, [isSelected, isEditing]);
+  }, [isSelected, isEditing, txt.locked]);
 
   const pW = docWidth * previewScale;
   const pH = docHeight * previewScale;
+  const textNodeConfig = createTextNodeConfig(txt, docWidth, docHeight, previewScale);
 
   const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
     onChange({ x: e.target.x() / pW, y: e.target.y() / pH });
@@ -607,36 +650,21 @@ function TextNode({
   return (
     <>
       <Text
+        {...textNodeConfig}
         ref={nodeRef}
-        x={txt.x * pW}
-        y={txt.y * pH}
-        text={txt.text}
-        fontFamily={txt.fontFamily}
-        fontSize={txt.fontSize * pH}
-        fill={txt.fill}
-        stroke={txt.stroke || undefined}
-        strokeWidth={txt.stroke ? txt.strokeWidth : 0}
-        shadowColor={txt.shadowBlur > 0 ? txt.shadowColor : undefined}
-        shadowBlur={txt.shadowBlur}
-        lineHeight={txt.lineHeight}
-        align={txt.align}
-        width={txt.width * pW}
-        scaleX={txt.scaleX}
-        scaleY={txt.scaleY}
-        rotation={txt.rotation}
         visible={!isEditing}
         listening={!isEditing}
-        draggable
+        draggable={!txt.locked}
         onClick={onSelect}
         onTap={onSelect}
         onDblClick={onEditRequest}
         onDblTap={onEditRequest}
-        onDragStart={onBeforeChange}
-        onTransformStart={onBeforeChange}
+        onDragStart={txt.locked ? undefined : onBeforeChange}
+        onTransformStart={txt.locked ? undefined : onBeforeChange}
         onDragEnd={handleDragEnd}
         onTransformEnd={handleTransformEnd}
       />
-      {isSelected && !isEditing && (
+      {isSelected && !isEditing && !txt.locked && (
         <Transformer
           ref={trRef}
           boundBoxFunc={(oldBox, newBox) => {
@@ -675,11 +703,11 @@ function ShapeNode({
   const trRef = useRef<Konva.Transformer>(null);
 
   useEffect(() => {
-    if (isSelected && trRef.current && nodeRef.current) {
+    if (isSelected && !shape.locked && trRef.current && nodeRef.current) {
       trRef.current.nodes([nodeRef.current]);
       trRef.current.getLayer()?.batchDraw();
     }
-  }, [isSelected]);
+  }, [isSelected, shape.locked]);
 
   const pW = docWidth * previewScale;
   const pH = docHeight * previewScale;
@@ -720,11 +748,11 @@ function ShapeNode({
     scaleX: shape.scaleX,
     scaleY: shape.scaleY,
     opacity: shape.opacity,
-    draggable: true,
+    draggable: !shape.locked,
     onClick: onSelect,
     onTap: onSelect,
-    onDragStart: onBeforeChange,
-    onTransformStart: onBeforeChange,
+    onDragStart: shape.locked ? undefined : onBeforeChange,
+    onTransformStart: shape.locked ? undefined : onBeforeChange,
     onDragEnd: handleDragEnd,
     onTransformEnd: handleTransformEnd,
   };
@@ -792,7 +820,7 @@ function ShapeNode({
       <Group ref={nodeRef} {...groupProps}>
         {node}
       </Group>
-      {isSelected && shape.kind === 'curved-arrow' && (
+      {isSelected && !shape.locked && shape.kind === 'curved-arrow' && (
         <Circle
           x={curveHandle.x}
           y={curveHandle.y}
@@ -822,7 +850,7 @@ function ShapeNode({
           onClick={event => { event.cancelBubble = true; }}
         />
       )}
-      {isSelected && (
+      {isSelected && !shape.locked && (
         <Transformer
           ref={trRef}
           boundBoxFunc={(oldBox, newBox) => {
@@ -941,7 +969,42 @@ export function CanvasArea() {
     pushHistory, setLeftTab,
     fontsVersion, cropRect, setCropRect, updateDocumentThumbnail,
     layerCropTarget, applyLayerCrop, cancelLayerCrop,
-  } = useStore();
+  } = useStore(useShallow(state => ({
+    documents: state.documents,
+    activeDocIndex: state.activeDocIndex,
+    setActiveDoc: state.setActiveDoc,
+    activeTool: state.activeTool,
+    cleanupSettings: state.cleanupSettings,
+    addStroke: state.addStroke,
+    addMaskStroke: state.addMaskStroke,
+    addMaskElement: state.addMaskElement,
+    addEraseElement: state.addEraseElement,
+    updateWatermark: state.updateWatermark,
+    updateText: state.updateText,
+    updateShape: state.updateShape,
+    updateBubble: state.updateBubble,
+    selectLayer: state.selectLayer,
+    updateCleanupSettings: state.updateCleanupSettings,
+    selectedObject: state.selectedObject,
+    setSelectedObject: state.setSelectedObject,
+    inlineEditingTextId: state.inlineEditingTextId,
+    setInlineEditingTextId: state.setInlineEditingTextId,
+    textSettings: state.textSettings,
+    addText: state.addText,
+    layerVisibility: state.layerVisibility,
+    viewport: state.viewport,
+    setViewport: state.setViewport,
+    addDocuments: state.addDocuments,
+    pushHistory: state.pushHistory,
+    setLeftTab: state.setLeftTab,
+    fontsVersion: state.fontsVersion,
+    cropRect: state.cropRect,
+    setCropRect: state.setCropRect,
+    updateDocumentThumbnail: state.updateDocumentThumbnail,
+    layerCropTarget: state.layerCropTarget,
+    applyLayerCrop: state.applyLayerCrop,
+    cancelLayerCrop: state.cancelLayerCrop,
+  })));
 
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -957,6 +1020,8 @@ export function CanvasArea() {
   const activePointerIdRef = useRef<number | null>(null);
   const activePointerTargetRef = useRef<HTMLElement | null>(null);
   const finishPointerRef = useRef<(() => void) | null>(null);
+  const thumbnailTimerRef = useRef<number | null>(null);
+  const thumbnailIdleRef = useRef<number | null>(null);
   const isLassoing = useRef(false);
   const lassoPoints = useRef<number[]>([]);
   // Polygonal lasso: vertices are placed by clicks, closed by Enter/double
@@ -978,10 +1043,13 @@ export function CanvasArea() {
   const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
-  const [wandPending, setWandPending] = useState<{ src: string; coverage: number } | null>(null);
+  const [wandPending, setWandPending] = useState<{ documentId: string; maskId: string; elementId: string; coverage: number } | null>(null);
   const [wandInfo, setWandInfo] = useState<string | null>(null);
   const [clipboardInfo, setClipboardInfo] = useState<string | null>(null);
+  const [pendingImageImport, setPendingImageImport] = useState<PendingImageImport | null>(null);
+  const [rememberImportChoice, setRememberImportChoice] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const shiftPressedRef = useRef(false);
   const checkerPattern = useRef<HTMLCanvasElement | null>(null);
   if (typeof document !== 'undefined' && !checkerPattern.current) checkerPattern.current = makeCheckerPattern();
 
@@ -998,6 +1066,46 @@ export function CanvasArea() {
     const timer = window.setTimeout(() => setClipboardInfo(null), 2600);
     return () => window.clearTimeout(timer);
   }, [clipboardInfo]);
+
+  const cancelScheduledThumbnail = useCallback(() => {
+    if (thumbnailTimerRef.current !== null) {
+      window.clearTimeout(thumbnailTimerRef.current);
+      thumbnailTimerRef.current = null;
+    }
+    const cancelIdle = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+    if (thumbnailIdleRef.current !== null && cancelIdle) cancelIdle(thumbnailIdleRef.current);
+    thumbnailIdleRef.current = null;
+  }, []);
+
+  const scheduleThumbnailUpdate = useCallback((documentId: string) => {
+    const idleWindow = window as unknown as {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    cancelScheduledThumbnail();
+    thumbnailTimerRef.current = window.setTimeout(() => {
+      thumbnailTimerRef.current = null;
+      const update = () => {
+        thumbnailIdleRef.current = null;
+        const latest = useStore.getState();
+        if (latest.documents[latest.activeDocIndex]?.id !== documentId) return;
+        const stage = stageRef.current;
+        if (!stage) return;
+        const scale = Math.min(1, 160 / Math.max(stage.width(), stage.height()));
+        updateDocumentThumbnail(documentId, stage.toDataURL({ pixelRatio: scale }));
+      };
+      if (idleWindow.requestIdleCallback) {
+        thumbnailIdleRef.current = idleWindow.requestIdleCallback(update, { timeout: 1200 });
+      } else {
+        window.setTimeout(update, 0);
+      }
+    }, 450);
+  }, [cancelScheduledThumbnail, updateDocumentThumbnail]);
+
+  useEffect(() => cancelScheduledThumbnail, [cancelScheduledThumbnail]);
+  useEffect(() => {
+    cancelScheduledThumbnail();
+  }, [activeDocIndex, cancelScheduledThumbnail]);
 
   const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
   const baseReplaced = activeDoc?.aiLayers.some(layer => layer.visible && layer.replacesBase) ?? false;
@@ -1210,13 +1318,34 @@ export function CanvasArea() {
         return;
       }
       if (activeTool === 'wand') {
+        const originDocumentId = activeDoc.id;
+        const originMaskId = activeDoc.activeMaskId;
+        const originSelectedLayer = activeDoc.selectedLayer;
         void createFloodMask(activeDoc, imagePoint.x, imagePoint.y, cleanupSettings.magicThreshold, cleanupSettings.wandContiguous).then(({ src, coverage }) => {
+          const elementId = `wand-${uid()}`;
+          const beforeInsert = useStore.getState();
+          const originDocument = beforeInsert.documents.find(document => document.id === originDocumentId);
+          const selectionChanged = originDocument?.activeMaskId !== originMaskId
+            || originDocument?.selectedLayer?.id !== originSelectedLayer?.id
+            || originDocument?.selectedLayer?.type !== originSelectedLayer?.type;
           addMaskElement(
-            { type: 'bitmap', src, mode: mode === 'subtract' ? 'erase' : 'add' },
-            { replace: mode === 'replace' }
+            { id: elementId, type: 'bitmap', src, mode: mode === 'subtract' ? 'erase' : 'add' },
+            {
+              replace: mode === 'replace',
+              documentId: originDocumentId,
+              maskId: originMaskId,
+              preserveSelection: selectionChanged,
+            }
           );
+          const latest = useStore.getState();
+          const latestDoc = latest.documents.find(document => document.id === originDocumentId);
+          const maskId = latestDoc?.masks.find(mask => mask.elements.some(element => element.id === elementId))?.id;
+          if (!maskId) {
+            setWandInfo('Выделение не добавлено: маска была изменена или заблокирована');
+            return;
+          }
           setWandInfo(`Выделено ~${Math.round(coverage * 100)}% изображения`);
-          if (coverage > 0.7) setWandPending({ src, coverage });
+          if (coverage > 0.7) setWandPending({ documentId: originDocumentId, maskId, elementId, coverage });
         }).catch(() => window.alert('Не удалось прочитать пиксели композиции.'));
         return;
       }
@@ -1237,6 +1366,24 @@ export function CanvasArea() {
       // (for example when the browser window loses focus). Never start a
       // second stroke while the previous one is still marked active.
       if (isPainting.current) return;
+      const selectedLayer = activeDoc.selectedLayer;
+      const selectedAiLayer = selectedLayer?.type === 'ai'
+        ? activeDoc.aiLayers.find(layer => layer.id === selectedLayer.id)
+        : null;
+      const selectedMask = selectedLayer?.type === 'mask'
+        ? activeDoc.masks.find(mask => mask.id === selectedLayer.id)
+        : null;
+      const lockedTarget = activeTool === 'maskBrush'
+        ? selectedMask?.locked
+        : activeTool === 'eraser'
+          ? (selectedMask?.locked || (selectedLayer?.type === 'ai' ? selectedAiLayer?.locked : activeDoc.baseLayer?.locked))
+          : selectedAiLayer?.operation === 'drawing'
+            ? selectedAiLayer.locked
+            : activeDoc.cleanup.locked;
+      if (lockedTarget) {
+        setClipboardInfo('Слой заблокирован — сначала снимите замок');
+        return;
+      }
       const stage = stageRef.current;
       if (!stage) return;
       const pos = stage.getPointerPosition();
@@ -1446,7 +1593,9 @@ export function CanvasArea() {
             void bakeStrokeIntoLayerSrc(drawingLayer, activeDoc.width, activeDoc.height, stroke)
               .then(src => {
                 const state = useStore.getState();
-                if (state.documents[state.activeDocIndex]?.id === docId) {
+                const latestDocument = state.documents[state.activeDocIndex];
+                const latestLayer = latestDocument?.aiLayers.find(layer => layer.id === layerId);
+                if (latestDocument?.id === docId && latestLayer && !latestLayer.locked) {
                   state.updateAiLayer(layerId, { src });
                 }
               })
@@ -1455,12 +1604,7 @@ export function CanvasArea() {
             addStroke(stroke);
           }
         }
-        window.requestAnimationFrame(() => {
-          const stage = stageRef.current;
-          if (!stage) return;
-          const scale = Math.min(1, 160 / Math.max(stage.width(), stage.height()));
-          updateDocumentThumbnail(activeDoc.id, stage.toDataURL({ pixelRatio: scale }));
-        });
+        scheduleThumbnailUpdate(activeDoc.id);
       }
       isPainting.current = false;
       currentStroke.current = [];
@@ -1553,16 +1697,96 @@ export function CanvasArea() {
     }
   };
 
-  // File drop
-  const handleFiles = useCallback(async (files: File[]) => {
+  const importImagesAsPages = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
     setLoadingFiles(true);
     setLoadErrors([]);
-    const { docs, errors } = await loadImagesFromFiles(files);
-    if (docs.length > 0) addDocuments(docs);
-    setLoadErrors(errors);
-    setLoadingFiles(false);
+    try {
+      const { docs, errors } = await loadImagesFromFiles(files);
+      if (docs.length > 0) {
+        addDocuments(docs);
+        setClipboardInfo(docs.length > 1 ? `Добавлено страниц: ${docs.length}` : 'Добавлена новая страница');
+      }
+      setLoadErrors(errors);
+      if (errors.length > 0) toast({ title: 'Не удалось добавить файл', description: errors.join(' ') });
+    } finally {
+      setLoadingFiles(false);
+    }
   }, [addDocuments]);
+
+  const importImagesAsLayers = useCallback(async (files: File[]) => {
+    const state = useStore.getState();
+    const doc = state.documents[state.activeDocIndex];
+    if (!doc || files.length === 0) {
+      await importImagesAsPages(files);
+      return;
+    }
+    const errors: string[] = [];
+    const validFiles = files.filter(file => {
+      const error = validateFile(file);
+      if (error) errors.push(error);
+      return !error;
+    });
+    setLoadErrors(errors);
+    if (errors.length > 0) toast({ title: 'Не удалось добавить файл', description: errors.join(' ') });
+    if (validFiles.length === 0) return;
+    setLoadingFiles(true);
+    try {
+      const ids = await pasteExternalImagesAsLayers(validFiles, doc.id);
+      setClipboardInfo(ids.length > 1 ? `Вставлено слоёв: ${ids.length}` : 'Изображение вставлено новым слоем');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Не удалось вставить изображение.';
+      setLoadErrors(previous => [...previous, message]);
+      console.warn('[v0] pasteExternalImagesAsLayers:', error);
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, [importImagesAsPages]);
+
+  const applyImageImportChoice = useCallback(async (
+    destination: ImageImportDestination,
+    pending: PendingImageImport,
+  ) => {
+    if (destination === 'page') await importImagesAsPages(pending.files);
+    else await importImagesAsLayers(pending.files);
+  }, [importImagesAsLayers, importImagesAsPages]);
+
+  const requestImageImport = useCallback((
+    files: File[],
+    source: PendingImageImport['source'],
+    options?: { forcePage?: boolean },
+  ) => {
+    if (files.length === 0) return;
+    const state = useStore.getState();
+    const hasDocument = state.activeDocIndex >= 0 && Boolean(state.documents[state.activeDocIndex]);
+    const destination = resolveImageImportDestination({
+      hasDocument,
+      forcePage: options?.forcePage,
+      remembered: loadImageImportPreference(),
+    });
+    const pending = { files, source } satisfies PendingImageImport;
+    if (destination) void applyImageImportChoice(destination, pending);
+    else {
+      setRememberImportChoice(false);
+      setPendingImageImport(pending);
+    }
+  }, [applyImageImportChoice]);
+
+  // Track Shift independently: ClipboardEvent does not expose modifier keys
+  // consistently, but Ctrl/Cmd+Shift+V must always force a new page.
+  useEffect(() => {
+    const keyDown = (event: KeyboardEvent) => { if (event.key === 'Shift') shiftPressedRef.current = true; };
+    const keyUp = (event: KeyboardEvent) => { if (event.key === 'Shift') shiftPressedRef.current = false; };
+    const blur = () => { shiftPressedRef.current = false; };
+    window.addEventListener('keydown', keyDown, true);
+    window.addEventListener('keyup', keyUp, true);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', keyDown, true);
+      window.removeEventListener('keyup', keyUp, true);
+      window.removeEventListener('blur', blur);
+    };
+  }, []);
 
   // Paste handling.
   // 1) A fragment copied with Ctrl+C from a selection is inserted as a NEW
@@ -1593,24 +1817,11 @@ export function CanvasArea() {
       const files = extractClipboardImageFiles(data);
       if (files.length === 0) return;
       event.preventDefault();
-      if (hasDoc) {
-        const activeDoc = store.documents[store.activeDocIndex];
-        void pasteExternalImagesAsLayers(files, activeDoc.id)
-          .then(ids => setClipboardInfo(ids.length > 1
-            ? `Вставлено слоёв: ${ids.length}`
-            : 'Изображение вставлено новым слоем'))
-          .catch(error => {
-            const message = error instanceof Error ? error.message : 'Не удалось вставить изображение.';
-            setClipboardInfo(message);
-            console.warn('[v0] pasteExternalImagesAsLayers:', error);
-          });
-      } else {
-        void handleFiles(files);
-      }
+      requestImageImport(files, 'paste', { forcePage: shiftPressedRef.current });
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [handleFiles]);
+  }, [requestImageImport]);
 
   // Keyboard shortcuts: [ ] brush size, Ctrl+C (copy selection fragment),
   // Ctrl+V (paste fragment as layer — see the paste handler above),
@@ -1743,7 +1954,7 @@ export function CanvasArea() {
   if (documents.length === 0) {
     return (
       <div ref={containerRef} style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <DropZone onFiles={handleFiles} loading={loadingFiles} errors={loadErrors} />
+        <DropZone onFiles={files => requestImageImport(files, 'drop')} loading={loadingFiles} errors={loadErrors} />
       </div>
     );
   }
@@ -1751,6 +1962,15 @@ export function CanvasArea() {
   return (
     <div
       ref={containerRef}
+      onDragOver={event => {
+        if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault();
+      }}
+      onDrop={event => {
+        const files = Array.from(event.dataTransfer.files);
+        if (files.length === 0) return;
+        event.preventDefault();
+        requestImageImport(files, 'drop');
+      }}
       style={{
         flex: 1,
         position: 'relative',
@@ -1850,7 +2070,7 @@ export function CanvasArea() {
             accept="image/jpeg,image/png,image/webp"
             style={{ display: 'none' }}
             onChange={async e => {
-              if (e.target.files) await handleFiles(Array.from(e.target.files));
+              if (e.target.files) requestImageImport(Array.from(e.target.files), 'picker');
               e.target.value = '';
             }}
           />
@@ -1872,6 +2092,52 @@ export function CanvasArea() {
           >
             Закрыть
           </button>
+        </div>
+      )}
+
+      {pendingImageImport && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Как добавить изображение"
+          style={{
+            position: 'absolute', inset: 0, zIndex: 80,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(0,0,0,0.56)', padding: 20,
+          }}
+          onPointerDown={event => event.stopPropagation()}
+        >
+          <div style={{ width: 'min(430px, 100%)', borderRadius: 12, padding: 18, background: 'var(--bg-panel)', border: '1px solid var(--border-default)', boxShadow: '0 18px 60px rgba(0,0,0,.4)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 7 }}>Как добавить изображение?</div>
+            <div style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)', marginBottom: 14 }}>
+              Новая страница сохраняет изображение отдельно. Слой помещает его поверх текущей страницы.
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {([
+                ['page', 'Добавить как новую страницу'],
+                ['layer', 'Добавить как слой на текущую страницу'],
+              ] as const).map(([destination, label]) => (
+                <button
+                  key={destination}
+                  type="button"
+                  onClick={() => {
+                    const pending = pendingImageImport;
+                    setPendingImageImport(null);
+                    if (rememberImportChoice) storeImageImportPreference(destination);
+                    void applyImageImportChoice(destination, pending);
+                  }}
+                  style={{ border: destination === 'page' ? '1px solid var(--accent)' : '1px solid var(--border-default)', background: destination === 'page' ? 'var(--accent-dim)' : 'var(--bg-panel-raised)', color: 'var(--text-primary)', padding: '10px 12px', borderRadius: 8, cursor: 'pointer', textAlign: 'left', fontSize: 13 }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 13, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={rememberImportChoice} onChange={event => setRememberImportChoice(event.target.checked)} />
+              Запомнить выбор
+            </label>
+            <button type="button" onClick={() => setPendingImageImport(null)} style={{ marginTop: 14, border: 0, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}>Отмена</button>
+          </div>
         </div>
       )}
 
@@ -2156,7 +2422,10 @@ export function CanvasArea() {
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button
               type="button"
-              onClick={() => { useStore.getState().undo(); setWandPending(null); }}
+              onClick={() => {
+                useStore.getState().removeMaskElement(wandPending.documentId, wandPending.maskId, wandPending.elementId);
+                setWandPending(null);
+              }}
               style={{ padding: '4px 10px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border-default)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}
             >
               Отменить

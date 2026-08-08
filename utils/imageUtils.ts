@@ -1,5 +1,5 @@
 import { createBaseLayerState } from '../types';
-import type { ImageDocument, PerspectiveQuad } from '../types';
+import type { CropRect, ImageDocument, MaskElement, PerspectiveQuad, StrokeData } from '../types';
 
 export function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -146,7 +146,7 @@ export async function resizeDocument(
     width: newW,
     height: newH,
     thumbnail: createThumbnail(thumbImg, 160),
-    cleanup: { committed, strokes: doc.cleanup.strokes },
+    cleanup: { ...doc.cleanup, committed, strokes: doc.cleanup.strokes },
     // Resize invalidates history snapshots (they reference old dimensions)
     past: [],
     future: [],
@@ -155,6 +155,82 @@ export async function resizeDocument(
 }
 
 /** Crop the document to a normalized rect; remaps all object coordinates */
+export function remapDocumentContentForCrop(doc: ImageDocument, rect: CropRect) {
+  const cx = Math.max(0, Math.min(1, rect.x));
+  const cy = Math.max(0, Math.min(1, rect.y));
+  const cw = Math.max(0.01, Math.min(1 - cx, rect.width));
+  const ch = Math.max(0.01, Math.min(1 - cy, rect.height));
+  const mapX = (x: number) => (x - cx) / cw;
+  const mapY = (y: number) => (y - cy) / ch;
+  const remapStroke = (stroke: StrokeData): StrokeData => ({
+    ...stroke,
+    points: stroke.points.map((value, index) => (index % 2 === 0 ? mapX(value) : mapY(value))),
+    size: stroke.size / ch,
+  });
+  const remapElement = (element: MaskElement): MaskElement => {
+    if (element.type === 'brush') return { ...element, stroke: remapStroke(element.stroke) };
+    if (element.type === 'polygon') {
+      return { ...element, points: element.points.map((value, index) => (index % 2 === 0 ? mapX(value) : mapY(value))) };
+    }
+    return { ...element };
+  };
+  const remapPerspective = (quad: PerspectiveQuad | null | undefined): PerspectiveQuad | null => quad ? ({
+    topLeft: { x: mapX(quad.topLeft.x), y: mapY(quad.topLeft.y) },
+    topRight: { x: mapX(quad.topRight.x), y: mapY(quad.topRight.y) },
+    bottomRight: { x: mapX(quad.bottomRight.x), y: mapY(quad.bottomRight.y) },
+    bottomLeft: { x: mapX(quad.bottomLeft.x), y: mapY(quad.bottomLeft.y) },
+  }) : null;
+
+  return {
+    watermarks: (doc.watermarks ?? []).map(watermark => ({
+      ...watermark,
+      x: mapX(watermark.x),
+      y: mapY(watermark.y),
+      fontSize: watermark.fontSize !== undefined ? watermark.fontSize / ch : watermark.fontSize,
+      imageWidth: watermark.imageWidth !== undefined ? watermark.imageWidth / cw : watermark.imageWidth,
+      imageHeight: watermark.imageHeight !== undefined ? watermark.imageHeight / ch : watermark.imageHeight,
+    })),
+    texts: (doc.texts ?? []).map(text => ({
+      ...text,
+      x: mapX(text.x),
+      y: mapY(text.y),
+      fontSize: text.fontSize / ch,
+      width: text.width / cw,
+    })),
+    shapes: (doc.shapes ?? []).map(shape => ({
+      ...shape,
+      x: mapX(shape.x),
+      y: mapY(shape.y),
+      width: shape.width / cw,
+      height: shape.height / ch,
+    })),
+    bubbles: (doc.bubbles ?? []).map(bubble => ({
+      ...bubble,
+      x: mapX(bubble.x),
+      y: mapY(bubble.y),
+      width: bubble.width / cw,
+      height: bubble.height / ch,
+      tail: bubble.tail ? {
+        ...bubble.tail,
+        tipX: bubble.tail.tipX === undefined ? undefined : mapX(bubble.tail.tipX),
+        tipY: bubble.tail.tipY === undefined ? undefined : mapY(bubble.tail.tipY),
+      } : null,
+    })),
+    cleanupStrokes: (doc.cleanup?.strokes ?? []).map(remapStroke),
+    masks: (doc.masks ?? []).map(mask => ({
+      ...mask,
+      strokes: (mask.strokes ?? []).map(remapStroke),
+      elements: (mask.elements ?? []).map(remapElement),
+    })),
+    baseLayer: {
+      ...doc.baseLayer,
+      eraseElements: [],
+      perspective: remapPerspective(doc.baseLayer?.perspective),
+    },
+    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer, perspective: remapPerspective(layer.perspective) })),
+  };
+}
+
 export async function cropDocument(
   doc: ImageDocument,
   rect: { x: number; y: number; width: number; height: number }
@@ -186,47 +262,19 @@ export async function cropDocument(
     committed = cc.toDataURL('image/png');
   }
 
-  // Remap normalized coordinates into the new (cropped) space
-  const mapX = (x: number) => (x - cx) / cw;
-  const mapY = (y: number) => (y - cy) / ch;
-  const remapPerspective = (quad: PerspectiveQuad | null | undefined): PerspectiveQuad | null => quad ? ({
-    topLeft: { x: mapX(quad.topLeft.x), y: mapY(quad.topLeft.y) },
-    topRight: { x: mapX(quad.topRight.x), y: mapY(quad.topRight.y) },
-    bottomRight: { x: mapX(quad.bottomRight.x), y: mapY(quad.bottomRight.y) },
-    bottomLeft: { x: mapX(quad.bottomLeft.x), y: mapY(quad.bottomLeft.y) },
-  }) : null;
-
-  const watermarks = doc.watermarks.map(w => ({
-    ...w,
-    x: mapX(w.x),
-    y: mapY(w.y),
-    // fractions of width/height grow when the image shrinks
-    fontSize: w.fontSize !== undefined ? w.fontSize / ch : w.fontSize,
-    imageWidth: w.imageWidth !== undefined ? w.imageWidth / cw : w.imageWidth,
-    imageHeight: w.imageHeight !== undefined ? w.imageHeight / ch : w.imageHeight,
-  }));
-
-  const texts = doc.texts.map(t => ({
-    ...t,
-    x: mapX(t.x),
-    y: mapY(t.y),
-    fontSize: t.fontSize / ch,
-    width: t.width / cw,
-  }));
-
-  const shapes = doc.shapes.map(s => ({
-    ...s,
-    x: mapX(s.x),
-    y: mapY(s.y),
-    width: s.width / cw,
-    height: s.height / ch,
-  }));
-
-  const strokes = doc.cleanup.strokes.map(st => ({
-    ...st,
-    points: st.points.map((v, i) => (i % 2 === 0 ? mapX(v) : mapY(v))),
-    size: st.size / ch,
-  }));
+  const remapped = remapDocumentContentForCrop(doc, { x: cx, y: cy, width: cw, height: ch });
+  const masks = await Promise.all(remapped.masks.map(async mask => ({
+    ...mask,
+    elements: await Promise.all(mask.elements.map(async element => {
+      if (element.type !== 'bitmap') return element;
+      const bitmap = await loadImg(element.src);
+      const bitmapCanvas = document.createElement('canvas');
+      bitmapCanvas.width = pxW;
+      bitmapCanvas.height = pxH;
+      bitmapCanvas.getContext('2d')!.drawImage(bitmap, pxX, pxY, pxW, pxH, 0, 0, pxW, pxH);
+      return { ...element, src: bitmapCanvas.toDataURL('image/png') };
+    })),
+  })));
 
   const originalSrc = await canvasToObjectURL(canvas);
   const thumbImg = await loadImg(originalSrc);
@@ -236,13 +284,14 @@ export async function cropDocument(
     width: pxW,
     height: pxH,
     thumbnail: createThumbnail(thumbImg, 160),
-    cleanup: { committed, strokes },
-    // Erase-mask coordinates no longer align after crop, so drop them.
-    baseLayer: { ...doc.baseLayer, eraseElements: [], perspective: remapPerspective(doc.baseLayer.perspective) },
-    aiLayers: doc.aiLayers.map(layer => ({ ...layer, perspective: remapPerspective(layer.perspective) })),
-    watermarks,
-    texts,
-    shapes,
+    cleanup: { ...doc.cleanup, committed, strokes: remapped.cleanupStrokes },
+    baseLayer: remapped.baseLayer,
+    aiLayers: remapped.aiLayers,
+    masks,
+    watermarks: remapped.watermarks,
+    texts: remapped.texts,
+    shapes: remapped.shapes,
+    bubbles: remapped.bubbles,
     past: [],
     future: [],
     hasChanges: true,

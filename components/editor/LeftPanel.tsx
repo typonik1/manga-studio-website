@@ -13,7 +13,7 @@ const TABS: { key: LeftTab; label: string; hotkey: string }[] = [
   { key: 'watermark', label: 'Вотерка', hotkey: '1' },
   { key: 'cleanup', label: 'Очистка', hotkey: '2' },
   { key: 'text', label: 'Текст', hotkey: '3' },
-  { key: 'bubble', label: 'Баблы', hotkey: 'B' },
+  { key: 'bubble', label: 'Баблы', hotkey: '6' },
   { key: 'insert', label: 'Вставка', hotkey: '4' },
   { key: 'transform', label: 'Трансформ.', hotkey: '5' },
 ];

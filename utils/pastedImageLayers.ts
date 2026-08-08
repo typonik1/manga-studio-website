@@ -86,16 +86,21 @@ export function shouldKeepNativePaste(target: EventTarget | null): boolean {
 }
 
 export function extractClipboardImageFiles(data: DataTransfer): File[] {
+  // Chromium may expose the same clipboard payload through both collections.
+  // Prefer `files`; `items.getAsFile()` can manufacture a new File with a new
+  // lastModified timestamp, which made screenshots appear twice.
+  const directFiles = Array.from(data.files ?? []).filter(file => file.type.startsWith('image/'));
+  if (directFiles.length > 0) return directFiles;
+
   const files: File[] = [];
   const seen = new Set<string>();
   const add = (file: File | null) => {
     if (!file || !file.type.startsWith('image/')) return;
-    const key = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+    const key = `${file.name}:${file.type}:${file.size}`;
     if (seen.has(key)) return;
     seen.add(key);
     files.push(file);
   };
-  for (const file of Array.from(data.files ?? [])) add(file);
   for (const item of Array.from(data.items ?? [])) {
     if (item.kind === 'file' && item.type.startsWith('image/')) add(item.getAsFile());
   }

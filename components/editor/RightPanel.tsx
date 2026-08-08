@@ -1,12 +1,15 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { GripVertical } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import type { ImageDocument, LayerVisibility, BaseLayerAdjustments, ShapeKind } from '@/types';
 import { LayerContextMenu } from './LayerContextMenu';
 import { resolveLayerOrder } from '@/utils/layerOrder';
 import { createDrawingLayer } from '@/utils/layerActions';
+import { loadImagesFromFiles } from '@/utils/imageUtils';
+import { IMAGE_IMPORT_PREFERENCE_EVENT, loadImageImportPreference, storeImageImportPreference } from '@/utils/pageImportPreference';
 
 const SHAPE_LABELS: Record<ShapeKind, string> = {
   rect: 'Прямоугольник',
@@ -23,27 +26,53 @@ const SHAPE_LABELS: Record<ShapeKind, string> = {
 };
 
 /** Pointer-capture range slider — prevents drag-ghost when dragging inside a layer row. */
-function LayerSlider({
-  label, value, min, max, step = 1, onChange,
+export function LayerSlider({
+  label, value, min, max, step = 1, onChange, onBeforeChange,
 }: {
   label: string; value: number; min: number; max: number; step?: number;
   onChange: (v: number) => void;
+  onBeforeChange?: () => void;
 }) {
+  const historyActiveRef = useRef(false);
+  const wheelEndRef = useRef<number | null>(null);
+  const beginHistory = () => {
+    if (historyActiveRef.current) return;
+    historyActiveRef.current = true;
+    onBeforeChange?.();
+  };
+  const endHistory = () => {
+    historyActiveRef.current = false;
+    if (wheelEndRef.current !== null) window.clearTimeout(wheelEndRef.current);
+    wheelEndRef.current = null;
+  };
+  const applyValue = (next: number) => {
+    if (next === value) return;
+    beginHistory();
+    onChange(next);
+  };
+
+  useEffect(() => endHistory, []);
+
   return (
     <input
       aria-label={label}
       type="range"
       min={min} max={max} step={step}
       value={value}
-      onChange={e => onChange(Number(e.target.value))}
+      onChange={e => applyValue(Number(e.target.value))}
       onWheel={e => {
         e.preventDefault(); e.stopPropagation();
         const dir = e.deltaY < 0 ? 1 : -1;
         const mult = e.shiftKey ? 10 : 1;
-        onChange(Math.max(min, Math.min(max, value + dir * step * mult)));
+        applyValue(Math.max(min, Math.min(max, value + dir * step * mult)));
+        if (wheelEndRef.current !== null) window.clearTimeout(wheelEndRef.current);
+        wheelEndRef.current = window.setTimeout(endHistory, 250);
       }}
       onPointerDown={e => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); }}
-      onPointerUp={e => { e.currentTarget.releasePointerCapture(e.pointerId); }}
+      onPointerUp={e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ } endHistory(); }}
+      onPointerCancel={endHistory}
+      onKeyUp={endHistory}
+      onBlur={endHistory}
       onDragStart={e => e.preventDefault()}
       style={{ flex: 1 }}
     />
@@ -51,7 +80,10 @@ function LayerSlider({
 }
 
 export function RightPanel() {
-  const { rightTab: tab, setRightTab: setTab } = useStore();
+  const { rightTab: tab, setRightTab: setTab } = useStore(useShallow(state => ({
+    rightTab: state.rightTab,
+    setRightTab: state.setRightTab,
+  })));
 
   return (
     <aside
@@ -83,28 +115,109 @@ export function RightPanel() {
 }
 
 function GalleryPanel() {
-  const { documents, activeDocIndex, setActiveDoc, removeDocument } = useStore();
+  const { documents, activeDocIndex, setActiveDoc, removeDocument, reorderDocuments, addDocuments } = useStore(useShallow(state => ({
+    documents: state.documents,
+    activeDocIndex: state.activeDocIndex,
+    setActiveDoc: state.setActiveDoc,
+    removeDocument: state.removeDocument,
+    reorderDocuments: state.reorderDocuments,
+    addDocuments: state.addDocuments,
+  })));
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dragPageRef = useRef<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [hasRememberedImportChoice, setHasRememberedImportChoice] = useState(() => Boolean(loadImageImportPreference()));
 
-  if (documents.length === 0) {
-    return (
-      <div className="editor-empty" style={{ flex: 1 }}>
-        <svg width="32" height="32" viewBox="0 0 32 32" fill="none" opacity="0.45" aria-hidden="true">
-          <rect x="4" y="4" width="10" height="12" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
-          <rect x="18" y="4" width="10" height="8" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
-          <rect x="18" y="16" width="10" height="12" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
-          <rect x="4" y="20" width="10" height="8" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
-        </svg>
-        <strong>Страниц пока нет</strong>
-        <span style={{ fontSize: 11, lineHeight: 1.5 }}>Загруженные изображения появятся здесь для быстрого переключения.</span>
-      </div>
-    );
-  }
+  useEffect(() => {
+    const syncPreference = () => setHasRememberedImportChoice(Boolean(loadImageImportPreference()));
+    window.addEventListener(IMAGE_IMPORT_PREFERENCE_EVENT, syncPreference);
+    return () => window.removeEventListener(IMAGE_IMPORT_PREFERENCE_EVENT, syncPreference);
+  }, []);
+
+  const addPages = async (files: File[]) => {
+    if (files.length === 0) return;
+    setLoading(true);
+    setErrors([]);
+    try {
+      const result = await loadImagesFromFiles(files);
+      if (result.docs.length > 0) addDocuments(result.docs);
+      setErrors(result.errors);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '8px 6px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '8px 6px 6px' }}>
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={loading}
+          style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: '1px solid var(--accent)', background: 'var(--accent-dim)', color: 'var(--text-primary)', cursor: loading ? 'progress' : 'pointer', fontSize: 12, fontWeight: 600 }}
+        >
+          {loading ? 'Добавляем…' : '+ Добавить страницу'}
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept="image/jpeg,image/png,image/webp"
+          style={{ display: 'none' }}
+          onChange={event => {
+            void addPages(Array.from(event.target.files ?? []));
+            event.target.value = '';
+          }}
+        />
+        {hasRememberedImportChoice && (
+          <button
+            type="button"
+            onClick={() => {
+              storeImageImportPreference(null);
+              setHasRememberedImportChoice(false);
+            }}
+            title="При следующей вставке или перетаскивании снова спросить: страница или слой"
+            style={{ width: '100%', marginTop: 5, border: 0, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 10 }}
+          >
+            Сбросить выбор вставки
+          </button>
+        )}
+        {errors.map((error, index) => <div key={index} style={{ marginTop: 5, fontSize: 10, color: 'var(--danger)' }}>{error}</div>)}
+      </div>
+
+      {documents.length === 0 ? (
+        <div className="editor-empty" style={{ flex: 1 }}>
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" opacity="0.45" aria-hidden="true">
+            <rect x="4" y="4" width="10" height="12" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
+            <rect x="18" y="4" width="10" height="8" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
+            <rect x="18" y="16" width="10" height="12" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
+            <rect x="4" y="20" width="10" height="8" rx="2" stroke="white" strokeWidth="1.5" fill="none" />
+          </svg>
+          <strong>Страниц пока нет</strong>
+          <span style={{ fontSize: 11, lineHeight: 1.5 }}>Добавьте одну или несколько страниц в нужном порядке.</span>
+        </div>
+      ) : (
+      <div style={{ flex: 1, overflowY: 'auto', padding: '2px 6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
       {documents.map((doc, i) => (
         <div
           key={doc.id}
+          draggable
+          onDragStart={event => {
+            dragPageRef.current = i;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', doc.id);
+          }}
+          onDragOver={event => {
+            if (dragPageRef.current !== null) event.preventDefault();
+          }}
+          onDrop={event => {
+            event.preventDefault();
+            const sourceIndex = dragPageRef.current;
+            dragPageRef.current = null;
+            if (sourceIndex !== null) reorderDocuments(sourceIndex, i);
+          }}
+          onDragEnd={() => { dragPageRef.current = null; }}
           onClick={() => setActiveDoc(i)}
           style={{
             display: 'flex',
@@ -124,6 +237,7 @@ function GalleryPanel() {
             if (i !== activeDocIndex) e.currentTarget.style.background = 'transparent';
           }}
         >
+          <GripVertical size={13} aria-hidden="true" style={{ flexShrink: 0, color: 'var(--text-muted)', cursor: 'grab' }} />
           {/* Thumbnail */}
           <div style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 4, overflow: 'hidden', background: '#111' }}>
             <img
@@ -166,12 +280,41 @@ function GalleryPanel() {
           </button>
         </div>
       ))}
+      </div>
+      )}
     </div>
   );
 }
 
 function LayersPanel() {
-const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, duplicateAiLayer, deleteWatermark, deleteText, deleteShape, deleteBubble, duplicateBubble, reorderLayer } = useStore();
+const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateCleanupLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, duplicateAiLayer, updateWatermark, deleteWatermark, updateText, deleteText, updateShape, deleteShape, updateBubble, deleteBubble, duplicateBubble, reorderLayer, pushHistory } = useStore(useShallow(state => ({
+  layerVisibility: state.layerVisibility,
+  toggleLayerVisibility: state.toggleLayerVisibility,
+  activeDocIndex: state.activeDocIndex,
+  documents: state.documents,
+  selectedObject: state.selectedObject,
+  setSelectedObject: state.setSelectedObject,
+  setActiveTool: state.setActiveTool,
+  setLeftTab: state.setLeftTab,
+  selectLayer: state.selectLayer,
+  updateCleanupLayer: state.updateCleanupLayer,
+  updateMask: state.updateMask,
+  deleteMask: state.deleteMask,
+  updateAiLayer: state.updateAiLayer,
+  deleteAiLayer: state.deleteAiLayer,
+  duplicateAiLayer: state.duplicateAiLayer,
+  updateWatermark: state.updateWatermark,
+  deleteWatermark: state.deleteWatermark,
+  updateText: state.updateText,
+  deleteText: state.deleteText,
+  updateShape: state.updateShape,
+  deleteShape: state.deleteShape,
+  updateBubble: state.updateBubble,
+  deleteBubble: state.deleteBubble,
+  duplicateBubble: state.duplicateBubble,
+  reorderLayer: state.reorderLayer,
+  pushHistory: state.pushHistory,
+})));
 const activeDoc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
 const [aiMenu, setAiMenu] = useState<{ x: number; y: number; id: string } | null>(null);
 const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -232,6 +375,16 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
               </svg>
             )}
           </button>
+          {layer.key === 'cleanup' && (
+            <button
+              type="button"
+              aria-label={activeDoc.cleanup.locked ? 'Разблокировать слой очистки' : 'Заблокировать слой очистки'}
+              onClick={() => updateCleanupLayer({ locked: !activeDoc.cleanup.locked })}
+              style={{ border: 0, background: 'none', color: activeDoc.cleanup.locked ? 'var(--warning, #e5a50a)' : 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+            >
+              <LockIcon locked={Boolean(activeDoc.cleanup.locked)} />
+            </button>
+          )}
         </div>
       ))}
 
@@ -320,13 +473,14 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                   opacity={layer.opacity}
                   onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
                   onVisibility={() => updateAiLayer(layer.id, { visible: !layer.visible })}
-                  onOpacity={opacity => updateAiLayer(layer.id, { opacity })}
+                  onOpacity={opacity => updateAiLayer(layer.id, { opacity }, { history: false })}
                   onDelete={() => deleteAiLayer(layer.id)}
                   onContextMenu={e => { e.preventDefault(); setAiMenu({ x: e.clientX, y: e.clientY, id: layer.id }); }}
                   locked={layer.locked === true}
                   onLock={() => updateAiLayer(layer.id, { locked: layer.locked !== true })}
                   adjustments={layer.adjustments}
-                  onAdjustments={updates => updateAiLayer(layer.id, { adjustments: { brightness: 1, contrast: 1, saturation: 1, ...layer.adjustments, ...updates } })}
+                  onAdjustments={updates => updateAiLayer(layer.id, { adjustments: { brightness: 1, contrast: 1, saturation: 1, ...layer.adjustments, ...updates } }, { history: false })}
+                  onBeforeChange={pushHistory}
                   onDuplicate={() => duplicateAiLayer(layer.id)}
                 />
               </div>
@@ -347,8 +501,11 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
               opacity={mask.opacity}
               onSelect={() => { selectLayer({ id: mask.id, type: 'mask' }); setActiveTool('maskBrush'); setLeftTab('cleanup'); }}
               onVisibility={() => updateMask(mask.id, { visible: !mask.visible })}
-              onOpacity={opacity => updateMask(mask.id, { opacity })}
+              onOpacity={opacity => updateMask(mask.id, { opacity }, { history: false })}
               onDelete={() => deleteMask(mask.id)}
+              locked={mask.locked === true}
+              onLock={() => updateMask(mask.id, { locked: mask.locked !== true })}
+              onBeforeChange={pushHistory}
             />
           ))}
         </>
@@ -422,6 +579,8 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                         onSelect={() => setSelectedObject({ id: wm.id, type: 'watermark' })}
                         onDelete={() => deleteWatermark(wm.id)}
                         isBatch={wm.isBatch}
+                        locked={wm.locked === true}
+                        onLock={() => { pushHistory(); updateWatermark(wm.id, { locked: wm.locked !== true }); }}
                       />
                     </div>
                   </div>
@@ -441,6 +600,8 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                         visible={txt.visible}
                         onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
                         onDelete={() => deleteText(txt.id)}
+                        locked={txt.locked === true}
+                        onLock={() => updateText(txt.id, { locked: txt.locked !== true }, { history: true })}
                       />
                     </div>
                   </div>
@@ -459,6 +620,8 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                         visible={shape.visible}
                         onSelect={() => setSelectedObject({ id: shape.id, type: 'shape' })}
                         onDelete={() => deleteShape(shape.id)}
+                        locked={shape.locked === true}
+                        onLock={() => updateShape(shape.id, { locked: shape.locked !== true }, { history: true })}
                       />
                     </div>
                   </div>
@@ -477,6 +640,8 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                         visible={bubble.visible}
                         onSelect={() => setSelectedObject({ id: bubble.id, type: 'bubble' })}
                         onDelete={() => deleteBubble(bubble.id)}
+                        locked={bubble.locked === true}
+                        onLock={() => updateBubble(bubble.id, { locked: bubble.locked !== true }, { history: true })}
                       />
                     </div>
                   </div>
@@ -493,7 +658,13 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
 }
 
 function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
-  const { selectLayer, updateBaseLayer, duplicateBaseLayer, clearEraseElements } = useStore();
+  const { selectLayer, updateBaseLayer, duplicateBaseLayer, clearEraseElements, pushHistory } = useStore(useShallow(state => ({
+    selectLayer: state.selectLayer,
+    updateBaseLayer: state.updateBaseLayer,
+    duplicateBaseLayer: state.duplicateBaseLayer,
+    clearEraseElements: state.clearEraseElements,
+    pushHistory: state.pushHistory,
+  })));
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const base = activeDoc.baseLayer;
   const baseId = base?.id ?? `base-${activeDoc.id}`;
@@ -534,21 +705,21 @@ function BaseLayerRow({ activeDoc }: { activeDoc: ImageDocument }) {
         {selected && (
           <div data-nodrag draggable={false} style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 6, cursor: 'default' }} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
             {([
-              { key: 'opacity', label: 'Прозрачность', value: base?.opacity ?? 1, min: 0, max: 100, apply: (v: number) => updateBaseLayer({ opacity: v / 100 }) },
-              { key: 'brightness', label: 'Яркость', value: adjustments.brightness, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, brightness: v / 100 } }) },
-              { key: 'contrast', label: 'Контраст', value: adjustments.contrast, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, contrast: v / 100 } }) },
-              { key: 'saturation', label: 'Насыщенность', value: adjustments.saturation, min: 0, max: 200, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, saturation: v / 100 } }) },
+              { key: 'opacity', label: 'Прозрачность', value: base?.opacity ?? 1, min: 0, max: 100, apply: (v: number) => updateBaseLayer({ opacity: v / 100 }, { history: false }) },
+              { key: 'brightness', label: 'Яркость', value: adjustments.brightness, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, brightness: v / 100 } }, { history: false }) },
+              { key: 'contrast', label: 'Контраст', value: adjustments.contrast, min: 20, max: 180, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, contrast: v / 100 } }, { history: false }) },
+              { key: 'saturation', label: 'Насыщенность', value: adjustments.saturation, min: 0, max: 200, apply: (v: number) => updateBaseLayer({ adjustments: { ...adjustments, saturation: v / 100 } }, { history: false }) },
             ] as const).map(slider => (
               <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>
-                <LayerSlider label={slider.label} min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={v => slider.apply(v)} />
+                <LayerSlider label={slider.label} min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onBeforeChange={pushHistory} onChange={v => slider.apply(v)} />
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 30 }}>{Math.round(slider.value * 100)}%</span>
               </div>
             ))}
             <div style={{ display: 'flex', gap: 5, paddingTop: 2 }}>
               <button type="button" onClick={() => duplicateBaseLayer()} style={{ flex: 1, padding: '4px 6px', fontSize: 10, borderRadius: 5, border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)', cursor: 'pointer' }}>Дублировать</button>
               {eraseCount > 0 && (
-                <button type="button" onClick={() => clearEraseElements({ type: 'base' })} style={{ flex: 1, padding: '4px 6px', fontSize: 10, borderRadius: 5, border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)', cursor: 'pointer' }}>Восстановить стёртое</button>
+                <button type="button" disabled={locked} onClick={() => clearEraseElements({ type: 'base' })} style={{ flex: 1, padding: '4px 6px', fontSize: 10, borderRadius: 5, border: '1px solid var(--border-default)', background: 'var(--bg-panel-raised)', color: 'var(--text-secondary)', cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1 }}>Восстановить стёртое</button>
               )}
             </div>
           </div>
@@ -570,13 +741,14 @@ function LockIcon({ locked }: { locked: boolean }) {
   );
 }
 
-function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisibility, onOpacity, onDelete, onContextMenu, locked, onLock, adjustments, onAdjustments, onDuplicate }: {
+function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisibility, onOpacity, onDelete, onContextMenu, locked, onLock, adjustments, onAdjustments, onDuplicate, onBeforeChange }: {
   label: string; prefix: string; selected: boolean; visible: boolean; opacity: number;
   onSelect: () => void; onVisibility: () => void; onOpacity: (value: number) => void; onDelete: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   locked?: boolean; onLock?: () => void;
   adjustments?: BaseLayerAdjustments; onAdjustments?: (updates: Partial<BaseLayerAdjustments>) => void;
   onDuplicate?: () => void;
+  onBeforeChange?: () => void;
 }) {
   const adj = adjustments ?? { brightness: 1, contrast: 1, saturation: 1 };
   return (
@@ -610,7 +782,7 @@ function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisib
           ]).map(slider => (
             <div key={slider.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 78 }}>{slider.label}</span>
-              <LayerSlider label={slider.label} min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onChange={v => slider.apply(v)} />
+              <LayerSlider label={slider.label} min={slider.min} max={slider.max} value={Math.round(slider.value * 100)} onBeforeChange={onBeforeChange} onChange={v => slider.apply(v)} />
               <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 30 }}>{Math.round(slider.value * 100)}%</span>
             </div>
           ))}
@@ -624,7 +796,7 @@ function LayerRow({ label, prefix, selected, visible, opacity, onSelect, onVisib
 }
 
 function ObjectRow({
-  label, prefix, isSelected, visible, onSelect, onDelete, isBatch,
+  label, prefix, isSelected, visible, onSelect, onDelete, isBatch, locked, onLock,
 }: {
   label: string;
   prefix: string;
@@ -633,6 +805,8 @@ function ObjectRow({
   onSelect: () => void;
   onDelete: () => void;
   isBatch?: boolean;
+  locked?: boolean;
+  onLock?: () => void;
 }) {
   return (
     <div
@@ -657,6 +831,16 @@ function ObjectRow({
       }}>
         {prefix}
       </span>
+      {onLock && (
+        <button
+          type="button"
+          aria-label={locked ? 'Разблокировать объект' : 'Заблокировать объект'}
+          onClick={e => { e.stopPropagation(); onLock(); }}
+          style={{ background: 'none', border: 'none', color: locked ? 'var(--warning, #e5a50a)' : 'var(--text-muted)', cursor: 'pointer', padding: '0 2px', display: 'flex' }}
+        >
+          <LockIcon locked={Boolean(locked)} />
+        </button>
+      )}
       <span style={{
         flex: 1, fontSize: 11, color: visible ? 'var(--text-secondary)' : 'var(--text-muted)',
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',

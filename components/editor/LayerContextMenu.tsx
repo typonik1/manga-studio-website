@@ -93,26 +93,28 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
       kind: 'item',
       key: 'delete-pixels',
       label: 'Удалить пиксели по выделению',
-      disabled: !selectionActive,
+      disabled: !selectionActive || locked,
       onClick: () => run('delete-pixels', () => deleteMaskedPixels(menu.target)),
     },
     ...(!isBase ? [{
       kind: 'item' as const,
       key: 'clear-erase',
       label: `Восстановить стёртое${eraseCount ? ` (${eraseCount})` : ''}`,
-      disabled: eraseCount === 0,
+      disabled: eraseCount === 0 || locked,
       onClick: () => run('clear-erase', () => clearEraseElements({ id: menu.target.id, type: 'ai' })),
     }] : []),
     ...(isBase && eraseCount > 0 ? [{
       kind: 'item' as const,
       key: 'clear-erase',
       label: `Восстановить стёртое (${eraseCount})`,
+      disabled: locked,
       onClick: () => run('clear-erase', () => clearEraseElements({ type: 'base' })),
     }] : []),
     {
       kind: 'item',
       key: 'crop',
       label: crop ? 'Обрезать (изменить)' : 'Обрезать',
+      disabled: locked,
       onClick: () => run('crop', () => {
         selectLayer({ id: menu.target.id, type: menu.target.type });
         setLayerCropTarget(layerRef);
@@ -159,6 +161,7 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
       kind: 'item',
       key: 'reset',
       label: 'Сбросить настройки',
+      disabled: locked,
       onClick: () => run('reset', () => resetBaseLayerSettings()),
     });
   } else {
@@ -210,6 +213,7 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
                 min={0}
                 max={100}
                 value={Math.round(opacity * 100)}
+                onWheel={event => { event.preventDefault(); event.stopPropagation(); }}
                 onPointerDown={() => pushHistory()}
                 onChange={e => {
                   const value = Number(e.target.value) / 100;

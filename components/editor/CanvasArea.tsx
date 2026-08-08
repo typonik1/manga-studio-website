@@ -19,7 +19,11 @@ import { BubbleNode } from './BubbleNode';
 import { InlineTextEditor } from './InlineTextEditor';
 import { drawBrushStroke } from '@/utils/brushRaster';
 import { clonePerspectiveQuad, drawPerspectiveImage, isValidPerspectiveQuad } from '@/utils/perspective';
-import { getShapeGeometry } from '@/utils/shapeGeometry';
+import {
+  getCurvedArrowCurveFromHandle,
+  getCurvedArrowHandlePosition,
+  getShapeGeometry,
+} from '@/utils/shapeGeometry';
 import { isOpenShape } from '@/utils/shapePresets';
 import { PaintedShape } from './PaintedShape';
 import {
@@ -755,7 +759,7 @@ function ShapeNode({
           glowScale={previewScale}
           dash={dash}
           dashEnabled={Boolean(dash)}
-          hitStrokeWidth={shape.kind === 'line' ? Math.max(16, strokeW) : undefined}
+          hitStrokeWidth={open ? Math.max(16, strokeW) : undefined}
         />
       )}
       {geometry.fillPath && (
@@ -775,10 +779,13 @@ function ShapeNode({
   );
 
   const curve = shape.curve ?? 0.35;
-  const curveLocalY = -curve * h * 0.8;
-  const rotation = shape.rotation * Math.PI / 180;
-  const curveHandleX = cx - Math.sin(rotation) * curveLocalY;
-  const curveHandleY = cy + Math.cos(rotation) * curveLocalY;
+  const curveHandle = getCurvedArrowHandlePosition(
+    cx,
+    cy,
+    h,
+    curve,
+    shape.rotation,
+  );
 
   return (
     <>
@@ -787,12 +794,13 @@ function ShapeNode({
       </Group>
       {isSelected && shape.kind === 'curved-arrow' && (
         <Circle
-          x={curveHandleX}
-          y={curveHandleY}
-          radius={7}
+          x={curveHandle.x}
+          y={curveHandle.y}
+          radius={8}
           fill="#ff6b6b"
           stroke="#ffffff"
           strokeWidth={2}
+          hitStrokeWidth={18}
           draggable
           onDragStart={event => {
             event.cancelBubble = true;
@@ -800,10 +808,16 @@ function ShapeNode({
           }}
           onDragMove={event => {
             event.cancelBubble = true;
-            const dx = event.target.x() - cx;
-            const dy = event.target.y() - cy;
-            const localY = -Math.sin(rotation) * dx + Math.cos(rotation) * dy;
-            onChange({ curve: Math.max(-1, Math.min(1, -localY / Math.max(1, h * 0.8))) });
+            onChange({
+              curve: getCurvedArrowCurveFromHandle(
+                cx,
+                cy,
+                h,
+                shape.rotation,
+                event.target.x(),
+                event.target.y(),
+              ),
+            });
           }}
           onClick={event => { event.cancelBubble = true; }}
         />

@@ -8,6 +8,40 @@ export interface ShapeGeometry {
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
+function curvedArrowControlY(height: number, curve: number) {
+  return clamp(curve, -1, 1) * height * 0.8;
+}
+
+export function getCurvedArrowHandlePosition(
+  centerX: number,
+  centerY: number,
+  height: number,
+  curve: number,
+  rotation: number,
+) {
+  const localY = curvedArrowControlY(height, curve);
+  const radians = rotation * Math.PI / 180;
+  return {
+    x: centerX - Math.sin(radians) * localY,
+    y: centerY + Math.cos(radians) * localY,
+  };
+}
+
+export function getCurvedArrowCurveFromHandle(
+  centerX: number,
+  centerY: number,
+  height: number,
+  rotation: number,
+  handleX: number,
+  handleY: number,
+) {
+  const radians = rotation * Math.PI / 180;
+  const dx = handleX - centerX;
+  const dy = handleY - centerY;
+  const localY = -Math.sin(radians) * dx + Math.cos(radians) * dy;
+  return clamp(localY / Math.max(1, Math.abs(height) * 0.8), -1, 1);
+}
+
 function arrowHead(x: number, y: number, angle: number, length: number, width: number) {
   const baseX = x - Math.cos(angle) * length;
   const baseY = y - Math.sin(angle) * length;
@@ -37,7 +71,7 @@ function straightArrow(width: number, height: number, doubleEnded = false): Shap
 function curvedArrow(width: number, height: number, curve: number): ShapeGeometry {
   const x1 = -width / 2;
   const x2 = width / 2;
-  const controlY = clamp(curve, -1, 1) * height * 0.8;
+  const controlY = curvedArrowControlY(height, curve);
   const tipX = x2;
   const tipY = 0;
   const tangentX = x2 - 0;

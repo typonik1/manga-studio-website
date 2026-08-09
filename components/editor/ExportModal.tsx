@@ -52,6 +52,38 @@ async function renderDocumentToCanvas(doc: ImageDocument, format: 'png' | 'jpg')
     ctx.restore();
   };
 
+  const drawTranslationMask = (mask: NonNullable<ImageDocument['translationMasks']>[number]) => {
+    if (!mask.visible) return;
+    const width = mask.width * doc.width;
+    const height = mask.height * doc.height;
+    ctx.save();
+    ctx.translate(mask.x * doc.width, mask.y * doc.height);
+    ctx.rotate(mask.rotation * Math.PI / 180);
+    ctx.scale(mask.scaleX, mask.scaleY);
+    ctx.globalAlpha = mask.opacity;
+    ctx.fillStyle = mask.fill;
+    if (mask.feather > 0) ctx.filter = `blur(${mask.feather}px)`;
+    ctx.beginPath();
+    if (mask.shape === 'ellipse') {
+      ctx.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+    } else if (mask.shape === 'polygon') {
+      const points = mask.points?.length ? mask.points : [0, 0, 1, 0, 1, 1, 0, 1];
+      points.forEach((value, index) => {
+        if (index % 2 !== 0) return;
+        const x = value * width;
+        const y = points[index + 1] * height;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+    } else if (mask.shape === 'rounded-rect') {
+      ctx.roundRect(0, 0, width, height, Math.min(width, height) * 0.12);
+    } else {
+      ctx.rect(0, 0, width, height);
+    }
+    ctx.fill();
+    ctx.restore();
+  };
+
   // Render every content type through one bottom → top sequence so a pasted
   // raster can sit above a bubble (or vice versa) in both preview and export.
   for (const ref of resolveVisualLayerOrder(doc)) {
@@ -67,6 +99,9 @@ async function renderDocumentToCanvas(doc: ImageDocument, format: 'png' | 'jpg')
     } else if (ref.type === 'text') {
       const txt = doc.texts.find(item => item.id === ref.id);
       if (txt) renderTextObjectToContext(ctx, txt, doc.width, doc.height);
+    } else if (ref.type === 'translationMask') {
+      const mask = (doc.translationMasks ?? []).find(item => item.id === ref.id);
+      if (mask) drawTranslationMask(mask);
     } else if (ref.type === 'shape') {
       const shape = (doc.shapes ?? []).find(item => item.id === ref.id);
       if (shape) drawShapeToContext(ctx, shape, doc.width, doc.height);

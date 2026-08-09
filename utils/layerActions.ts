@@ -4,6 +4,8 @@ import {
   buildCleanupSource,
   buildCleanupSourceCanvas,
   buildElementsMaskCanvas,
+  buildRasterLayerCanvas,
+  buildBaseCanvas,
   computeAlphaBBox,
   createCleanupPatch,
   createColorPatch,
@@ -49,6 +51,28 @@ export function finishSelection(clearedByDefault = true) {
   if (clearedByDefault && !cleanupSettings.keepSelectionAfterAction) clearActiveMask();
 }
 
+/** Tighten a raster's non-destructive crop to its remaining alpha bounds. */
+async function trimTransparentBounds(target: { id?: string; type: 'base' | 'ai' }) {
+  const state = useStore.getState();
+  const document = getActiveDoc();
+  if (!document) return;
+  const raster = target.type === 'ai' ? document.aiLayers.find(layer => layer.id === target.id) : null;
+  if (target.type === 'ai' && !raster) return;
+  const canvas = raster
+    ? await buildRasterLayerCanvas(raster, document.width, document.height)
+    : await buildBaseCanvas(document);
+  const bounds = computeAlphaBBox(canvas, 0);
+  if (!bounds) return;
+  const crop = {
+    x: bounds.x / document.width,
+    y: bounds.y / document.height,
+    width: bounds.width / document.width,
+    height: bounds.height / document.height,
+  };
+  if (target.type === 'ai' && target.id) state.updateAiLayer(target.id, { crop }, { history: false });
+  else state.updateBaseLayer({ crop }, { history: false });
+}
+
 /**
  * «Удалить пиксели» — makes the selected area transparent, fully locally.
  * Applies a non-destructive erase mask to the explicitly passed target layer.
@@ -70,6 +94,7 @@ export async function deleteMaskedPixels(target?: { id?: string; type: 'base' | 
     if (!source) throw new Error('Слой не найден.');
     if (source.locked) throw new Error('Слой заблокирован. Сначала снимите замок.');
     state.addEraseElement({ id: resolved.id, type: 'ai' }, element);
+    await trimTransparentBounds({ id: resolved.id, type: 'ai' });
     finishSelection();
     return;
   }
@@ -81,6 +106,7 @@ export async function deleteMaskedPixels(target?: { id?: string; type: 'base' | 
     const copyId = state.duplicateBaseLayer();
     if (!copyId) throw new Error('Не удалось создать копию исходника.');
     useStore.getState().addEraseElement({ id: copyId, type: 'ai' }, element);
+    await trimTransparentBounds({ id: copyId, type: 'ai' });
     // Hide the base so the erased area actually turns transparent.
     useStore.getState().updateBaseLayer({ visible: false });
     finishSelection();
@@ -88,6 +114,7 @@ export async function deleteMaskedPixels(target?: { id?: string; type: 'base' | 
   }
 
   state.addEraseElement({ type: 'base' }, element);
+  await trimTransparentBounds({ type: 'base' });
   finishSelection();
 }
 

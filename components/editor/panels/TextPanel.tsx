@@ -6,7 +6,7 @@ import { useStore } from '@/store/useStore';
 import { uid } from '@/utils/imageUtils';
 import { saveCustomFont, hasCustomFont, deleteCustomFont } from '@/utils/fonts';
 import { translateText, type TranslateLang } from '@/utils/translate';
-import type { TextObject } from '@/types';
+import type { TextObject, TranslationMaskObject } from '@/types';
 import { DEFAULT_ANIME_FONT, MANGA_FONTS, TEXT_PRESETS } from '@/types';
 import { PanelRow, PanelSlider, PanelLabel, PanelSection } from './PanelComponents';
 import { clampOcrBox } from '@/utils/coordinates';
@@ -49,7 +49,7 @@ export function TextPanel() {
   const {
     textSettings, updateTextSettings, recentColors, rememberTextColor, addText, activeDocIndex, documents,
     selectedObject, updateText, customFonts, addCustomFont, removeCustomFont, bumpFontsVersion,
-    addStroke, restorePageSourceText, setActiveTool, translationFontFamily,
+    addTranslationGroup, restorePageSourceText, setActiveTool, translationFontFamily, translationMaskSettings, updateAllTranslationMaskPadding, pushHistory,
   } = useStore(useShallow(state => ({
     textSettings: state.textSettings,
     updateTextSettings: state.updateTextSettings,
@@ -64,10 +64,13 @@ export function TextPanel() {
     addCustomFont: state.addCustomFont,
     removeCustomFont: state.removeCustomFont,
     bumpFontsVersion: state.bumpFontsVersion,
-    addStroke: state.addStroke,
+    addTranslationGroup: state.addTranslationGroup,
     restorePageSourceText: state.restorePageSourceText,
     setActiveTool: state.setActiveTool,
     translationFontFamily: state.translationFontFamily,
+    translationMaskSettings: state.translationMaskSettings,
+    updateAllTranslationMaskPadding: state.updateAllTranslationMaskPadding,
+    pushHistory: state.pushHistory,
   })));
   const customFontRef = useRef<HTMLInputElement>(null);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -219,24 +222,6 @@ export function TextPanel() {
             width: textBox.width * 1.08,
             height: textBox.height * 1.2,
           }) ?? textBox;
-        const rows = Math.max(1, Math.ceil(wipe.height / 0.03));
-        const size = (wipe.height * H) / rows;
-        const capX = size / 2 / W;
-        for (let row = 0; row < rows; row++) {
-          let x0 = wipe.x + capX;
-          let x1 = wipe.x + wipe.width - capX;
-          if (x1 < x0) x0 = x1 = wipe.x + wipe.width / 2;
-          const yc = wipe.y + (size / H) * (row + 0.5);
-          addStroke({
-            id: uid(),
-            points: [x0, yc, x1, yc],
-            size: size / H,
-            color: block.background,
-            opacity: 1,
-            hardness: 1,
-          });
-        }
-
         // 2) Область под перевод — весь бабл. Если модель его не дала,
         // расширяем бокс букв: русский длиннее английского примерно на 30%.
         const area =
@@ -270,8 +255,34 @@ export function TextPanel() {
         const centerX = area.x + area.width / 2;
         const centerY = area.y + area.height / 2;
 
-        addText({
-          id: uid(),
+        const textId = `translation-text-${uid()}`;
+        const maskId = `translation-mask-${uid()}`;
+        const groupId = `translation-group-${uid()}`;
+        const padding = translationMaskSettings.padding;
+        const maskX = Math.max(0, wipe.x - padding);
+        const maskY = Math.max(0, wipe.y - padding);
+        const mask: TranslationMaskObject = {
+          id: maskId,
+          name: `Маска: ${block.original.slice(0, 32)}`,
+          x: maskX,
+          y: maskY,
+          width: Math.min(1 - maskX, wipe.width + padding * 2),
+          height: Math.min(1 - maskY, wipe.height + padding * 2),
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          shape: translationMaskSettings.shape,
+          fill: block.background || translationMaskSettings.fill,
+          opacity: translationMaskSettings.opacity,
+          feather: translationMaskSettings.feather,
+          padding,
+          visible: true,
+          groupId,
+          textId,
+          sourceBounds: textBox,
+        };
+        const text: TextObject = {
+          id: textId,
           text: fitted.text,
           fontFamily,
           fontSize: fitted.fontSizePx / H,
@@ -291,8 +302,10 @@ export function TextPanel() {
           visible: true,
           sourceText: block.original,
           translationBatchId,
+          groupId,
           isTranslated: true,
-        });
+        };
+        addTranslationGroup(mask, text);
         placed += 1;
       });
 
@@ -398,6 +411,32 @@ export function TextPanel() {
           </div>
         )}
       </div>
+
+      {(activeDoc?.translationMasks?.length ?? 0) > 0 && (
+        <details className="editor-card">
+          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 650 }}>Все маски страницы ({activeDoc!.translationMasks!.length})</summary>
+          <div style={{ display: 'grid', gap: 7, marginTop: 9 }}>
+            <label style={{ display: 'grid', gridTemplateColumns: '1fr 42px', gap: 7, alignItems: 'center', fontSize: 11, color: 'var(--text-secondary)' }}>
+              <input
+                aria-label="Padding всех масок"
+                type="range"
+                min={0}
+                max={0.2}
+                step={0.005}
+                value={translationMaskSettings.padding}
+                onPointerDown={pushHistory}
+                onChange={event => {
+                  const padding = Number(event.target.value);
+                  useStore.getState().updateTranslationMaskSettings({ padding });
+                  updateAllTranslationMaskPadding(padding, { history: false });
+                }}
+              />
+              <span>{Math.round(translationMaskSettings.padding * 100)}%</span>
+            </label>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Слайдер массово подгоняет все маски от исходных OCR-границ.</span>
+          </div>
+        </details>
+      )}
 
       <div className="divider" />
 

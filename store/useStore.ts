@@ -28,6 +28,10 @@ import type {
   BubbleObject,
   BubbleKind,
   PerspectiveQuad,
+  BlurSettings,
+  CropSettings,
+  TranslationMaskSettings,
+  TranslationMaskObject,
 } from '../types';
 import { DEFAULT_ANIME_FONT, DEFAULT_BASE_ADJUSTMENTS, DEFAULT_LAYER_TRANSFORM } from '../types';
 import { resolveLayerOrder, layerRefKey } from '@/utils/layerOrder';
@@ -59,6 +63,7 @@ const defaultWmSettings: WatermarkSettings = {
 const defaultCleanupSettings: CleanupSettings = {
   brushSize: 0.03,
   brushHardness: 0.8,
+  brushOpacity: 1,
   brushColor: '#ffffff',
   inpaintRadius: 4,
   mode: 'brush',
@@ -79,10 +84,38 @@ const defaultTextSettings: TextSettings = {
   strokeWidth: 2,
   shadowColor: 'transparent',
   shadowBlur: 0,
+  shadowOffsetX: 0,
+  shadowOffsetY: 0,
   lineHeight: 1.3,
   align: 'center',
+  bold: false,
+  italic: false,
+  vertical: false,
   width: 0.35,
   draftText: '',
+};
+
+const defaultCropSettings: CropSettings = {
+  scope: 'page',
+  lockAspect: true,
+  ratio: 'free',
+};
+
+const defaultBlurSettings: BlurSettings = {
+  mode: 'blur',
+  gesture: 'brush',
+  applyTo: 'layer',
+  brushSize: 0.08,
+  intensity: 0.5,
+  hardness: 0.75,
+};
+
+const defaultTranslationMaskSettings: TranslationMaskSettings = {
+  shape: 'rounded-rect',
+  fill: '#ffffff',
+  opacity: 1,
+  feather: 2,
+  padding: 0.04,
 };
 
 const defaultExportSettings: ExportSettings = {
@@ -117,7 +150,7 @@ function snap(doc: ImageDocument): HistorySnapshot {
   return {
     cleanup: { ...doc.cleanup, committed: doc.cleanup.committed, strokes: [...doc.cleanup.strokes] },
     baseLayer: doc.baseLayer
-      ? { ...doc.baseLayer, eraseElements: cloneElements(doc.baseLayer.eraseElements), adjustments: { ...doc.baseLayer.adjustments }, perspective: clonePerspectiveQuad(doc.baseLayer.perspective) }
+      ? { ...doc.baseLayer, eraseElements: cloneElements(doc.baseLayer.eraseElements), adjustments: { ...doc.baseLayer.adjustments }, perspective: clonePerspectiveQuad(doc.baseLayer.perspective), perspectiveSourceBounds: doc.baseLayer.perspectiveSourceBounds ? { ...doc.baseLayer.perspectiveSourceBounds } : null }
       : createBaseLayerState(doc.id),
     masks: (doc.masks ?? []).map(mask => ({
       ...mask,
@@ -126,11 +159,16 @@ function snap(doc: ImageDocument): HistorySnapshot {
         element.type === 'brush' ? { ...element, stroke: { ...element.stroke, points: [...element.stroke.points] } } : element.type === 'polygon' ? { ...element, points: [...element.points] } : { ...element }
       ),
     })),
-    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer, eraseElements: cloneElements(layer.eraseElements), perspective: clonePerspectiveQuad(layer.perspective) })),
+    aiLayers: (doc.aiLayers ?? []).map(layer => ({ ...layer, eraseElements: cloneElements(layer.eraseElements), perspective: clonePerspectiveQuad(layer.perspective), perspectiveSourceBounds: layer.perspectiveSourceBounds ? { ...layer.perspectiveSourceBounds } : null })),
     activeMaskId: doc.activeMaskId ?? null,
     selectedLayer: doc.selectedLayer ? { ...doc.selectedLayer } : null,
     watermarks: doc.watermarks.map(w => ({ ...w })),
     texts: doc.texts.map(t => ({ ...t })),
+    translationMasks: (doc.translationMasks ?? []).map(mask => ({
+      ...mask,
+      points: mask.points ? [...mask.points] : undefined,
+      sourceBounds: mask.sourceBounds ? { ...mask.sourceBounds } : undefined,
+    })),
     shapes: (doc.shapes ?? []).map(s => ({
       ...s,
       fillStyle: s.fillStyle ? clonePaintStyle(s.fillStyle) : undefined,
@@ -166,6 +204,9 @@ export interface AppState {
   wmSettings: WatermarkSettings;
   cleanupSettings: CleanupSettings;
   textSettings: TextSettings;
+  cropSettings: CropSettings;
+  blurSettings: BlurSettings;
+  translationMaskSettings: TranslationMaskSettings;
   recentColors: string[];
   exportSettings: ExportSettings;
   viewport: ViewportState;
@@ -238,8 +279,12 @@ export interface AppState {
   deleteWatermark: (id: string) => void;
   batchApplyWatermark: () => void;
   addText: (text: TextObject) => void;
-  updateText: (id: string, updates: Partial<TextObject>, options?: { history?: boolean }) => void;
+  updateText: (id: string, updates: Partial<TextObject>, options?: { history?: boolean; moveGroup?: boolean }) => void;
   deleteText: (id: string) => void;
+  addTranslationGroup: (mask: TranslationMaskObject, text: TextObject) => void;
+  updateTranslationMask: (id: string, updates: Partial<TranslationMaskObject>, options?: { history?: boolean; moveGroup?: boolean }) => void;
+  deleteTranslationMask: (id: string) => void;
+  updateAllTranslationMaskPadding: (padding: number, options?: { history?: boolean }) => void;
   restorePageSourceText: () => void;
   addShape: (shape: ShapeObject) => void;
   updateShape: (id: string, updates: Partial<ShapeObject>, options?: { history?: boolean }) => void;
@@ -266,12 +311,17 @@ export interface AppState {
   updateWmSettings: (updates: Partial<WatermarkSettings>) => void;
   updateCleanupSettings: (updates: Partial<CleanupSettings>) => void;
   updateTextSettings: (updates: Partial<TextSettings>) => void;
+  updateCropSettings: (updates: Partial<CropSettings>) => void;
+  updateBlurSettings: (updates: Partial<BlurSettings>) => void;
+  updateTranslationMaskSettings: (updates: Partial<TranslationMaskSettings>) => void;
   rememberTextColor: (color: string) => void;
   updateExportSettings: (updates: Partial<ExportSettings>) => void;
   setViewport: (vp: Partial<ViewportState>) => void;
   undo: () => void;
   redo: () => void;
   pushHistory: () => void;
+  /** Restore and remove the snapshot created for an uncommitted operation. */
+  rollbackPendingHistory: () => void;
   toggleLayerVisibility: (layer: keyof LayerVisibility) => void;
   setShowExportModal: (show: boolean) => void;
   applyCleanupCommit: (dataURL: string) => void;
@@ -290,6 +340,9 @@ export const useStore = create<AppState>((set, get) => ({
   wmSettings: defaultWmSettings,
   cleanupSettings: defaultCleanupSettings,
   textSettings: defaultTextSettings,
+  cropSettings: defaultCropSettings,
+  blurSettings: defaultBlurSettings,
+  translationMaskSettings: defaultTranslationMaskSettings,
   recentColors: loadStoredRecentColors(),
   exportSettings: defaultExportSettings,
   viewport: { x: 0, y: 0, scale: 1 },
@@ -407,6 +460,10 @@ export const useStore = create<AppState>((set, get) => ({
       const newLayerOrder = [...(doc.layerOrder ?? []), { type: 'bubble' as const, id }];
       docs[state.activeDocIndex] = { ...doc, layerOrder: newLayerOrder };
       return { documents: docs, selectedObject: { ...selected, id } };
+    } else if (selected.type === 'translationMask') {
+      const source = (doc.translationMasks ?? []).find(item => item.id === selected.id);
+      if (!source) return {};
+      doc.translationMasks = [...(doc.translationMasks ?? []), { ...source, id, name: `${source.name} (копия)`, x: Math.min(.95, source.x + .025), y: Math.min(.95, source.y + .025), groupId: undefined, textId: undefined }];
     } else {
       const source = doc.shapes.find(item => item.id === selected.id);
       if (!source) return {};
@@ -423,6 +480,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (selected.type === 'text') state.deleteText(selected.id);
     else if (selected.type === 'watermark') state.deleteWatermark(selected.id);
     else if (selected.type === 'bubble') state.deleteBubble(selected.id);
+    else if (selected.type === 'translationMask') state.deleteTranslationMask(selected.id);
     else state.deleteShape(selected.id);
   },
 
@@ -431,8 +489,8 @@ export const useStore = create<AppState>((set, get) => ({
     if (!selected || state.activeDocIndex < 0) return {};
     const docs = [...state.documents];
     const doc = withHistory(docs[state.activeDocIndex]);
-    const key = selected.type === 'text' ? 'texts' : selected.type === 'watermark' ? 'watermarks' : selected.type === 'bubble' ? 'bubbles' : 'shapes';
-    const items = [...doc[key]] as Array<{ id: string }>;
+    const key = selected.type === 'text' ? 'texts' : selected.type === 'watermark' ? 'watermarks' : selected.type === 'bubble' ? 'bubbles' : selected.type === 'translationMask' ? 'translationMasks' : 'shapes';
+    const items = [...(doc[key] ?? [])] as Array<{ id: string }>;
     const index = items.findIndex(item => item.id === selected.id);
     const target = direction === 'forward' ? index + 1 : index - 1;
     if (index < 0 || target < 0 || target >= items.length) return {};
@@ -607,14 +665,28 @@ export const useStore = create<AppState>((set, get) => ({
     if (index < 0) return {};
     const docs = [...state.documents];
     const doc = withHistory(docs[index]);
+    const normalizedLayer: AiRasterLayer = {
+      ...layer,
+      visible: layer.visible !== false,
+      opacity: Number.isFinite(layer.opacity) ? Math.max(0, Math.min(1, layer.opacity)) : 1,
+      locked: layer.locked === true,
+      x: Number.isFinite(layer.x) ? layer.x : 0,
+      y: Number.isFinite(layer.y) ? layer.y : 0,
+      scaleX: Number.isFinite(layer.scaleX) && layer.scaleX !== 0 ? layer.scaleX : 1,
+      scaleY: Number.isFinite(layer.scaleY) && layer.scaleY !== 0 ? layer.scaleY : 1,
+      rotation: Number.isFinite(layer.rotation) ? layer.rotation : 0,
+      eraseElements: layer.eraseElements ?? [],
+    };
+    const layerOrder = [...resolveLayerOrder(doc), { type: 'ai' as const, id: normalizedLayer.id }];
     docs[index] = {
       ...doc,
-      aiLayers: [...(doc.aiLayers ?? []), layer],
-      masks: doc.masks.map(mask => mask.id === layer.maskId ? { ...mask, resultLayerId: layer.id } : mask),
-      selectedLayer: { id: layer.id, type: 'ai' },
+      aiLayers: [...(doc.aiLayers ?? []), normalizedLayer],
+      masks: doc.masks.map(mask => mask.id === normalizedLayer.maskId ? { ...mask, resultLayerId: normalizedLayer.id } : mask),
+      selectedLayer: { id: normalizedLayer.id, type: 'ai' },
+      layerOrder,
     };
     return index === state.activeDocIndex
-      ? { documents: docs, selectedObject: null }
+      ? { documents: docs, selectedObject: null, activeTool: 'select' as const }
       : { documents: docs };
   }),
 
@@ -972,11 +1044,20 @@ export const useStore = create<AppState>((set, get) => ({
       const doc = options?.history
         ? withHistory(docs[state.activeDocIndex])
         : { ...docs[state.activeDocIndex], hasChanges: true };
+      const source = doc.texts.find(text => text.id === id);
       doc.texts = doc.texts.flatMap(t => {
         if (t.id !== id) return [t];
         const sanitized = sanitizeText({ ...t, ...filterLockedGeometryUpdates(t.locked, updates) });
         return sanitized ? [sanitized] : [];
       });
+      if (options?.moveGroup && source?.groupId && (updates.x !== undefined || updates.y !== undefined)) {
+        const updated = doc.texts.find(text => text.id === id);
+        if (updated) {
+          const dx = updated.x - source.x;
+          const dy = updated.y - source.y;
+          doc.translationMasks = (doc.translationMasks ?? []).map(mask => mask.groupId === source.groupId ? { ...mask, x: mask.x + dx, y: mask.y + dy } : mask);
+        }
+      }
       doc.hasChanges = true;
       docs[state.activeDocIndex] = doc;
       return { documents: docs };
@@ -991,17 +1072,108 @@ export const useStore = create<AppState>((set, get) => ({
       return { documents: docs, selectedObject: null };
     }),
 
+  addTranslationGroup: (mask, text) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const documents = [...state.documents];
+    const doc = withHistory(documents[state.activeDocIndex]);
+    const layerOrder = [
+      ...resolveLayerOrder(doc),
+      { type: 'translationMask' as const, id: mask.id },
+      { type: 'text' as const, id: text.id },
+    ];
+    documents[state.activeDocIndex] = {
+      ...doc,
+      translationMasks: [...(doc.translationMasks ?? []), mask],
+      texts: [...doc.texts, text],
+      layerOrder,
+    };
+    return { documents, selectedObject: { id: text.id, type: 'text' as const } };
+  }),
+
+  updateTranslationMask: (id, updates, options) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const documents = [...state.documents];
+    const current = documents[state.activeDocIndex];
+    const source = (current.translationMasks ?? []).find(mask => mask.id === id);
+    if (!source || source.locked) return {};
+    const doc = options?.history === false ? { ...current, hasChanges: true } : withHistory(current);
+    const x = Number.isFinite(updates.x) ? Math.max(-1, Math.min(2, updates.x!)) : source.x;
+    const y = Number.isFinite(updates.y) ? Math.max(-1, Math.min(2, updates.y!)) : source.y;
+    const next = {
+      ...source,
+      ...updates,
+      x,
+      y,
+      width: Math.max(0.002, Math.min(2, updates.width ?? source.width)),
+      height: Math.max(0.002, Math.min(2, updates.height ?? source.height)),
+      opacity: Math.max(0, Math.min(1, updates.opacity ?? source.opacity)),
+      feather: Math.max(0, Math.min(100, updates.feather ?? source.feather)),
+      padding: Math.max(0, Math.min(0.5, updates.padding ?? source.padding)),
+    };
+    let texts = doc.texts;
+    if (options?.moveGroup && source.groupId && (updates.x !== undefined || updates.y !== undefined)) {
+      const dx = x - source.x;
+      const dy = y - source.y;
+      texts = texts.map(text => text.groupId === source.groupId ? { ...text, x: text.x + dx, y: text.y + dy } : text);
+    }
+    documents[state.activeDocIndex] = {
+      ...doc,
+      translationMasks: (doc.translationMasks ?? []).map(mask => mask.id === id ? next : mask),
+      texts,
+    };
+    return { documents };
+  }),
+
+  deleteTranslationMask: id => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const documents = [...state.documents];
+    const doc = withHistory(documents[state.activeDocIndex]);
+    documents[state.activeDocIndex] = {
+      ...doc,
+      translationMasks: (doc.translationMasks ?? []).filter(mask => mask.id !== id),
+      layerOrder: (doc.layerOrder ?? []).filter(ref => !(ref.type === 'translationMask' && ref.id === id)),
+    };
+    return { documents, selectedObject: null };
+  }),
+
+  updateAllTranslationMaskPadding: (padding, options) => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const documents = [...state.documents];
+    const doc = options?.history === false ? { ...documents[state.activeDocIndex], hasChanges: true } : withHistory(documents[state.activeDocIndex]);
+    const normalized = Math.max(0, Math.min(0.5, padding));
+    documents[state.activeDocIndex] = {
+      ...doc,
+      translationMasks: (doc.translationMasks ?? []).map(mask => {
+        const source = mask.sourceBounds ?? { x: mask.x, y: mask.y, width: mask.width, height: mask.height };
+        return {
+          ...mask,
+          padding: normalized,
+          x: Math.max(0, source.x - normalized),
+          y: Math.max(0, source.y - normalized),
+          width: Math.min(1, source.width + normalized * 2),
+          height: Math.min(1, source.height + normalized * 2),
+        };
+      }),
+    };
+    return { documents };
+  }),
+
   restorePageSourceText: () =>
     set(state => {
       if (state.activeDocIndex < 0) return {};
       const docs = [...state.documents];
       const withH = withHistory(docs[state.activeDocIndex]);
-      const texts = withH.texts.map(text =>
-        text.translationBatchId && text.sourceText
-          ? { ...text, text: text.sourceText, isTranslated: false }
-          : text
-      );
-      docs[state.activeDocIndex] = { ...withH, texts };
+      const translatedTextIds = new Set(withH.texts.filter(text => text.translationBatchId).map(text => text.id));
+      const translationMaskIds = new Set((withH.translationMasks ?? []).map(mask => mask.id));
+      docs[state.activeDocIndex] = {
+        ...withH,
+        texts: withH.texts.filter(text => !translatedTextIds.has(text.id)),
+        translationMasks: [],
+        layerOrder: (withH.layerOrder ?? []).filter(ref =>
+          !(ref.type === 'text' && translatedTextIds.has(ref.id))
+          && !(ref.type === 'translationMask' && translationMaskIds.has(ref.id))
+        ),
+      };
       return { documents: docs, selectedObject: null };
     }),
 
@@ -1174,6 +1346,9 @@ export const useStore = create<AppState>((set, get) => ({
   updateWmSettings: (u) => set(s => ({ wmSettings: { ...s.wmSettings, ...u } })),
   updateCleanupSettings: (u) => set(s => ({ cleanupSettings: { ...s.cleanupSettings, ...u } })),
   updateTextSettings: (u) => set(s => ({ textSettings: { ...s.textSettings, ...u } })),
+  updateCropSettings: (u) => set(s => ({ cropSettings: { ...s.cropSettings, ...u } })),
+  updateBlurSettings: (u) => set(s => ({ blurSettings: { ...s.blurSettings, ...u } })),
+  updateTranslationMaskSettings: (u) => set(s => ({ translationMaskSettings: { ...s.translationMaskSettings, ...u } })),
   rememberTextColor: (color) => set(state => {
     const recentColors = addRecentColor(state.recentColors, color);
     storeRecentColors(recentColors);
@@ -1190,6 +1365,17 @@ export const useStore = create<AppState>((set, get) => ({
       docs[state.activeDocIndex] = withHistory(docs[state.activeDocIndex]);
       return { documents: docs };
     }),
+
+  rollbackPendingHistory: () => set(state => {
+    if (state.activeDocIndex < 0) return {};
+    const documents = [...state.documents];
+    const doc = documents[state.activeDocIndex];
+    if (doc.past.length === 0) return {};
+    const past = [...doc.past];
+    const snapshot = past.pop()!;
+    documents[state.activeDocIndex] = { ...doc, ...snapshot, past, future: [] };
+    return { documents, selectedObject: null };
+  }),
 
   undo: () =>
     set(state => {

@@ -13,6 +13,8 @@ import { Toaster } from '@/components/ui/toaster';
 import { toast } from '@/hooks/use-toast';
 import { resolveDeleteTarget, resolveEditableTargetShortcut, resolveEditorShortcut } from '@/utils/editorShortcuts';
 import { revokeUnusedDocumentObjectUrls } from '@/utils/objectUrls';
+import { useEditorUiStore } from '@/store/useEditorUiStore';
+import { ToolOptionsPopoverHost } from './floating/ToolOptionsPopover';
 
 // Konva's Stage relies on browser APIs and react-reconciler internals that
 // break during SSR ("getOwner is not a function"), so load it client-only.
@@ -39,7 +41,7 @@ const CanvasArea = dynamic(
 );
 
 export function EditorShell() {
-  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteShape, deleteBubble, deleteAiLayer, deleteMask, documents, activeDocIndex, fontsReady, setShowExportModal, activeTool } = useStore(useShallow(state => ({
+  const { undo, redo, setActiveTool, setLeftTab, selectedObject, deleteWatermark, deleteText, deleteTranslationMask, deleteShape, deleteBubble, deleteAiLayer, deleteMask, documents, activeDocIndex, fontsReady, setShowExportModal, activeTool } = useStore(useShallow(state => ({
     undo: state.undo,
     redo: state.redo,
     setActiveTool: state.setActiveTool,
@@ -47,6 +49,7 @@ export function EditorShell() {
     selectedObject: state.selectedObject,
     deleteWatermark: state.deleteWatermark,
     deleteText: state.deleteText,
+    deleteTranslationMask: state.deleteTranslationMask,
     deleteShape: state.deleteShape,
     deleteBubble: state.deleteBubble,
     deleteAiLayer: state.deleteAiLayer,
@@ -145,6 +148,36 @@ export function EditorShell() {
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const ui = useEditorUiStore.getState();
+        if (ui.dismissFloating()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+        if (ui.closeToolOptions()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+        if (ui.cancelActiveOperation()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+        const state = useStore.getState();
+        window.dispatchEvent(new Event('manga-editor-cancel-transient'));
+        if (state.inlineEditingTextId) {
+          state.setInlineEditingTextId(null);
+          e.preventDefault();
+          return;
+        }
+        const doc = state.documents[state.activeDocIndex];
+        const activeMask = doc?.masks.find(mask => mask.id === doc.activeMaskId);
+        if (activeMask && ((activeMask.elements?.length ?? 0) > 0 || activeMask.strokes.length > 0)) {
+          state.clearActiveMask();
+          e.preventDefault();
+          return;
+        }
+        state.setSelectedObject(null);
+        state.selectLayer(null);
+        state.setActiveTool('select');
+        e.preventDefault();
+        return;
+      }
+      if (e.key === 'Enter' && useEditorUiStore.getState().commitActiveOperation()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
       const target = e.target as HTMLElement;
       const tag = target.tagName.toLowerCase();
       const editable = tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
@@ -179,6 +212,8 @@ export function EditorShell() {
         else if (shortcut.type === 'export') setShowExportModal(true);
         else if (shortcut.type === 'tab') setLeftTab(shortcut.tab);
         else {
+          useEditorUiStore.getState().cancelActiveOperation();
+          useEditorUiStore.getState().closeToolOptions();
           setActiveTool(shortcut.tool);
           if (shortcut.tab) setLeftTab(shortcut.tab);
         }
@@ -198,6 +233,7 @@ export function EditorShell() {
         else if (deleteTarget.type === 'shape') deleteShape(deleteTarget.id);
         else if (deleteTarget.type === 'bubble') deleteBubble(deleteTarget.id);
         else if (deleteTarget.type === 'text') deleteText(deleteTarget.id);
+        else if (deleteTarget.type === 'translationMask') deleteTranslationMask(deleteTarget.id);
         else if (deleteTarget.type === 'ai') deleteAiLayer(deleteTarget.id);
         else deleteMask(deleteTarget.id);
       }
@@ -211,6 +247,7 @@ export function EditorShell() {
       selectedObject,
       deleteWatermark,
       deleteText,
+      deleteTranslationMask,
       deleteShape,
       deleteBubble,
       deleteAiLayer,
@@ -286,6 +323,7 @@ export function EditorShell() {
       </div>
       <ExportModal />
       <Toaster />
+      <ToolOptionsPopoverHost />
     </div>
   );
 }

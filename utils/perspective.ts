@@ -41,6 +41,30 @@ export function affineToPerspective(
   };
 }
 
+export function affineBoundsToPerspective(
+  width: number,
+  height: number,
+  bounds: { x: number; y: number; width: number; height: number },
+  transform: { x?: number; y?: number; scaleX?: number; scaleY?: number; rotation?: number },
+): PerspectiveQuad {
+  const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0 } = transform;
+  const angle = rotation * Math.PI / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const tx = x * width;
+  const ty = y * height;
+  const map = (px: number, py: number): NormalizedPoint => ({
+    x: (tx + px * scaleX * cos - py * scaleY * sin) / width,
+    y: (ty + px * scaleX * sin + py * scaleY * cos) / height,
+  });
+  return {
+    topLeft: map(bounds.x, bounds.y),
+    topRight: map(bounds.x + bounds.width, bounds.y),
+    bottomRight: map(bounds.x + bounds.width, bounds.y + bounds.height),
+    bottomLeft: map(bounds.x, bounds.y + bounds.height),
+  };
+}
+
 function cross(a: NormalizedPoint, b: NormalizedPoint, c: NormalizedPoint) {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
@@ -187,7 +211,7 @@ export function drawPerspectiveImage(
   quad: PerspectiveQuad,
   width: number,
   height: number,
-  options: { crop?: { x: number; y: number; width: number; height: number } | null; opacity?: number; subdivisions?: number } = {},
+  options: { crop?: { x: number; y: number; width: number; height: number } | null; sourceBounds?: { x: number; y: number; width: number; height: number } | null; opacity?: number; subdivisions?: number } = {},
 ) {
   const homography = perspectiveHomography(quad, width, height);
   if (!homography) return;
@@ -196,23 +220,28 @@ export function drawPerspectiveImage(
   const sourceHeight = sizedSource.naturalHeight || sizedSource.videoHeight || sizedSource.displayHeight || sizedSource.height || 0;
   if (!sourceWidth || !sourceHeight) return;
   const crop = options.crop ?? { x: 0, y: 0, width: 1, height: 1 };
+  const sourceBounds = options.sourceBounds ?? null;
   const subdivisions = Math.max(2, Math.min(32, Math.round(options.subdivisions ?? 14)));
   ctx.save();
   ctx.globalAlpha *= options.opacity ?? 1;
   for (let row = 0; row < subdivisions; row++) {
-    const v0 = crop.y + crop.height * row / subdivisions;
-    const v1 = crop.y + crop.height * (row + 1) / subdivisions;
+    const localV0 = row / subdivisions;
+    const localV1 = (row + 1) / subdivisions;
+    const v0 = sourceBounds ? sourceBounds.y + sourceBounds.height * localV0 : crop.y + crop.height * localV0;
+    const v1 = sourceBounds ? sourceBounds.y + sourceBounds.height * localV1 : crop.y + crop.height * localV1;
     for (let column = 0; column < subdivisions; column++) {
-      const u0 = crop.x + crop.width * column / subdivisions;
-      const u1 = crop.x + crop.width * (column + 1) / subdivisions;
+      const localU0 = column / subdivisions;
+      const localU1 = (column + 1) / subdivisions;
+      const u0 = sourceBounds ? sourceBounds.x + sourceBounds.width * localU0 : crop.x + crop.width * localU0;
+      const u1 = sourceBounds ? sourceBounds.x + sourceBounds.width * localU1 : crop.x + crop.width * localU1;
       const s00 = { x: u0 * sourceWidth, y: v0 * sourceHeight };
       const s10 = { x: u1 * sourceWidth, y: v0 * sourceHeight };
       const s11 = { x: u1 * sourceWidth, y: v1 * sourceHeight };
       const s01 = { x: u0 * sourceWidth, y: v1 * sourceHeight };
-      const d00 = projectHomography(homography, { x: u0, y: v0 });
-      const d10 = projectHomography(homography, { x: u1, y: v0 });
-      const d11 = projectHomography(homography, { x: u1, y: v1 });
-      const d01 = projectHomography(homography, { x: u0, y: v1 });
+      const d00 = projectHomography(homography, sourceBounds ? { x: localU0, y: localV0 } : { x: u0, y: v0 });
+      const d10 = projectHomography(homography, sourceBounds ? { x: localU1, y: localV0 } : { x: u1, y: v0 });
+      const d11 = projectHomography(homography, sourceBounds ? { x: localU1, y: localV1 } : { x: u1, y: v1 });
+      const d01 = projectHomography(homography, sourceBounds ? { x: localU0, y: localV1 } : { x: u0, y: v1 });
       drawTriangle(ctx, source, [s00, s10, s11], [d00, d10, d11]);
       drawTriangle(ctx, source, [s00, s11, s01], [d00, d11, d01]);
     }

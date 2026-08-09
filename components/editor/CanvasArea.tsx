@@ -1,12 +1,12 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Circle } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Line, Text, Transformer, Group, Rect, Circle, Ellipse } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '@/store/useStore';
 import { useShallow } from 'zustand/react/shallow';
 import { loadImagesFromFiles, uid, validateFile } from '@/utils/imageUtils';
-import type { AiRasterLayer, BaseLayerAdjustments, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject, PerspectiveQuad } from '@/types';
+import type { AiRasterLayer, BaseLayerAdjustments, ImageDocument, MaskElement, StrokeData, WatermarkObject, TextObject, ShapeObject, CropRect, BubbleObject, PerspectiveQuad, TranslationMaskObject } from '@/types';
 import { resolveVisualLayerOrder } from '@/utils/layerOrder';
 import { buildBaseCanvas, buildRasterLayerCanvas, createFloodMask, bakeStrokeIntoLayerSrc } from '@/utils/cleanupRaster';
 import { DropZone } from './DropZone';
@@ -40,6 +40,8 @@ import {
 } from '@/utils/pageImportPreference';
 import { toKonvaAdjustmentValues } from '@/utils/konvaAdjustments';
 import { toast } from '@/hooks/use-toast';
+import { beginEditorOperation, useEditorUiStore } from '@/store/useEditorUiStore';
+import { applyRasterEffectPreview } from '@/utils/rasterEffects';
 
 const MAX_PREVIEW_SIDE = 1800;
 const NEUTRAL_RASTER_ADJUSTMENTS: BaseLayerAdjustments = { brightness: 1, contrast: 1, saturation: 1 };
@@ -118,6 +120,7 @@ interface RasterNodePlacement {
   rotation?: number;
   crop?: CropRect | null;
   perspective?: PerspectiveQuad | null;
+  perspectiveSourceBounds?: CropRect | null;
 }
 
 const PERSPECTIVE_KEYS = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'] as const;
@@ -146,10 +149,21 @@ function PerspectiveHandles({ quad, width, height, onBeforeChange, onChange }: {
     if (frameRef.current === null) frameRef.current = window.requestAnimationFrame(flush);
   };
   const linePoints = PERSPECTIVE_KEYS.flatMap(key => [quad[key].x * width, quad[key].y * height]);
+  const interpolate = (a: { x: number; y: number }, b: { x: number; y: number }, value: number) => ({ x: a.x + (b.x - a.x) * value, y: a.y + (b.y - a.y) * value });
 
   return (
     <>
       <Line points={linePoints} closed stroke="#5e9fe8" strokeWidth={2} dash={[7, 4]} listening={false} />
+      {[0.25, 0.5, 0.75].flatMap(value => {
+        const left = interpolate(quad.topLeft, quad.bottomLeft, value);
+        const right = interpolate(quad.topRight, quad.bottomRight, value);
+        const top = interpolate(quad.topLeft, quad.topRight, value);
+        const bottom = interpolate(quad.bottomLeft, quad.bottomRight, value);
+        return [
+          <Line key={`h-${value}`} points={[left.x * width, left.y * height, right.x * width, right.y * height]} stroke="rgba(94,159,232,.55)" strokeWidth={1} listening={false} />,
+          <Line key={`v-${value}`} points={[top.x * width, top.y * height, bottom.x * width, bottom.y * height]} stroke="rgba(94,159,232,.55)" strokeWidth={1} listening={false} />,
+        ];
+      })}
       {PERSPECTIVE_KEYS.map(key => {
         const point = quad[key];
         return (
@@ -208,6 +222,7 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
   onBeforeChange: () => void;
   onChange: (updates: { x?: number; y?: number; scaleX?: number; scaleY?: number; rotation?: number; perspective?: PerspectiveQuad | null }) => void;
 }) {
+  const perspectivePreviewActive = useEditorUiStore(state => state.activeOperation?.kind === 'perspective');
   const groupRef = useRef<Konva.Group>(null);
   const trRef = useRef<Konva.Transformer>(null);
   const imageRef = useRef<Konva.Image>(null);
@@ -234,9 +249,16 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
     next.height = Math.max(1, Math.round(height));
     const ctx = next.getContext('2d');
     if (!ctx) return;
-    drawPerspectiveImage(ctx, image, perspective, next.width, next.height, { crop, opacity, subdivisions: 12 });
+    drawPerspectiveImage(ctx, image, perspective, next.width, next.height, {
+      crop,
+      sourceBounds: placement.perspectiveSourceBounds,
+      opacity,
+      // Keep corner dragging responsive; once committed, regenerate the
+      // layer with the same higher-quality tessellation used by export.
+      subdivisions: perspectivePreviewActive ? 12 : 24,
+    });
     setPerspectiveCanvas(next);
-  }, [image, width, height, opacity, crop, perspective]);
+  }, [image, width, height, opacity, crop, perspective, placement.perspectiveSourceBounds, perspectivePreviewActive]);
 
   useEffect(() => {
     const node = imageRef.current;
@@ -271,15 +293,6 @@ function PlacedRasterImage({ nodeName, image, width, height, opacity, placement,
             onTap={onSelect}
             onContextMenu={onContextMenu}
             {...filterProps}
-          />
-        )}
-        {draggable && (
-          <PerspectiveHandles
-            quad={perspective}
-            width={width}
-            height={height}
-            onBeforeChange={onBeforeChange}
-            onChange={next => onChange({ perspective: next })}
           />
         )}
       </>
@@ -602,6 +615,7 @@ function TextNode({
   onChange,
   onBeforeChange,
   onEditRequest,
+  onContextMenu,
 }: {
   txt: TextObject;
   docWidth: number;
@@ -614,6 +628,7 @@ function TextNode({
   onChange: (updates: Partial<TextObject>) => void;
   onBeforeChange: () => void;
   onEditRequest: () => void;
+  onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
 }) {
   const nodeRef = useRef<Konva.Text>(null);
   const trRef = useRef<Konva.Transformer>(null);
@@ -659,6 +674,7 @@ function TextNode({
         onTap={onSelect}
         onDblClick={onEditRequest}
         onDblTap={onEditRequest}
+        onContextMenu={onContextMenu}
         onDragStart={txt.locked ? undefined : onBeforeChange}
         onTransformStart={txt.locked ? undefined : onBeforeChange}
         onDragEnd={handleDragEnd}
@@ -676,6 +692,79 @@ function TextNode({
           enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']}
         />
       )}
+    </>
+  );
+}
+
+function TranslationMaskNode({ mask, docWidth, docHeight, previewScale, isSelected, onSelect, onBeforeChange, onChange, onContextMenu }: {
+  mask: TranslationMaskObject;
+  docWidth: number;
+  docHeight: number;
+  previewScale: number;
+  isSelected: boolean;
+  onSelect: () => void;
+  onBeforeChange: () => void;
+  onChange: (updates: Partial<TranslationMaskObject>, moveGroup?: boolean) => void;
+  onContextMenu: (event: Konva.KonvaEventObject<PointerEvent>) => void;
+}) {
+  const nodeRef = useRef<Konva.Group>(null);
+  const transformerRef = useRef<Konva.Transformer>(null);
+  const width = mask.width * docWidth * previewScale;
+  const height = mask.height * docHeight * previewScale;
+  useEffect(() => {
+    if (isSelected && !mask.locked && nodeRef.current && transformerRef.current) {
+      transformerRef.current.nodes([nodeRef.current]);
+      transformerRef.current.getLayer()?.batchDraw();
+    }
+  }, [isSelected, mask.locked]);
+  if (!mask.visible) return null;
+  const common = {
+    width,
+    height,
+    fill: mask.fill,
+    opacity: mask.opacity,
+    shadowColor: mask.fill,
+    shadowBlur: mask.feather * previewScale,
+    shadowOpacity: Math.min(1, mask.opacity * 0.75),
+    shadowForStrokeEnabled: false,
+    listening: false,
+  };
+  return (
+    <>
+      <Group
+        ref={nodeRef}
+        x={mask.x * docWidth * previewScale}
+        y={mask.y * docHeight * previewScale}
+        rotation={mask.rotation}
+        scaleX={mask.scaleX}
+        scaleY={mask.scaleY}
+        draggable={!mask.locked}
+        onClick={onSelect}
+        onTap={onSelect}
+        onContextMenu={onContextMenu}
+        onDragStart={onBeforeChange}
+        onTransformStart={onBeforeChange}
+        onDragEnd={event => onChange({
+          x: event.target.x() / (docWidth * previewScale),
+          y: event.target.y() / (docHeight * previewScale),
+        }, true)}
+        onTransformEnd={() => {
+          const node = nodeRef.current;
+          if (!node) return;
+          onChange({
+            x: node.x() / (docWidth * previewScale),
+            y: node.y() / (docHeight * previewScale),
+            scaleX: node.scaleX(),
+            scaleY: node.scaleY(),
+            rotation: node.rotation(),
+          });
+        }}
+      >
+        {mask.shape === 'ellipse' ? <Ellipse {...common} x={width / 2} y={height / 2} radiusX={width / 2} radiusY={height / 2} />
+          : mask.shape === 'polygon' ? <Line points={(mask.points?.length ? mask.points : [0, 0, 1, 0, 1, 1, 0, 1]).map((value, index) => value * (index % 2 === 0 ? width : height))} closed fill={mask.fill} opacity={mask.opacity} shadowColor={mask.fill} shadowBlur={mask.feather * previewScale} listening={false} />
+            : <Rect {...common} cornerRadius={mask.shape === 'rounded-rect' ? Math.min(width, height) * 0.12 : 0} />}
+      </Group>
+      {isSelected && !mask.locked && <Transformer ref={transformerRef} rotateEnabled keepRatio={false} />}
     </>
   );
 }
@@ -876,11 +965,13 @@ function CropOverlay({
   imgW,
   imgH,
   onChange,
+  keepRatio,
 }: {
   cropRect: CropRect;
   imgW: number;
   imgH: number;
   onChange: (rect: CropRect) => void;
+  keepRatio: boolean;
 }) {
   const rectRef = useRef<Konva.Rect>(null);
   const trRef = useRef<Konva.Transformer>(null);
@@ -944,7 +1035,7 @@ function CropOverlay({
       <Transformer
         ref={trRef}
         rotateEnabled={false}
-        keepRatio={false}
+        keepRatio={keepRatio}
         boundBoxFunc={(oldBox, newBox) => {
           if (newBox.width < 20 || newBox.height < 20) return oldBox;
           return newBox;
@@ -957,8 +1048,8 @@ function CropOverlay({
 export function CanvasArea() {
   const {
     documents, activeDocIndex, setActiveDoc,
-    activeTool, cleanupSettings,
-        addStroke, addMaskStroke, addMaskElement, addEraseElement, updateWatermark, updateText, updateShape, updateBubble,
+    activeTool, cleanupSettings, blurSettings,
+        addStroke, addMaskStroke, addMaskElement, addEraseElement, updateWatermark, updateText, updateTranslationMask, updateShape, updateBubble,
     selectLayer, updateCleanupSettings,
     selectedObject, setSelectedObject,
     inlineEditingTextId, setInlineEditingTextId,
@@ -967,20 +1058,22 @@ export function CanvasArea() {
     viewport, setViewport,
     addDocuments,
     pushHistory, setLeftTab,
-    fontsVersion, cropRect, setCropRect, updateDocumentThumbnail,
-    layerCropTarget, applyLayerCrop, cancelLayerCrop,
+    fontsVersion, cropRect, cropSettings, setCropRect, updateDocumentThumbnail,
+    layerCropTarget, applyLayerCrop, cancelLayerCrop, updateAiLayerPerspective, updateBasePerspective,
   } = useStore(useShallow(state => ({
     documents: state.documents,
     activeDocIndex: state.activeDocIndex,
     setActiveDoc: state.setActiveDoc,
     activeTool: state.activeTool,
     cleanupSettings: state.cleanupSettings,
+    blurSettings: state.blurSettings,
     addStroke: state.addStroke,
     addMaskStroke: state.addMaskStroke,
     addMaskElement: state.addMaskElement,
     addEraseElement: state.addEraseElement,
     updateWatermark: state.updateWatermark,
     updateText: state.updateText,
+    updateTranslationMask: state.updateTranslationMask,
     updateShape: state.updateShape,
     updateBubble: state.updateBubble,
     selectLayer: state.selectLayer,
@@ -999,12 +1092,16 @@ export function CanvasArea() {
     setLeftTab: state.setLeftTab,
     fontsVersion: state.fontsVersion,
     cropRect: state.cropRect,
+    cropSettings: state.cropSettings,
     setCropRect: state.setCropRect,
     updateDocumentThumbnail: state.updateDocumentThumbnail,
     layerCropTarget: state.layerCropTarget,
     applyLayerCrop: state.applyLayerCrop,
     cancelLayerCrop: state.cancelLayerCrop,
+    updateAiLayerPerspective: state.updateAiLayerPerspective,
+    updateBasePerspective: state.updateBasePerspective,
   })));
+  const activeOperation = useEditorUiStore(state => state.activeOperation);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -1019,6 +1116,9 @@ export function CanvasArea() {
   const lastBrushPointRef = useRef<{ x: number; y: number } | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
   const activePointerTargetRef = useRef<HTMLElement | null>(null);
+  const isEffectPainting = useRef(false);
+  const effectPointsRef = useRef<number[]>([]);
+  const effectBusyRef = useRef(false);
   const finishPointerRef = useRef<(() => void) | null>(null);
   const thumbnailTimerRef = useRef<number | null>(null);
   const thumbnailIdleRef = useRef<number | null>(null);
@@ -1158,6 +1258,47 @@ export function CanvasArea() {
   useEffect(() => {
     if (activeTool !== 'polyLasso') cancelPolyLasso();
   }, [activeTool, cancelPolyLasso]);
+
+  // Every tool switch must remove imperative preview graphics. These nodes
+  // live only in the editor overlay and are never serialized into layer pixels.
+  useEffect(() => {
+    isPainting.current = false;
+    isEffectPainting.current = false;
+    effectPointsRef.current = [];
+    currentStroke.current = [];
+    pendingBrushPoints.current = [];
+    livePoints.current = [];
+    isLassoing.current = false;
+    lassoPoints.current = [];
+    isRectSelecting.current = false;
+    liveLineRef.current?.setAttrs({ points: [], visible: false });
+    liveLassoRef.current?.setAttrs({ points: [], visible: false });
+    liveRectRef.current?.setAttrs({ visible: false });
+    liveLineRef.current?.getLayer()?.batchDraw();
+    liveLassoRef.current?.getLayer()?.batchDraw();
+  }, [activeTool]);
+
+  useEffect(() => {
+    const cancelTransient = () => {
+      cancelPolyLasso();
+      isPainting.current = false;
+      isEffectPainting.current = false;
+      effectPointsRef.current = [];
+      currentStroke.current = [];
+      pendingBrushPoints.current = [];
+      livePoints.current = [];
+      isLassoing.current = false;
+      lassoPoints.current = [];
+      isRectSelecting.current = false;
+      liveLineRef.current?.setAttrs({ points: [], visible: false });
+      liveLassoRef.current?.setAttrs({ points: [], visible: false });
+      liveRectRef.current?.setAttrs({ visible: false });
+      liveLineRef.current?.getLayer()?.batchDraw();
+      liveLassoRef.current?.getLayer()?.batchDraw();
+    };
+    window.addEventListener('manga-editor-cancel-transient', cancelTransient);
+    return () => window.removeEventListener('manga-editor-cancel-transient', cancelTransient);
+  }, [cancelPolyLasso]);
   useEffect(() => {
     cancelPolyLasso();
   }, [activeDocIndex, cancelPolyLasso]);
@@ -1192,7 +1333,7 @@ export function CanvasArea() {
       if (!cursor) return;
       const store = useStore.getState();
       const tool = store.activeTool;
-      if (tool !== 'brush' && tool !== 'maskBrush' && tool !== 'eraser') {
+      if (tool !== 'brush' && tool !== 'maskBrush' && tool !== 'eraser' && tool !== 'blur') {
         if (cursor.style.display !== 'none') cursor.style.display = 'none';
         return;
       }
@@ -1203,7 +1344,8 @@ export function CanvasArea() {
       const vp = store.viewport;
       const docH = doc?.height ?? 1000;
       const ps = doc ? Math.min(1, 1800 / Math.max(doc.width, doc.height)) : 1;
-      const rad = (store.cleanupSettings.brushSize * docH * ps * vp.scale) / 2;
+      const size = tool === 'blur' ? store.blurSettings.brushSize : store.cleanupSettings.brushSize;
+      const rad = (size * docH * ps * vp.scale) / 2;
       const d = rad * 2;
       cursor.style.display = 'block';
       cursor.style.width = `${d}px`;
@@ -1279,11 +1421,52 @@ export function CanvasArea() {
     }
   };
 
+  const applyEffectPreview = (points?: number[]) => {
+    if (effectBusyRef.current) return;
+    effectBusyRef.current = true;
+    void applyRasterEffectPreview(points).then(() => {
+      beginEditorOperation('blur', blurSettings.mode === 'pixelate' ? 'Пикселизация' : blurSettings.mode === 'noise' ? 'Шум' : 'Размытие', {
+        commit: () => setClipboardInfo('Эффект применён'),
+        cancel: () => useStore.getState().rollbackPendingHistory(),
+      });
+      setClipboardInfo('Превью эффекта · Enter применить, Esc отменить');
+    }).catch(error => setClipboardInfo(error instanceof Error ? error.message : 'Не удалось применить эффект'))
+      .finally(() => { effectBusyRef.current = false; });
+  };
+
   const handleMouseDown = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (activeTool === 'pan' || e.evt.button === 1) {
       isPanning.current = true;
       panStart.current = { x: e.evt.clientX, y: e.evt.clientY };
       panVpStart.current = { x: viewport.x, y: viewport.y };
+      return;
+    }
+    if (activeTool === 'blur' && activeDoc && e.evt.button === 0) {
+      if (useEditorUiStore.getState().activeOperation?.kind === 'blur') {
+        useEditorUiStore.getState().commitActiveOperation();
+      }
+      const position = stageRef.current?.getPointerPosition();
+      const point = position && screenToImage(position, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (!point?.inside || effectBusyRef.current) return;
+      if (blurSettings.gesture === 'area' || blurSettings.applyTo === 'selection') {
+        applyEffectPreview();
+      } else {
+        isEffectPainting.current = true;
+        effectPointsRef.current = [point.x, point.y];
+        const line = liveLineRef.current;
+        if (line) {
+          line.setAttrs({
+            points: [point.x * imgW, point.y * imgH],
+            stroke: 'rgba(94,159,232,.65)',
+            opacity: 1,
+            strokeWidth: blurSettings.brushSize * activeDoc.height * previewScale,
+            shadowBlur: (1 - blurSettings.hardness) * blurSettings.brushSize * activeDoc.height * previewScale * 0.5,
+            shadowColor: '#5e9fe8',
+            visible: true,
+          });
+          line.getLayer()?.batchDraw();
+        }
+      }
       return;
     }
     if ((activeTool === 'lasso' || activeTool === 'wand' || activeTool === 'rectSelect' || activeTool === 'polyLasso') && activeDoc) {
@@ -1411,6 +1594,7 @@ export function CanvasArea() {
         // Eraser preview is a translucent marker — destination-out would visually
         // punch through the whole composite while drawing.
         line.stroke(activeTool === 'eraser' ? 'rgba(140,140,150,0.55)' : activeTool === 'maskBrush' ? 'rgba(255,128,0,0.6)' : cleanupSettings.brushColor);
+        line.opacity(cleanupSettings.brushOpacity);
         line.globalCompositeOperation('source-over');
         const previewDiameter = cleanupSettings.brushSize * activeDoc.height * previewScale;
         line.strokeWidth(activeTool === 'brush' ? previewDiameter * (0.3 + cleanupSettings.brushHardness * 0.7) : previewDiameter);
@@ -1472,6 +1656,20 @@ export function CanvasArea() {
       }
       return;
     }
+    if (activeTool === 'blur' && isEffectPainting.current && pos) {
+      const point = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
+      if (point?.inside) {
+        const points = effectPointsRef.current;
+        const lastX = points.at(-2) ?? point.x;
+        const lastY = points.at(-1) ?? point.y;
+        if (Math.hypot((point.x - lastX) * imgW, (point.y - lastY) * imgH) * viewport.scale > 1.25) {
+          points.push(point.x, point.y);
+          liveLineRef.current?.points(points.flatMap((value, index) => index % 2 === 0 ? value * imgW : value * imgH));
+          liveLineRef.current?.getLayer()?.batchDraw();
+        }
+      }
+      return;
+    }
     if ((activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && pos) {
       const imagePoint = screenToImage(pos, { viewport, imageWidth: imgW, imageHeight: imgH });
       if (!imagePoint?.inside) {
@@ -1518,6 +1716,15 @@ export function CanvasArea() {
 
   const handleMouseUp = (e?: Konva.KonvaEventObject<PointerEvent>) => {
     isPanning.current = false;
+    if (isEffectPainting.current) {
+      isEffectPainting.current = false;
+      const points = [...effectPointsRef.current];
+      effectPointsRef.current = [];
+      liveLineRef.current?.setAttrs({ points: [], visible: false, shadowBlur: 0 });
+      liveLineRef.current?.getLayer()?.batchDraw();
+      if (points.length >= 2) applyEffectPreview(points);
+      return;
+    }
     if (brushFrameRef.current !== null) {
       window.cancelAnimationFrame(brushFrameRef.current);
       flushBrushPreview();
@@ -1561,7 +1768,7 @@ export function CanvasArea() {
           points: pts,
           size: cleanupSettings.brushSize,
           color: cleanupSettings.brushColor,
-          opacity: 1,
+          opacity: cleanupSettings.brushOpacity,
           hardness: cleanupSettings.brushHardness,
           mode: activeTool === 'eraser' ? 'erase' : 'paint',
           purpose: activeTool === 'maskBrush' ? 'mask' : 'paint',
@@ -1644,6 +1851,11 @@ export function CanvasArea() {
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     const target = e.target as Konva.Node;
+    const operation = useEditorUiStore.getState().activeOperation;
+    if ((operation?.kind === 'perspective' || operation?.kind === 'transform') && target.getClassName() !== 'Circle') {
+      useEditorUiStore.getState().commitActiveOperation();
+      return;
+    }
     const onStageOrBase = target === (stageRef.current as unknown as Konva.Node) || target.name() === 'base-image';
 
     // ── Text tool: place text at click position ──────────────────────────────
@@ -1674,8 +1886,13 @@ export function CanvasArea() {
         strokeWidth: textSettings.strokeWidth,
         shadowColor: textSettings.shadowColor,
         shadowBlur: textSettings.shadowBlur,
+        shadowOffsetX: textSettings.shadowOffsetX,
+        shadowOffsetY: textSettings.shadowOffsetY,
         lineHeight: textSettings.lineHeight,
         align: textSettings.align,
+        bold: textSettings.bold,
+        italic: textSettings.italic,
+        vertical: textSettings.vertical,
         width: textSettings.width,
         x: nx,
         y: ny,
@@ -1695,6 +1912,17 @@ export function CanvasArea() {
     if (onStageOrBase) {
       setSelectedObject(null);
     }
+  };
+
+  const handleStageContextMenu = (e: Konva.KonvaEventObject<PointerEvent>) => {
+    e.evt.preventDefault();
+    if (e.target !== stageRef.current) return;
+    setContextMenu(null);
+    useEditorUiStore.getState().openToolOptions({
+      x: e.evt.clientX,
+      y: e.evt.clientY,
+      target: { type: 'tool', tool: activeTool },
+    });
   };
 
   const importImagesAsPages = useCallback(async (files: File[]) => {
@@ -1919,33 +2147,6 @@ export function CanvasArea() {
         return;
       }
 
-      if (e.key === 'Enter' || e.key === 'Escape') {
-        // Enter/Escape commits the current transform: deselect the layer/object
-        // so the transformer disappears and the layer "stays put".
-        const store = useStore.getState();
-        const doc = store.documents[store.activeDocIndex];
-        if (doc?.selectedLayer && (doc.selectedLayer.type === 'base' || doc.selectedLayer.type === 'ai')) {
-          store.selectLayer(null);
-        }
-        if (store.selectedObject) store.setSelectedObject(null);
-      }
-      if (e.key === 'Escape') {
-        if (isPainting.current) {
-          isPainting.current = false; currentStroke.current = []; livePoints.current = [];
-          const line = liveLineRef.current;
-          if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
-        }
-        if (isLassoing.current) {
-          isLassoing.current = false; lassoPoints.current = [];
-          const line = liveLassoRef.current;
-          if (line) { line.points([]); line.visible(false); line.getLayer()?.batchDraw(); }
-        }
-        if (isRectSelecting.current) {
-          isRectSelecting.current = false;
-          const rect = liveRectRef.current;
-          if (rect) { rect.visible(false); rect.getLayer()?.batchDraw(); }
-        }
-      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -2155,11 +2356,12 @@ export function CanvasArea() {
           onClick={handleStageClick}
           onDblClick={handleStageDblClick}
           onDblTap={handleStageDblClick}
+          onContextMenu={handleStageContextMenu}
           onPointerLeave={() => { if (!isPainting.current && cursorRef.current) cursorRef.current.style.display = 'none'; }}
           style={{
             display: 'block',
             touchAction: 'none',
-            cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'wand' || activeTool === 'rectSelect') ? 'crosshair' : activeTool === 'text' ? 'text' : 'default',
+            cursor: activeTool === 'pan' ? 'grab' : (activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'wand' || activeTool === 'rectSelect' || activeTool === 'crop' || activeTool === 'blur') ? 'crosshair' : activeTool === 'text' ? 'text' : (activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') ? 'none' : 'default',
           }}
         >
           {/* Base image layer — key includes fontsVersion so the canvas
@@ -2200,7 +2402,10 @@ export function CanvasArea() {
                     onSelect={() => { selectLayer({ id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' }); }}
                     onContextMenu={e => {
                       e.evt.preventDefault();
-                      setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' } });
+                      e.cancelBubble = true;
+                      const layer = { id: activeDoc.baseLayer?.id ?? `base-${activeDoc.id}`, type: 'base' as const };
+                      if (activeTool === 'select') setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: layer });
+                      else useEditorUiStore.getState().openToolOptions({ x: e.evt.clientX, y: e.evt.clientY, target: { type: 'layer', layer, tool: activeTool } });
                     }}
                   />
                 );
@@ -2219,7 +2424,10 @@ export function CanvasArea() {
                     onSelect={() => selectLayer({ id: layer.id, type: 'ai' })}
                     onContextMenu={e => {
                       e.evt.preventDefault();
-                      setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: { id: layer.id, type: 'ai' } });
+                      e.cancelBubble = true;
+                      const layerRef = { id: layer.id, type: 'ai' as const };
+                      if (activeTool === 'select') setContextMenu({ x: e.evt.clientX, y: e.evt.clientY, target: layerRef });
+                      else useEditorUiStore.getState().openToolOptions({ x: e.evt.clientX, y: e.evt.clientY, target: { type: 'layer', layer: layerRef, tool: activeTool } });
                     }}
                   />
                 );
@@ -2266,13 +2474,52 @@ export function CanvasArea() {
                     isSelected={selectedObject?.id === txt.id}
                     isEditing={inlineEditingTextId === txt.id}
                     onSelect={() => setSelectedObject({ id: txt.id, type: 'text' })}
-                    onChange={updates => updateText(txt.id, updates)}
+                    onChange={updates => updateText(txt.id, updates, { moveGroup: Boolean(txt.groupId) })}
                     onBeforeChange={pushHistory}
+                    onContextMenu={e => {
+                      e.evt.preventDefault();
+                      e.cancelBubble = true;
+                      setSelectedObject({ id: txt.id, type: 'text' });
+                      setContextMenu(null);
+                      useEditorUiStore.getState().openToolOptions({
+                        x: e.evt.clientX,
+                        y: e.evt.clientY,
+                        target: { type: 'object', object: { id: txt.id, type: 'text' }, tool: 'text' },
+                      });
+                    }}
                     onEditRequest={() => {
                       if (activeTool === 'lasso' || activeTool === 'polyLasso' || activeTool === 'rectSelect' || activeTool === 'wand') return;
                       setSelectedObject({ id: txt.id, type: 'text' });
                       isNewTextRef.current = false;
                       setInlineEditingTextId(txt.id);
+                    }}
+                  />
+                );
+              }
+              if (ref.type === 'translationMask') {
+                const mask = (activeDoc.translationMasks ?? []).find(item => item.id === ref.id);
+                if (!mask || !layerVisibility.texts) return null;
+                return (
+                  <TranslationMaskNode
+                    key={mask.id}
+                    mask={mask}
+                    docWidth={activeDoc.width}
+                    docHeight={activeDoc.height}
+                    previewScale={previewScale}
+                    isSelected={selectedObject?.type === 'translationMask' && selectedObject.id === mask.id}
+                    onSelect={() => setSelectedObject({ id: mask.id, type: 'translationMask' })}
+                    onBeforeChange={pushHistory}
+                    onChange={(updates, moveGroup) => updateTranslationMask(mask.id, updates, { history: false, moveGroup })}
+                    onContextMenu={event => {
+                      event.evt.preventDefault();
+                      event.cancelBubble = true;
+                      setSelectedObject({ id: mask.id, type: 'translationMask' });
+                      setContextMenu(null);
+                      useEditorUiStore.getState().openToolOptions({
+                        x: event.evt.clientX,
+                        y: event.evt.clientY,
+                        target: { type: 'object', object: { id: mask.id, type: 'translationMask' }, tool: 'select' },
+                      });
                     }}
                   />
                 );
@@ -2350,10 +2597,33 @@ export function CanvasArea() {
                 imgW={imgW}
                 imgH={imgH}
                 onChange={setCropRect}
+                keepRatio={cropSettings.lockAspect || cropSettings.ratio !== 'free'}
               />
             )}
             </Group>
           </Layer>
+          {activeOperation?.kind === 'perspective' && activeDoc.selectedLayer && (() => {
+            const target = activeDoc.selectedLayer.type === 'base'
+              ? activeDoc.baseLayer
+              : activeDoc.selectedLayer.type === 'ai'
+                ? activeDoc.aiLayers.find(layer => layer.id === activeDoc.selectedLayer?.id)
+                : null;
+            if (!target?.perspective) return null;
+            return (
+              <Layer x={viewport.x} y={viewport.y} scaleX={viewport.scale} scaleY={viewport.scale}>
+                <PerspectiveHandles
+                  quad={target.perspective}
+                  width={imgW}
+                  height={imgH}
+                  onBeforeChange={() => {}}
+                  onChange={quad => {
+                    if (activeDoc.selectedLayer?.type === 'base') updateBasePerspective(quad, { history: false });
+                    else if (activeDoc.selectedLayer?.type === 'ai') updateAiLayerPerspective(activeDoc.selectedLayer.id, quad, { history: false });
+                  }}
+                />
+              </Layer>
+            );
+          })()}
         </Stage>
       )}
 
@@ -2369,14 +2639,14 @@ export function CanvasArea() {
           <span>Обрезка слоя — выделите область рамкой</span>
           <button
             type="button"
-            onClick={() => applyLayerCrop()}
+            onClick={() => useEditorUiStore.getState().commitActiveOperation() || applyLayerCrop()}
             style={{ padding: '4px 10px', fontSize: 12, borderRadius: 5, border: 'none', background: 'var(--accent)', color: 'var(--bg-base)', cursor: 'pointer' }}
           >
             Применить
           </button>
           <button
             type="button"
-            onClick={() => cancelLayerCrop()}
+            onClick={() => useEditorUiStore.getState().cancelActiveOperation() || cancelLayerCrop()}
             style={{ padding: '4px 10px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border-default)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}
           >
             Отмена
@@ -2476,7 +2746,7 @@ export function CanvasArea() {
       })()}
 
       {/* Brush cursor (positioned imperatively, no re-renders) */}
-      {(activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser') && (
+      {(activeTool === 'brush' || activeTool === 'maskBrush' || activeTool === 'eraser' || activeTool === 'blur') && (
         <div
           ref={cursorRef}
           style={{

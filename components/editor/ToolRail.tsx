@@ -1,7 +1,8 @@
 'use client';
 
-import { Brush, Eraser, Hand, Lasso, MousePointer2, SquareDashed, Type, WandSparkles, Paintbrush, Waypoints } from 'lucide-react';
+import { Brush, Crop, Eraser, Hand, Lasso, MousePointer2, ScanLine, SquareDashed, Type, WandSparkles, Paintbrush, Waypoints } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import { useEditorUiStore } from '@/store/useEditorUiStore';
 import type { ActiveTool, LeftTab } from '@/types';
 
 const tools: Array<{ tool: ActiveTool; label: string; hotkey: string; icon: typeof Brush; tab?: LeftTab; hint?: string }> = [
@@ -12,13 +13,18 @@ const tools: Array<{ tool: ActiveTool; label: string; hotkey: string; icon: type
   { tool: 'eraser', label: 'Ластик', hotkey: 'E', icon: Eraser, tab: 'cleanup' },
   { tool: 'lasso', label: 'Лассо', hotkey: 'L', icon: Lasso, tab: 'cleanup', hint: 'Свободное выделение' },
   { tool: 'polyLasso', label: 'Прямолинейное лассо', hotkey: 'P', icon: Waypoints, tab: 'cleanup', hint: 'Выделение прямыми отрезками: кликайте по точкам, Enter или двойной клик — замкнуть' },
-  { tool: 'rectSelect', label: 'Прямоугольное выделение', hotkey: 'M', icon: SquareDashed, tab: 'cleanup', hint: 'Прямоугольная область (или R)' },
-  { tool: 'wand', label: 'Волшебная палочка', hotkey: 'W', icon: WandSparkles, tab: 'cleanup', hint: 'Выделение связанной области похожего цвета (или G)' },
+  { tool: 'rectSelect', label: 'Прямоугольное выделение', hotkey: 'M', icon: SquareDashed, tab: 'cleanup', hint: 'Прямоугольная область' },
+  { tool: 'wand', label: 'Волшебная палочка', hotkey: 'W', icon: WandSparkles, tab: 'cleanup', hint: 'Выделение связанной области похожего цвета' },
   { tool: 'text', label: 'Текст', hotkey: 'T', icon: Type, tab: 'text' },
+  { tool: 'crop', label: 'Кадрирование / Размер', hotkey: 'C', icon: Crop, tab: 'transform' },
+  { tool: 'blur', label: 'Размытие / Пикселизация', hotkey: 'R', icon: ScanLine },
 ];
 
 export function ToolRail() {
   const { activeTool, setActiveTool, setLeftTab, documents } = useStore();
+  const openToolOptions = useEditorUiStore(state => state.openToolOptions);
+  const cancelActiveOperation = useEditorUiStore(state => state.cancelActiveOperation);
+  const closeToolOptions = useEditorUiStore(state => state.closeToolOptions);
   const disabled = documents.length === 0;
   return (
     <nav className="tool-rail" aria-label="Инструменты холста">
@@ -31,8 +37,16 @@ export function ToolRail() {
           title={`${label} (${hotkey})${hint ? ` — ${hint}` : ''}`}
           disabled={disabled}
           onClick={() => {
+            cancelActiveOperation();
+            closeToolOptions();
             setActiveTool(tool);
             if (tab) setLeftTab(tab);
+          }}
+          onContextMenu={event => {
+            event.preventDefault();
+            cancelActiveOperation();
+            setActiveTool(tool);
+            openToolOptions({ x: event.clientX, y: event.clientY, target: { type: 'tool', tool } });
           }}
         >
           <Icon size={18} strokeWidth={1.8} aria-hidden="true" />

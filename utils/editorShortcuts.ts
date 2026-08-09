@@ -36,6 +36,8 @@ export function resolveEditorShortcut(event: KeyboardLike): EditorShortcut | nul
     KeyW: { tool: 'wand', tab: 'cleanup' },
     KeyK: { tool: 'maskBrush', tab: 'cleanup' },
     KeyT: { tool: 'text', tab: 'text' },
+    KeyC: { tool: 'crop', tab: 'transform' },
+    KeyR: { tool: 'blur' },
   };
   const tool = tools[event.code];
   if (tool) return { type: 'tool', ...tool };

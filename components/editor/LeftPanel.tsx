@@ -9,11 +9,14 @@ import { InsertPanel } from './panels/InsertPanel';
 import { TransformPanel } from './panels/TransformPanel';
 import { BubblePanel } from './panels/BubblePanel';
 
-const TABS: { key: LeftTab; label: string; hotkey: string }[] = [
-  { key: 'watermark', label: 'Вотерка', hotkey: '1' },
+const PRIMARY_TABS: { key: LeftTab; label: string; hotkey: string }[] = [
   { key: 'cleanup', label: 'Очистка', hotkey: '2' },
   { key: 'text', label: 'Текст', hotkey: '3' },
   { key: 'bubble', label: 'Баблы', hotkey: '6' },
+];
+
+const INSPECTOR_TABS: { key: LeftTab; label: string; hotkey: string }[] = [
+  { key: 'watermark', label: 'Вотерка', hotkey: '1' },
   { key: 'insert', label: 'Вставка', hotkey: '4' },
   { key: 'transform', label: 'Трансформ.', hotkey: '5' },
 ];
@@ -37,7 +40,7 @@ export function LeftPanel() {
     >
       {/* Tab bar */}
       <div role="tablist" aria-label="Панели редактирования" style={{ display: 'flex', gap: 2, padding: 6, overflowX: 'auto', borderBottom: '1px solid var(--border-default)' }}>
-        {TABS.map(tab => (
+        {PRIMARY_TABS.map(tab => (
           <button
             key={tab.key}
             role="tab"
@@ -51,6 +54,14 @@ export function LeftPanel() {
           </button>
         ))}
       </div>
+      <details open={INSPECTOR_TABS.some(tab => tab.key === leftTab)} style={{ borderBottom: '1px solid var(--border-default)', padding: '0 6px 6px' }}>
+        <summary style={{ padding: '6px 4px', cursor: 'pointer', fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: .5 }}>Расширенный инспектор</summary>
+        <div role="tablist" aria-label="Расширенные панели" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3 }}>
+          {INSPECTOR_TABS.map(tab => (
+            <button key={tab.key} role="tab" className="ui-tab" aria-selected={leftTab === tab.key} onClick={() => setLeftTab(tab.key)} title={`${tab.label} (${tab.hotkey})`}>{tab.label}</button>
+          ))}
+        </div>
+      </details>
 
       {/* Panel content */}
       <div id={`panel-${leftTab}`} role="tabpanel" className="editor-scroll" style={{ flex: 1, overflowY: 'auto', padding: '14px 12px' }}>

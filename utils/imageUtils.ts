@@ -50,6 +50,7 @@ export function loadImageFromFile(file: File): Promise<ImageDocument> {
         selectedLayer: null,
         watermarks: [],
         texts: [],
+        translationMasks: [],
         shapes: [],
         bubbles: [],
         past: [],
@@ -154,6 +155,81 @@ export async function resizeDocument(
   };
 }
 
+/** Resize only the canvas, preserving every object's pixel position and size. */
+export async function resizeCanvasDocument(doc: ImageDocument, newW: number, newH: number): Promise<Partial<ImageDocument>> {
+  newW = Math.max(1, Math.round(newW));
+  newH = Math.max(1, Math.round(newH));
+  const scaleX = doc.width / newW;
+  const scaleY = doc.height / newH;
+  const resizeSource = async (src: string, asObjectUrl = false) => {
+    const image = await loadImg(src);
+    const canvas = document.createElement('canvas');
+    canvas.width = newW;
+    canvas.height = newH;
+    canvas.getContext('2d')!.drawImage(image, 0, 0, doc.width, doc.height);
+    return asObjectUrl ? canvasToObjectURL(canvas) : canvas.toDataURL('image/png');
+  };
+  const mapPointArray = (points: number[]) => points.map((value, index) => value * (index % 2 === 0 ? scaleX : scaleY));
+  const mapStroke = (stroke: StrokeData): StrokeData => ({ ...stroke, points: mapPointArray(stroke.points), size: stroke.size * scaleY });
+  const mapElement = async (element: MaskElement): Promise<MaskElement> => {
+    if (element.type === 'brush') return { ...element, stroke: mapStroke(element.stroke) };
+    if (element.type === 'polygon') return { ...element, points: mapPointArray(element.points) };
+    return { ...element, src: await resizeSource(element.src) };
+  };
+  const mapPerspective = (quad: PerspectiveQuad | null | undefined) => quad ? ({
+    topLeft: { x: quad.topLeft.x * scaleX, y: quad.topLeft.y * scaleY },
+    topRight: { x: quad.topRight.x * scaleX, y: quad.topRight.y * scaleY },
+    bottomRight: { x: quad.bottomRight.x * scaleX, y: quad.bottomRight.y * scaleY },
+    bottomLeft: { x: quad.bottomLeft.x * scaleX, y: quad.bottomLeft.y * scaleY },
+  }) : null;
+  const mapCrop = (crop: CropRect | null | undefined) => crop ? ({ x: crop.x * scaleX, y: crop.y * scaleY, width: crop.width * scaleX, height: crop.height * scaleY }) : null;
+
+  const originalSrc = await resizeSource(doc.originalSrc, true);
+  const committed = doc.cleanup.committed ? await resizeSource(doc.cleanup.committed) : null;
+  const baseLayer = {
+    ...doc.baseLayer,
+    x: doc.baseLayer.x * scaleX,
+    y: doc.baseLayer.y * scaleY,
+    crop: mapCrop(doc.baseLayer.crop),
+    perspective: mapPerspective(doc.baseLayer.perspective),
+    perspectiveSourceBounds: mapCrop(doc.baseLayer.perspectiveSourceBounds),
+    eraseElements: await Promise.all((doc.baseLayer.eraseElements ?? []).map(mapElement)),
+  };
+  const aiLayers = await Promise.all((doc.aiLayers ?? []).map(async layer => ({
+    ...layer,
+    src: await resizeSource(layer.src),
+    x: (layer.x ?? 0) * scaleX,
+    y: (layer.y ?? 0) * scaleY,
+    crop: mapCrop(layer.crop),
+    perspective: mapPerspective(layer.perspective),
+    perspectiveSourceBounds: mapCrop(layer.perspectiveSourceBounds),
+    eraseElements: await Promise.all((layer.eraseElements ?? []).map(mapElement)),
+  })));
+  const masks = await Promise.all((doc.masks ?? []).map(async mask => ({
+    ...mask,
+    strokes: (mask.strokes ?? []).map(mapStroke),
+    elements: await Promise.all((mask.elements ?? []).map(mapElement)),
+  })));
+  return {
+    originalSrc,
+    width: newW,
+    height: newH,
+    thumbnail: createThumbnail(await loadImg(originalSrc), 160),
+    cleanup: { ...doc.cleanup, committed, strokes: doc.cleanup.strokes.map(mapStroke) },
+    baseLayer,
+    aiLayers,
+    masks,
+    watermarks: doc.watermarks.map(item => ({ ...item, x: item.x * scaleX, y: item.y * scaleY, fontSize: item.fontSize === undefined ? undefined : item.fontSize * scaleY, imageWidth: item.imageWidth === undefined ? undefined : item.imageWidth * scaleX, imageHeight: item.imageHeight === undefined ? undefined : item.imageHeight * scaleY })),
+    texts: doc.texts.map(item => ({ ...item, x: item.x * scaleX, y: item.y * scaleY, width: item.width * scaleX, fontSize: item.fontSize * scaleY })),
+    translationMasks: (doc.translationMasks ?? []).map(item => ({ ...item, x: item.x * scaleX, y: item.y * scaleY, width: item.width * scaleX, height: item.height * scaleY, sourceBounds: item.sourceBounds ? { x: item.sourceBounds.x * scaleX, y: item.sourceBounds.y * scaleY, width: item.sourceBounds.width * scaleX, height: item.sourceBounds.height * scaleY } : undefined })),
+    shapes: (doc.shapes ?? []).map(item => ({ ...item, x: item.x * scaleX, y: item.y * scaleY, width: item.width * scaleX, height: item.height * scaleY })),
+    bubbles: (doc.bubbles ?? []).map(item => ({ ...item, x: item.x * scaleX, y: item.y * scaleY, width: item.width * scaleX, height: item.height * scaleY, tail: item.tail ? { ...item.tail, tipX: item.tail.tipX === undefined ? undefined : item.tail.tipX * scaleX, tipY: item.tail.tipY === undefined ? undefined : item.tail.tipY * scaleY } : null })),
+    past: [],
+    future: [],
+    hasChanges: true,
+  };
+}
+
 /** Crop the document to a normalized rect; remaps all object coordinates */
 export function remapDocumentContentForCrop(doc: ImageDocument, rect: CropRect) {
   const cx = Math.max(0, Math.min(1, rect.x));
@@ -196,6 +272,19 @@ export function remapDocumentContentForCrop(doc: ImageDocument, rect: CropRect) 
       y: mapY(text.y),
       fontSize: text.fontSize / ch,
       width: text.width / cw,
+    })),
+    translationMasks: (doc.translationMasks ?? []).map(mask => ({
+      ...mask,
+      x: mapX(mask.x),
+      y: mapY(mask.y),
+      width: mask.width / cw,
+      height: mask.height / ch,
+      sourceBounds: mask.sourceBounds ? {
+        x: mapX(mask.sourceBounds.x),
+        y: mapY(mask.sourceBounds.y),
+        width: mask.sourceBounds.width / cw,
+        height: mask.sourceBounds.height / ch,
+      } : undefined,
     })),
     shapes: (doc.shapes ?? []).map(shape => ({
       ...shape,
@@ -290,6 +379,7 @@ export async function cropDocument(
     masks,
     watermarks: remapped.watermarks,
     texts: remapped.texts,
+    translationMasks: remapped.translationMasks,
     shapes: remapped.shapes,
     bubbles: remapped.bubbles,
     past: [],

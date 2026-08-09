@@ -42,8 +42,13 @@ export interface TextObject {
   strokeWidth: number;
   shadowColor: string;
   shadowBlur: number;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
   lineHeight: number;
   align: 'left' | 'center' | 'right';
+  bold?: boolean;
+  italic?: boolean;
+  vertical?: boolean;
   width: number;        // fraction of image width
   x: number;
   y: number;
@@ -56,8 +61,38 @@ export interface TextObject {
   sourceText?: string;
   /** Identifies text created by a page auto-translation run. */
   translationBatchId?: string;
+  /** Links this text to its editable auto-translation mask. */
+  groupId?: string;
   /** Whether this object is currently showing its translated value. */
   isTranslated?: boolean;
+}
+
+export type TranslationMaskShape = 'rect' | 'rounded-rect' | 'ellipse' | 'polygon';
+
+/** Editable fill generated underneath one auto-translated text block. */
+export interface TranslationMaskObject {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+  shape: TranslationMaskShape;
+  /** Polygon points normalized inside the mask's own bounds. */
+  points?: number[];
+  fill: string;
+  opacity: number;
+  feather: number;
+  padding: number;
+  visible: boolean;
+  locked?: boolean;
+  groupId?: string;
+  textId?: string;
+  /** Original OCR bbox, retained for “fit mask to source text”. */
+  sourceBounds?: CropRect;
 }
 
 export type ShapeKind =
@@ -225,6 +260,8 @@ export interface LayerTransform {
   rotation: number; // degrees
   /** When present, replaces the affine transform for rendering. */
   perspective?: PerspectiveQuad | null;
+  /** Source alpha bounds mapped to the perspective quad. */
+  perspectiveSourceBounds?: CropRect | null;
 }
 
 export const DEFAULT_LAYER_TRANSFORM: LayerTransform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
@@ -244,6 +281,8 @@ export interface BaseLayerState {
   scaleY: number;
   rotation: number;
   perspective?: PerspectiveQuad | null;
+  /** Source alpha bounds mapped to the perspective quad. */
+  perspectiveSourceBounds?: CropRect | null;
 }
 
 export const DEFAULT_BASE_ADJUSTMENTS: BaseLayerAdjustments = { brightness: 1, contrast: 1, saturation: 1 };
@@ -278,7 +317,7 @@ export interface AiRasterLayer {
   src: string;
   visible: boolean;
   opacity: number;
-  operation: 'cleanup' | 'remove-background' | 'duplicate' | 'local-cutout' | 'drawing';
+  operation: 'cleanup' | 'remove-background' | 'duplicate' | 'local-cutout' | 'drawing' | 'effect';
   replacesBase?: boolean;
   maskId?: string;
   eraseElements?: MaskElement[];
@@ -292,6 +331,8 @@ export interface AiRasterLayer {
   scaleY?: number;
   rotation?: number;
   perspective?: PerspectiveQuad | null;
+  /** Source alpha bounds mapped to the perspective quad. */
+  perspectiveSourceBounds?: CropRect | null;
 }
 
 export type SelectedLayer = { id: string; type: 'base' | 'mask' | 'ai' };
@@ -303,7 +344,8 @@ export type LayerReference =
   | { type: 'text'; id: string }
   | { type: 'watermark'; id: string }
   | { type: 'shape'; id: string }
-  | { type: 'bubble'; id: string };
+  | { type: 'bubble'; id: string }
+  | { type: 'translationMask'; id: string };
 
 export interface HistorySnapshot {
   cleanup: CleanupLayerState;
@@ -314,6 +356,8 @@ export interface HistorySnapshot {
   selectedLayer: SelectedLayer | null;
   watermarks: WatermarkObject[];
   texts: TextObject[];
+  /** Editable fills created by page translation. Optional for legacy documents. */
+  translationMasks?: TranslationMaskObject[];
   shapes: ShapeObject[];
   bubbles: BubbleObject[];
   layerOrder: LayerReference[];
@@ -335,6 +379,8 @@ export interface ImageDocument {
   selectedLayer: SelectedLayer | null;
   watermarks: WatermarkObject[];
   texts: TextObject[];
+  /** Editable fills created by page translation. Optional for legacy documents. */
+  translationMasks?: TranslationMaskObject[];
   shapes: ShapeObject[];
   bubbles: BubbleObject[];
   /** Unified z-order stack (bottom → top). Missing refs are appended on top at resolve time. */
@@ -345,14 +391,14 @@ export interface ImageDocument {
 }
 
 export type CleanupMethod = 'auto' | 'white' | 'background' | 'inpaint';
-export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'polyLasso' | 'rectSelect' | 'text' | 'wand' | 'crop';
+export type ActiveTool = 'select' | 'brush' | 'maskBrush' | 'eraser' | 'pan' | 'lasso' | 'polyLasso' | 'rectSelect' | 'text' | 'wand' | 'crop' | 'blur';
 
 export type SelectionMode = 'replace' | 'add' | 'subtract';
 export type LeftTab = 'watermark' | 'cleanup' | 'text' | 'insert' | 'transform' | 'bubble';
 
 export interface SelectedObject {
   id: string;
-  type: 'watermark' | 'text' | 'shape' | 'bubble';
+  type: 'watermark' | 'text' | 'shape' | 'bubble' | 'translationMask';
 }
 
 export interface CropRect {
@@ -394,6 +440,7 @@ export interface WatermarkSettings {
 export interface CleanupSettings {
   brushSize: number;
   brushHardness: number;
+  brushOpacity: number;
   brushColor: string;
   inpaintRadius: number;
   mode: 'brush' | 'inpaint' | 'magic';
@@ -417,11 +464,39 @@ export interface TextSettings {
   strokeWidth: number;
   shadowColor: string;
   shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
   lineHeight: number;
   align: 'left' | 'center' | 'right';
+  bold: boolean;
+  italic: boolean;
+  vertical: boolean;
   width: number;
   /** Text that will be placed on next click when the text tool is active. */
   draftText: string;
+}
+
+export interface CropSettings {
+  scope: 'page' | 'layer' | 'canvas-size' | 'image-size';
+  lockAspect: boolean;
+  ratio: 'free' | '1:1' | '2:3' | 'a4' | 'original-width';
+}
+
+export interface BlurSettings {
+  mode: 'blur' | 'pixelate' | 'noise';
+  gesture: 'brush' | 'area';
+  applyTo: 'layer' | 'selection';
+  brushSize: number;
+  intensity: number;
+  hardness: number;
+}
+
+export interface TranslationMaskSettings {
+  shape: TranslationMaskShape;
+  fill: string;
+  opacity: number;
+  feather: number;
+  padding: number;
 }
 
 export interface ExportSettings {

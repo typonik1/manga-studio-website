@@ -10,6 +10,7 @@ import { resolveLayerOrder } from '@/utils/layerOrder';
 import { createDrawingLayer } from '@/utils/layerActions';
 import { loadImagesFromFiles } from '@/utils/imageUtils';
 import { IMAGE_IMPORT_PREFERENCE_EVENT, loadImageImportPreference, storeImageImportPreference } from '@/utils/pageImportPreference';
+import { useEditorUiStore } from '@/store/useEditorUiStore';
 
 const SHAPE_LABELS: Record<ShapeKind, string> = {
   rect: 'Прямоугольник',
@@ -287,7 +288,7 @@ function GalleryPanel() {
 }
 
 function LayersPanel() {
-const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateCleanupLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, duplicateAiLayer, updateWatermark, deleteWatermark, updateText, deleteText, updateShape, deleteShape, updateBubble, deleteBubble, duplicateBubble, reorderLayer, pushHistory } = useStore(useShallow(state => ({
+const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selectedObject, setSelectedObject, setActiveTool, setLeftTab, selectLayer, updateCleanupLayer, updateMask, deleteMask, updateAiLayer, deleteAiLayer, duplicateAiLayer, updateWatermark, deleteWatermark, updateText, deleteText, updateTranslationMask, deleteTranslationMask, updateShape, deleteShape, updateBubble, deleteBubble, duplicateBubble, reorderLayer, pushHistory } = useStore(useShallow(state => ({
   layerVisibility: state.layerVisibility,
   toggleLayerVisibility: state.toggleLayerVisibility,
   activeDocIndex: state.activeDocIndex,
@@ -307,6 +308,8 @@ const { layerVisibility, toggleLayerVisibility, activeDocIndex, documents, selec
   deleteWatermark: state.deleteWatermark,
   updateText: state.updateText,
   deleteText: state.deleteText,
+  updateTranslationMask: state.updateTranslationMask,
+  deleteTranslationMask: state.deleteTranslationMask,
   updateShape: state.updateShape,
   deleteShape: state.deleteShape,
   updateBubble: state.updateBubble,
@@ -512,7 +515,7 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
       )}
 
       {/* Objects */}
-      {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0 || (activeDoc.shapes ?? []).length > 0 || (activeDoc.bubbles ?? []).length > 0) && (
+      {(activeDoc.watermarks.length > 0 || activeDoc.texts.length > 0 || (activeDoc.translationMasks ?? []).length > 0 || (activeDoc.shapes ?? []).length > 0 || (activeDoc.bubbles ?? []).length > 0) && (
         <>
           <div className="section-label" style={{ padding: '12px 2px 6px' }}>Объекты</div>
 
@@ -520,7 +523,7 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
               global order the canvas renders, so panel = picture). */}
           {[...resolveLayerOrder(activeDoc)]
             .map((ref, orderIndex) => ({ ref, orderIndex }))
-            .filter(({ ref }) => ref.type === 'watermark' || ref.type === 'text' || ref.type === 'shape' || ref.type === 'bubble')
+            .filter(({ ref }) => ref.type === 'watermark' || ref.type === 'text' || ref.type === 'translationMask' || ref.type === 'shape' || ref.type === 'bubble')
             .reverse()
             .map(({ ref, orderIndex }) => {
               const isDropTarget = dropIndex === orderIndex && dragIndex !== null && dragIndex !== orderIndex;
@@ -602,6 +605,35 @@ const LAYERS: { key: keyof LayerVisibility; label: string; icon: string }[] = [
                         onDelete={() => deleteText(txt.id)}
                         locked={txt.locked === true}
                         onLock={() => updateText(txt.id, { locked: txt.locked !== true }, { history: true })}
+                      />
+                    </div>
+                  </div>
+                );
+              }
+              if (ref.type === 'translationMask') {
+                const mask = (activeDoc.translationMasks ?? []).find(item => item.id === ref.id);
+                if (!mask) return null;
+                return (
+                  <div key={mask.id} {...objRowProps} onContextMenu={event => {
+                    event.preventDefault();
+                    setSelectedObject({ id: mask.id, type: 'translationMask' });
+                    useEditorUiStore.getState().openToolOptions({
+                      x: event.clientX,
+                      y: event.clientY,
+                      target: { type: 'object', object: { id: mask.id, type: 'translationMask' }, tool: 'select' },
+                    });
+                  }}>
+                    {objDragHandle}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ObjectRow
+                        label={mask.name}
+                        prefix="M"
+                        isSelected={selectedObject?.type === 'translationMask' && selectedObject.id === mask.id}
+                        visible={mask.visible}
+                        onSelect={() => setSelectedObject({ id: mask.id, type: 'translationMask' })}
+                        onDelete={() => deleteTranslationMask(mask.id)}
+                        locked={mask.locked === true}
+                        onLock={() => updateTranslationMask(mask.id, { locked: mask.locked !== true }, { history: true })}
                       />
                     </div>
                   </div>

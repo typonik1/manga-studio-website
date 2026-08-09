@@ -21,6 +21,7 @@ export function resolveLayerOrder(doc: ImageDocument): LayerReference[] {
   const wmIds = new Set(doc.watermarks.map(item => item.id));
   const shapeIds = new Set((doc.shapes ?? []).map(item => item.id));
   const bubbleIds = new Set((doc.bubbles ?? []).map(item => item.id));
+  const translationMaskIds = new Set((doc.translationMasks ?? []).map(item => item.id));
 
   const exists = (ref: LayerReference): boolean => {
     switch (ref.type) {
@@ -30,6 +31,7 @@ export function resolveLayerOrder(doc: ImageDocument): LayerReference[] {
       case 'watermark': return wmIds.has(ref.id);
       case 'shape': return shapeIds.has(ref.id);
       case 'bubble': return bubbleIds.has(ref.id);
+      case 'translationMask': return translationMaskIds.has(ref.id);
       default: return false;
     }
   };
@@ -51,6 +53,7 @@ export function resolveLayerOrder(doc: ImageDocument): LayerReference[] {
   for (const layer of doc.aiLayers ?? []) append({ type: 'ai', id: layer.id });
   for (const wm of doc.watermarks) append({ type: 'watermark', id: wm.id });
   for (const txt of doc.texts) append({ type: 'text', id: txt.id });
+  for (const mask of doc.translationMasks ?? []) append({ type: 'translationMask', id: mask.id });
   for (const shape of doc.shapes ?? []) append({ type: 'shape', id: shape.id });
   for (const bubble of doc.bubbles ?? []) append({ type: 'bubble', id: bubble.id });
 

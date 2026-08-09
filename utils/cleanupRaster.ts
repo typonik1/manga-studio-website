@@ -231,6 +231,7 @@ export interface RasterPlacement {
   crop?: { x: number; y: number; width: number; height: number } | null;
   opacity?: number;
   perspective?: PerspectiveQuad | null;
+  perspectiveSourceBounds?: { x: number; y: number; width: number; height: number } | null;
 }
 
 /**
@@ -247,7 +248,7 @@ export function drawPlacedLayer(
 ) {
   const { x = 0, y = 0, scaleX = 1, scaleY = 1, rotation = 0, crop, opacity = 1, perspective } = placement;
   if (perspective && isValidPerspectiveQuad(perspective)) {
-    drawPerspectiveImage(ctx, source, perspective, width, height, { crop, opacity, subdivisions: 18 });
+    drawPerspectiveImage(ctx, source, perspective, width, height, { crop, sourceBounds: placement.perspectiveSourceBounds, opacity, subdivisions: 24 });
     return;
   }
   ctx.save();
@@ -286,6 +287,7 @@ export async function drawRasterReferenceToContext(
       crop: state?.crop,
       opacity: state?.opacity ?? 1,
       perspective: state?.perspective,
+      perspectiveSourceBounds: state?.perspectiveSourceBounds,
     }, doc.width, doc.height);
     return;
   }
@@ -303,6 +305,7 @@ export async function drawRasterReferenceToContext(
       crop: layer.crop,
       opacity: layer.opacity,
       perspective: layer.perspective,
+      perspectiveSourceBounds: layer.perspectiveSourceBounds,
     }, doc.width, doc.height);
   } catch {
     // Optional pasted/AI layers may reference a missing local blob. Keep the

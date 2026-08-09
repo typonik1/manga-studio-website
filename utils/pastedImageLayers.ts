@@ -119,7 +119,11 @@ function fileToDataUrl(file: File): Promise<string> {
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
+    image.onload = () => {
+      const finish = () => resolve(image);
+      if (typeof image.decode === 'function') image.decode().then(finish, finish);
+      else finish();
+    };
     image.onerror = () => reject(new Error('Не удалось декодировать вставленное изображение.'));
     image.src = src;
   });

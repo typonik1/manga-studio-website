@@ -9,6 +9,7 @@ import type {
   StrokeData,
   TextObject,
   WatermarkObject,
+  TranslationMaskObject,
 } from '@/types';
 import { sanitizePerspectiveQuad } from '@/utils/perspective';
 import { normalizeGlowStyle, normalizePaintStyle } from '@/utils/objectPaint';
@@ -210,6 +211,23 @@ export function sanitizeImageDocument(document: ImageDocument): ImageDocument {
     watermarks: document.watermarks.map(sanitizeWatermark).filter((item): item is WatermarkObject => Boolean(item)),
     shapes: (document.shapes ?? []).map(sanitizeShape).filter((item): item is ShapeObject => Boolean(item)),
     bubbles: (document.bubbles ?? []).map(sanitizeBubble).filter((item): item is BubbleObject => Boolean(item)),
+    translationMasks: (document.translationMasks ?? []).flatMap((mask): TranslationMaskObject[] => {
+      if (![mask.x, mask.y, mask.width, mask.height].every(finite)) return [];
+      return [{
+        ...mask,
+        x: Math.max(-1, Math.min(2, mask.x)),
+        y: Math.max(-1, Math.min(2, mask.y)),
+        width: Math.max(0.002, Math.min(2, Math.abs(mask.width))),
+        height: Math.max(0.002, Math.min(2, Math.abs(mask.height))),
+        scaleX: finite(mask.scaleX) ? mask.scaleX : 1,
+        scaleY: finite(mask.scaleY) ? mask.scaleY : 1,
+        rotation: finite(mask.rotation) ? mask.rotation : 0,
+        opacity: clamp01(finite(mask.opacity) ? mask.opacity : 1),
+        feather: Math.max(0, finite(mask.feather) ? mask.feather : 0),
+        padding: Math.max(0, finite(mask.padding) ? mask.padding : 0.04),
+        visible: mask.visible !== false,
+      }];
+    }),
     cleanup: { ...document.cleanup, strokes: document.cleanup.strokes.map(sanitizeStroke).filter((item): item is StrokeData => Boolean(item)) },
     masks: (document.masks ?? []).map(mask => ({
       ...mask,

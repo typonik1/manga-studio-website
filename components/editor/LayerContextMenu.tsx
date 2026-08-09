@@ -1,10 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '@/store/useStore';
 import { deleteMaskedPixels, hasActiveSelection, removeBackgroundFromLayer } from '@/utils/layerActions';
 import { localRectToDocRect } from '@/utils/coordinates';
 import type { LayerReference } from '@/types';
+import { ContextMenu } from './floating/ContextMenu';
+import { beginEditorOperation, useEditorUiStore } from '@/store/useEditorUiStore';
+import { buildBaseCanvas, buildRasterLayerCanvas, computeAlphaBBox, drawPlacedLayer } from '@/utils/cleanupRaster';
+import { affineBoundsToPerspective } from '@/utils/perspective';
 
 export interface ContextMenuState {
   x: number;
@@ -18,22 +22,17 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
     duplicateAiLayer, duplicateBaseLayer, deleteAiLayer, updateAiLayer, updateBaseLayer, clearEraseElements,
     selectLayer, setRightTab, resetBaseLayerSettings,
     moveLayerForward, moveLayerBackward, moveLayerToTop, moveLayerToBottom,
-    setLayerCropTarget, setCropRect, setActiveTool, pushHistory,
+    setLayerCropTarget, setCropRect, setActiveTool, pushHistory, applyDocumentTransform,
   } = useStore();
   const doc = activeDocIndex >= 0 ? documents[activeDocIndex] : null;
-  const menuRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
-    const handleOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
-    };
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('mousedown', handleOutside);
-    window.addEventListener('keydown', handleKey);
+    useEditorUiStore.getState().registerFloatingDismiss(onClose);
     return () => {
-      window.removeEventListener('mousedown', handleOutside);
-      window.removeEventListener('keydown', handleKey);
+      if (useEditorUiStore.getState().floatingDismiss === onClose) {
+        useEditorUiStore.getState().registerFloatingDismiss(null);
+      }
     };
   }, [onClose]);
 
@@ -50,6 +49,81 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
   const crop = isBase ? doc.baseLayer?.crop : aiLayer!.crop;
   const eraseCount = isBase ? (doc.baseLayer?.eraseElements.length ?? 0) : (aiLayer!.eraseElements?.length ?? 0);
   const selectionActive = hasActiveSelection(doc);
+  const placement = isBase ? doc.baseLayer : aiLayer!;
+
+  const startTransform = () => {
+    selectLayer({ id: menu.target.id, type: menu.target.type });
+    setActiveTool('select');
+    pushHistory();
+    beginEditorOperation('transform', 'Трансформация слоя', {
+      commit: () => useStore.getState().selectLayer(null),
+      cancel: () => {
+        const state = useStore.getState();
+        state.rollbackPendingHistory();
+        state.selectLayer(null);
+      },
+    });
+  };
+
+  const startPerspective = async () => {
+    const canvas = isBase
+      ? await buildBaseCanvas(doc)
+      : await buildRasterLayerCanvas(aiLayer!, doc.width, doc.height);
+    const alpha = computeAlphaBBox(canvas, 0);
+    if (!alpha) throw new Error('Слой полностью прозрачный. Перспектива недоступна.');
+    const cropBounds = placement.crop ? {
+      x: placement.crop.x * doc.width,
+      y: placement.crop.y * doc.height,
+      width: placement.crop.width * doc.width,
+      height: placement.crop.height * doc.height,
+    } : null;
+    const x1 = Math.max(alpha.x, cropBounds?.x ?? 0);
+    const y1 = Math.max(alpha.y, cropBounds?.y ?? 0);
+    const x2 = Math.min(alpha.x + alpha.width, cropBounds ? cropBounds.x + cropBounds.width : doc.width);
+    const y2 = Math.min(alpha.y + alpha.height, cropBounds ? cropBounds.y + cropBounds.height : doc.height);
+    if (x2 <= x1 || y2 <= y1) throw new Error('В видимой области слоя нет непрозрачных пикселей.');
+    const sourceBounds = { x: x1 / doc.width, y: y1 / doc.height, width: (x2 - x1) / doc.width, height: (y2 - y1) / doc.height };
+    const perspective = placement.perspective ?? affineBoundsToPerspective(doc.width, doc.height, { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, placement);
+    pushHistory();
+    if (isBase) useStore.getState().updateBaseLayer({ perspective, perspectiveSourceBounds: sourceBounds }, { history: false });
+    else useStore.getState().updateAiLayer(menu.target.id, { perspective, perspectiveSourceBounds: sourceBounds }, { history: false });
+    selectLayer({ id: menu.target.id, type: menu.target.type });
+    setActiveTool('select');
+    beginEditorOperation('perspective', 'Изменение перспективы', {
+      commit: () => {
+        const state = useStore.getState();
+        const identity = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
+        if (isBase) state.updateBaseLayer(identity, { history: false });
+        else state.updateAiLayer(menu.target.id, identity, { history: false });
+        state.selectLayer(null);
+      },
+      cancel: () => {
+        const state = useStore.getState();
+        state.rollbackPendingHistory();
+        state.selectLayer(null);
+      },
+    });
+  };
+
+  const rasterize = async () => {
+    const source = isBase ? await buildBaseCanvas(doc) : await buildRasterLayerCanvas(aiLayer!, doc.width, doc.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = doc.width;
+    canvas.height = doc.height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas недоступен.');
+    drawPlacedLayer(context, source, placement, doc.width, doc.height);
+    const src = canvas.toDataURL('image/png');
+    const reset = { src, opacity: 1, crop: null, x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, perspective: null, perspectiveSourceBounds: null };
+    if (isBase) {
+      const state = useStore.getState();
+      const id = `ai-rasterized-${Date.now()}`;
+      state.addAiLayer(doc.id, { id, name: `Растрированный ${doc.name}`, src, visible: true, opacity: 1, operation: 'duplicate', locked: false, eraseElements: [], crop: null, x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
+      state.updateBaseLayer({ visible: false }, { history: false });
+    } else {
+      useStore.getState().updateAiLayer(menu.target.id, reset);
+    }
+  };
 
   const run = async (key: string, action: () => Promise<void> | void, keepOpen = false) => {
     setBusy(key);
@@ -77,6 +151,14 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
     },
     { kind: 'opacity', key: 'opacity' },
     { kind: 'separator', key: 'sep-1' },
+    {
+      kind: 'item', key: 'perspective', label: 'Изменить перспективу', disabled: locked,
+      onClick: () => run('perspective', startPerspective),
+    },
+    {
+      kind: 'item', key: 'transform', label: 'Трансформировать', disabled: locked,
+      onClick: () => run('transform', startTransform),
+    },
     {
       kind: 'item',
       key: 'duplicate',
@@ -113,7 +195,7 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
     {
       kind: 'item',
       key: 'crop',
-      label: crop ? 'Обрезать (изменить)' : 'Обрезать',
+      label: crop ? 'Кадрировать слой (изменить)' : 'Кадрировать слой',
       disabled: locked,
       onClick: () => run('crop', () => {
         selectLayer({ id: menu.target.id, type: menu.target.type });
@@ -127,6 +209,28 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
           ? localRectToDocRect(initial, placement, doc.width, doc.height)
           : initial);
         setActiveTool('crop');
+        beginEditorOperation('crop', 'Кадрирование слоя', {
+          commit: () => useStore.getState().applyLayerCrop(),
+          cancel: () => useStore.getState().cancelLayerCrop(),
+        });
+      }),
+    },
+    {
+      kind: 'item', key: 'rename', label: 'Переименовать слой',
+      onClick: () => run('rename', () => {
+        const name = window.prompt('Новое имя слоя', isBase ? doc.name : aiLayer!.name)?.trim();
+        if (!name) return;
+        if (isBase) applyDocumentTransform({ name });
+        else updateAiLayer(menu.target.id, { name });
+      }),
+    },
+    { kind: 'item', key: 'rasterize', label: 'Растрировать', disabled: locked, onClick: () => run('rasterize', rasterize) },
+    {
+      kind: 'item', key: 'reset-transform', label: 'Сбросить трансформации', disabled: locked,
+      onClick: () => run('reset-transform', () => {
+        const reset = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, perspective: null, perspectiveSourceBounds: null };
+        if (isBase) updateBaseLayer(reset);
+        else updateAiLayer(menu.target.id, reset);
       }),
     },
     { kind: 'separator', key: 'sep-2' },
@@ -174,27 +278,12 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
     });
   }
 
-  const itemCount = items.filter(item => item.kind === 'item').length;
-
   return (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={isBase ? 'Действия с исходником' : 'Действия со слоем'}
-      style={{
-        position: 'fixed',
-        left: Math.min(menu.x, typeof window !== 'undefined' ? window.innerWidth - 260 : menu.x),
-        top: Math.max(8, Math.min(menu.y, typeof window !== 'undefined' ? window.innerHeight - itemCount * 30 - 90 : menu.y)),
-        zIndex: 100,
-        minWidth: 240,
-        maxHeight: 'calc(100vh - 16px)',
-        overflowY: 'auto',
-        background: 'var(--bg-panel-raised)',
-        border: '1px solid var(--border-default)',
-        borderRadius: 8,
-        padding: 4,
-        boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
-      }}
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      onClose={onClose}
+      label={isBase ? 'Действия с исходником' : 'Действия со слоем'}
     >
       <div style={{ padding: '5px 10px 7px', fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
         {isBase ? `Оригинал — ${doc.name}` : aiLayer!.name}
@@ -255,6 +344,6 @@ export function LayerContextMenu({ menu, onClose }: { menu: ContextMenuState; on
           </button>
         );
       })}
-    </div>
+    </ContextMenu>
   );
 }
